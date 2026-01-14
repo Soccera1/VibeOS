@@ -11,11 +11,14 @@ extern char keyboard_getc();
 extern int elf_load(vfs_node_t *file, uint32_t *entry);
 extern void enter_user_mode(uint32_t entry, uint32_t stack);
 
-struct syscall_regs {
-    uint32_t eax, ebx, ecx, edx, esi, edi, ebp;
+struct registers {
+    uint32_t ds;
+    uint32_t edi, esi, ebp, esp, ebx, edx, ecx, eax;
+    uint32_t int_no, err_code;
+    uint32_t eip, cs, eflags, useresp, ss;
 } __attribute__((packed));
 
-void syscall_handler(struct syscall_regs *regs) {
+void syscall_handler(struct registers *regs) {
     uint32_t syscall_no = regs->eax;
 
     switch (syscall_no) {
@@ -30,16 +33,10 @@ void syscall_handler(struct syscall_regs *regs) {
 
         case SYS_READ:
             if (regs->ebx == 0) { // stdin
-                char *buf = (char*)regs->ecx;
+                volatile char *buf = (volatile char*)regs->ecx;
                 char c = keyboard_getc();
                 buf[0] = c;
-                regs->eax = 1;
-                
-                // Debug log to verify input
-                print_debugcon("Syscall Read: ");
-                char debug_tmp[2] = {c, '\0'};
-                print_debugcon(debug_tmp);
-                print_debugcon("\n");
+                regs->eax = 1; 
             } else {
                 regs->eax = 0;
             }
@@ -47,10 +44,14 @@ void syscall_handler(struct syscall_regs *regs) {
 
         case SYS_WRITE:
             if (regs->ebx == 1 || regs->ebx == 2) {
-                char *buf = (char*)regs->ecx;
+                unsigned char *buf = (unsigned char*)regs->ecx;
                 uint32_t len = regs->edx;
+                
                 for (uint32_t i = 0; i < len; i++) {
-                    terminal_putc(buf[i]);
+                    unsigned char c = buf[i];
+                    if (c != 0) {
+                        terminal_putc(c);
+                    }
                 }
                 regs->eax = len;
             } else {

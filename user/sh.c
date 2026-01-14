@@ -42,11 +42,11 @@ int main() {
             int n = read(0, &c, 1);
             if (n <= 0) continue;
             
-            if (c == '\n') {
+            if (c == '\n' || c == '\r') {
                 putchar('\n');
                 line[line_idx] = '\0';
                 break;
-            } else if (c == '\b') {
+            } else if (c == '\b' || c == 127) {
                 if (line_idx > 0) {
                     line_idx--;
                     putchar('\b');

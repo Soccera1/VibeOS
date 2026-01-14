@@ -33,9 +33,11 @@ all: vibeos.bin vibeos.iso
 vibeos.bin: $(OBJS)
 	$(CC) $(LDFLAGS) -o vibeos.bin $(OBJS)
 
+USER_CFLAGS = -m32 -ffreestanding -O0 -Wall -Wextra -Iinclude -fno-pie -fno-stack-protector
+
 sh: user/sh.c user/libc.c
-	$(CC) $(CFLAGS) -Iuser -Iinclude -c user/sh.c -o sh.o
-	$(CC) $(CFLAGS) -Iuser -Iinclude -c user/libc.c -o libc.o
+	$(CC) $(USER_CFLAGS) -Iuser -Iinclude -c user/sh.c -o sh.o
+	$(CC) $(USER_CFLAGS) -Iuser -Iinclude -c user/libc.c -o libc.o
 	$(LD) -m elf_i386 -T user.ld sh.o libc.o -o sh
 
 user_test: user_test.s

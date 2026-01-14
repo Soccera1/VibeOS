@@ -1,10 +1,10 @@
 #include <stdint.h>
 #include <string.h>
 
-#define BG_COLOR 0x1E1E2E
-#define FG_COLOR 0xFFFFFF
+#define BG_COLOR 0xFF1E1E2E
+#define FG_COLOR 0xFFFFFFFF
 
-extern unsigned char font8x16[128][16];
+extern const unsigned char font8x16[128][16];
 
 static uint32_t* fb;
 static uint32_t fb_width, fb_height, fb_pitch;
@@ -12,17 +12,19 @@ static uint32_t cursor_x = 0, cursor_y = 0;
 
 void terminal_draw_cursor(uint32_t color) {
     if (!fb) return;
-    for (int i = 0; i < 16; i++) {
+    if (cursor_x + 8 > fb_width || cursor_y + 16 > fb_height) return;
+    for (int i = 14; i < 16; i++) {
         for (int j = 0; j < 8; j++) {
             fb[(cursor_y + i) * fb_pitch + (cursor_x + j)] = color;
         }
     }
 }
 
-static void draw_char(char c, uint32_t x, uint32_t y, uint32_t fg, uint32_t bg) {
-    if (!fb || (uint8_t)c > 127) return;
+static void draw_char(unsigned char c, uint32_t x, uint32_t y, uint32_t fg, uint32_t bg) {
+    if (!fb || c > 127) return;
+    if (x + 8 > fb_width || y + 16 > fb_height) return;
     for (int i = 0; i < 16; i++) {
-        uint8_t row = font8x16[(uint8_t)c][i];
+        uint8_t row = font8x16[c][i];
         for (int j = 0; j < 8; j++) {
             if (row & (1 << (7 - j))) {
                 fb[(y + i) * fb_pitch + (x + j)] = fg;
@@ -62,23 +64,42 @@ void terminal_scroll() {
 
 void terminal_putc(char c) {
     if (!fb) return;
+    
     terminal_draw_cursor(BG_COLOR);
 
-    if (c == '\n') {
-        cursor_x = 0;
-        cursor_y += 16;
-    } else if (c == '\b') {
-        if (cursor_x >= 8) {
-            cursor_x -= 8;
-            draw_char(' ', cursor_x, cursor_y, FG_COLOR, BG_COLOR);
-        }
-    } else {
-        draw_char(c, cursor_x, cursor_y, FG_COLOR, BG_COLOR);
-        cursor_x += 8;
-        if (cursor_x >= fb_width) {
+    switch (c) {
+        case '\n':
             cursor_x = 0;
             cursor_y += 16;
-        }
+            break;
+        case '\r':
+            cursor_x = 0;
+            break;
+        case '\b':
+        case 127:
+            if (cursor_x >= 8) {
+                cursor_x -= 8;
+                draw_char(' ', cursor_x, cursor_y, FG_COLOR, BG_COLOR);
+            }
+            break;
+        case '\t':
+            cursor_x = (cursor_x + 32) & ~31;
+            break;
+        default:
+            if ((unsigned char)c >= 32 && (unsigned char)c <= 126) {
+                if (cursor_x + 8 > fb_width) {
+                    cursor_x = 0;
+                    cursor_y += 16;
+                }
+                draw_char(c, cursor_x, cursor_y, FG_COLOR, BG_COLOR);
+                cursor_x += 8;
+            }
+            break;
+    }
+
+    if (cursor_x >= fb_width) {
+        cursor_x = 0;
+        cursor_y += 16;
     }
 
     if (cursor_y >= fb_height) {
