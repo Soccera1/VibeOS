@@ -19,4 +19,5 @@ busybox-1.36.1/busybox_unstripped.out
 busybox-1.36.1/.tmp_versions/
 busybox-1.36.1/applets/applet_tables
 busybox-1.36.1/applets/usage
-busybox-1.36.1/applets/usage_podsh_disasm.txt
+busybox-1.36.1/applets/usage_pod
+sh_disasm.txt
