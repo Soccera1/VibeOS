@@ -1,6 +1,7 @@
 .gemini/
 gha-creds-*.json
 *.o
+*.a
 vibeos.bin
 vibeos.iso
 initrd.tar
@@ -11,6 +12,8 @@ bin/
 iso/boot/vibeos.bin
 iso/boot/initrd.tar
 busybox-1.36.1.tar.bz2
+sh_disasm.txt
+
 # BusyBox build artifacts
 busybox-1.36.1/busybox
 busybox-1.36.1/busybox_unstripped
@@ -20,4 +23,16 @@ busybox-1.36.1/.tmp_versions/
 busybox-1.36.1/applets/applet_tables
 busybox-1.36.1/applets/usage
 busybox-1.36.1/applets/usage_pod
-sh_disasm.txt
+busybox-1.36.1/include/autoconf.h
+busybox-1.36.1/include/bbconfigopts.h
+busybox-1.36.1/include/bbconfigopts_bz2.h
+busybox-1.36.1/include/common_bufsiz.h
+busybox-1.36.1/include/usage_compressed.h
+busybox-1.36.1/include/applet_metadata.h
+busybox-1.36.1/include/NUM_APPLETS.h
+busybox-1.36.1/scripts/kconfig/conf
+busybox-1.36.1/scripts/kconfig/mconf
+busybox-1.36.1/scripts/basic/docproc
+busybox-1.36.1/scripts/basic/fixdep
+busybox-1.36.1/scripts/basic/split-include
+.*.cmd
