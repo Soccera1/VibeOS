@@ -35,10 +35,15 @@ vibeos.bin: $(OBJS)
 
 USER_CFLAGS = -m32 -ffreestanding -O0 -Wall -Wextra -Iinclude -fno-pie -fno-stack-protector
 
-sh: user/sh.c user/libc.c
-	$(CC) $(USER_CFLAGS) -Iuser -Iinclude -c user/sh.c -o sh.o
+user/start.o: user/start.s
+	$(AS) -f elf32 user/start.s -o user/start.o
+
+libc.o: user/libc.c
 	$(CC) $(USER_CFLAGS) -Iuser -Iinclude -c user/libc.c -o libc.o
-	$(LD) -m elf_i386 -T user.ld sh.o libc.o -o sh
+
+sh: user/sh.c libc.o user/start.o
+	$(CC) $(USER_CFLAGS) -Iuser -Iinclude -c user/sh.c -o sh.o
+	$(LD) -m elf_i386 -T user.ld user/start.o sh.o libc.o -o sh
 
 user_test: user_test.s
 	$(AS) -f elf32 user_test.s -o user_test.o
@@ -48,7 +53,7 @@ vibeos.iso: vibeos.bin sh user_test
 	mkdir -p iso/boot/grub
 	cp vibeos.bin iso/boot/vibeos.bin
 	cp grub.cfg iso/boot/grub/grub.cfg
-	tar -cvf initrd.tar sh user_test
+	tar -cvf initrd.tar -C bin sh ls
 	cp initrd.tar iso/boot/initrd.tar
 	grub-mkrescue -o vibeos.iso iso
 

@@ -2,8 +2,10 @@
 #include <kernel/gdt.h>
 #include <kernel/idt.h>
 #include <kernel/vmm.h>
+#include <kernel/pmm.h>
 #include <kernel/vfs.h>
 #include <kernel/debugcon.h>
+#include <string.h>
 #include <stdint.h> 
 
 extern void pic_remap(int offset1, int offset2);
@@ -21,6 +23,10 @@ void kernel_main(uint32_t magic, struct multiboot_info* mbi) {
     idt_init();
     pic_remap(0x20, 0x28);
     keyboard_init();
+
+    pmm_init(128 * 1024 * 1024);
+    // Free memory from 8MB to 128MB
+    pmm_free_region(0x800000, (128 - 8) * 1024 * 1024);
     
     if (magic != 0x2BADB002 || !(mbi->flags & (1 << 12))) {
         print_debugcon("Critical Error: Boot info missing\n");
@@ -62,8 +68,19 @@ void kernel_main(uint32_t magic, struct multiboot_info* mbi) {
             for (uint32_t i = 0; i < 4; i++) {
                 vmm_map(stack_top - (i+1)*4096, stack_top - (i+1)*4096, PAGE_PRESENT | PAGE_RW | PAGE_USER);
             }
-            // Use 0x4FFFF0 to ensure we aren't exactly on the boundary
-            enter_user_mode(entry, 0x4FFFF0);
+            
+            // Setup stack: [esp] = argc, [esp+4] = argv[0], [esp+8] = argv[1]=NULL
+            // We'll put strings a bit higher in the stack
+            char* sh_str = (char*)(stack_top - 64);
+            strcpy(sh_str, "sh");
+            
+            uint32_t* stack = (uint32_t*)(stack_top - 128);
+            stack[0] = 1;               // argc
+            stack[1] = (uint32_t)sh_str; // argv[0]
+            stack[2] = 0;               // argv[1] (NULL)
+            
+            print_debugcon("Ready. Transitioning to User Mode (sh)...");
+            enter_user_mode(entry, (uint32_t)stack);
         }
     }
 

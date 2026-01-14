@@ -9,7 +9,6 @@ uint32_t last_free_page = 0;
 
 void pmm_init(uint32_t mem_size) {
     memset(pmm_bitmap, 0xFF, sizeof(pmm_bitmap)); // Mark all as used initially
-    // We would then free the regions reported by Multiboot mmap
 }
 
 void pmm_free_page(uint32_t page_addr) {
@@ -17,6 +16,15 @@ void pmm_free_page(uint32_t page_addr) {
     uint32_t idx = frame / 32;
     uint32_t off = frame % 32;
     pmm_bitmap[idx] &= ~(1 << off);
+}
+
+void pmm_free_region(uint32_t base, uint32_t size) {
+    uint32_t align_base = (base + PAGE_SIZE - 1) & 0xFFFFF000;
+    uint32_t align_end = (base + size) & 0xFFFFF000;
+
+    for (uint32_t addr = align_base; addr < align_end; addr += PAGE_SIZE) {
+        pmm_free_page(addr);
+    }
 }
 
 uint32_t pmm_alloc_page() {

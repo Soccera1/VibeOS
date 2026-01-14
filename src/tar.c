@@ -62,7 +62,8 @@ static struct dirent *tar_readdir(vfs_node_t *node, uint32_t index) {
 }
 
 static vfs_node_t *tar_finddir(vfs_node_t *node, char *name) {
-    (void)node;
+    if (strcmp(name, "/") == 0 || strcmp(name, ".") == 0 || strcmp(name, "") == 0) return node;
+    if (name[0] == '/') name++;
     uint32_t i = 0;
     static vfs_node_t res;
     while (1) {
