@@ -72,4 +72,4 @@ The default shell is BusyBox `ash` (available at `/bin/sh`). It provides standar
 
 
 
-TODO (Deciding between 3-Clause BSD and GPLv3). This project is 100% AI-developed.
+GPLv3. This project is 100% AI-developed.
