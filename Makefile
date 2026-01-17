@@ -53,7 +53,13 @@ vibeos.iso: vibeos.bin sh user_test
 	mkdir -p iso/boot/grub
 	cp vibeos.bin iso/boot/vibeos.bin
 	cp grub.cfg iso/boot/grub/grub.cfg
-	tar -cvf initrd.tar -C bin sh ls
+	if [ ! -e bin ]; then \
+	mkdir bin; \
+	fi
+	if [ ! -e bin/sh ]; then \
+	cp sh bin/sh; \
+	fi
+	tar -cvf initrd.tar -C bin sh
 	cp initrd.tar iso/boot/initrd.tar
 	grub-mkrescue -o vibeos.iso iso
 
