@@ -1,0 +1,28 @@
+cmd_libbb/makedev.o := /home/lily/vibeos/external/busybox-src/.zigcc-musl-wrapper.sh -Wp,-MD,libbb/.makedev.o.d  -std=gnu99 -Iinclude -Ilibbb  -include include/autoconf.h -D_GNU_SOURCE -DNDEBUG -D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64 -DBB_VER='"1.36.1"' -Wall -Wshadow -Wwrite-strings -Wundef -Wstrict-prototypes -Wunused -Wunused-parameter -Wunused-function -Wunused-value -Wmissing-prototypes -Wmissing-declarations -Wno-format-security -Wdeclaration-after-statement -Wold-style-definition -finline-limit=0 -fno-builtin-strlen -fomit-frame-pointer -ffunction-sections -fdata-sections -funsigned-char -static-libgcc -falign-functions=1 -falign-jumps=1 -falign-labels=1 -falign-loops=1 -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-builtin-printf -Oz -mno-avx -mno-avx2 -mno-avx512f -fno-tree-vectorize   -DKBUILD_BASENAME='"makedev"'  -DKBUILD_MODNAME='"makedev"' -c -o libbb/makedev.o libbb/makedev.c
+
+deps_libbb/makedev.o := \
+  libbb/makedev.c \
+  include/platform.h \
+    $(wildcard include/config/werror.h) \
+    $(wildcard include/config/big/endian.h) \
+    $(wildcard include/config/little/endian.h) \
+    $(wildcard include/config/nommu.h) \
+  /usr/lib64/zig/0.14.1/lib/include/limits.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/limits.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/features.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/x86_64-linux-musl/bits/alltypes.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/x86_64-linux-musl/bits/limits.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/byteswap.h \
+  /usr/lib64/zig/0.14.1/lib/include/stdint.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/stdint.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/x86_64-linux-musl/bits/stdint.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/endian.h \
+  /usr/lib64/zig/0.14.1/lib/include/stdbool.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/stdbool.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/unistd.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/x86_64-linux-musl/bits/posix.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/sys/sysmacros.h \
+
+libbb/makedev.o: $(deps_libbb/makedev.o)
+
+$(deps_libbb/makedev.o):
