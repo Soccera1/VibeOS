@@ -64,6 +64,7 @@
 
 #define ENOSYS 38
 #define ENOENT 2
+#define EINTR 4
 #define ECHILD 10
 #define EAGAIN 11
 #define EBADF 9
@@ -90,6 +91,8 @@
 #define CLONE_CHILD_CLEARTID 0x00200000ull
 #define CLONE_CHILD_SETTID 0x01000000ull
 #define SIGCHLD 17u
+#define SIGINT 2u
+#define SIGTSTP 20u
 
 #define WAIT_NOHANG 1u
 
@@ -256,6 +259,12 @@ static char g_cwd[128] = "/";
 static uint64_t g_brk_current = USER_BRK_BASE;
 static uint64_t g_mmap_next = USER_MMAP_BASE;
 static uint64_t g_rng_state = 0x123456789abcdef0ull;
+static char g_dirent_names[MAX_CHILDREN][64];
+static uint8_t g_dirent_types[MAX_CHILDREN];
+static char g_exec_argv_scratch[EXEC_MAX_ARGS][EXEC_STR_MAX];
+static char g_exec_env_scratch[EXEC_MAX_ENVS][EXEC_STR_MAX];
+static uint64_t g_exec_argv_ptrs[EXEC_MAX_ARGS];
+static uint64_t g_exec_env_ptrs[EXEC_MAX_ENVS];
 static uint64_t g_fake_time_ns;
 static int g_current_pid = 1;
 static int g_current_ppid = 0;
@@ -269,6 +278,7 @@ static uint64_t g_child_cleartid_ptr;
 static bool g_wait_status_valid;
 static int g_wait_status_pid;
 static int g_wait_status_code;
+static int g_pending_keyboard_signal;
 
 static struct fd_state g_parent_fds[MAX_FDS];
 static char g_parent_cwd[128];
@@ -305,6 +315,23 @@ static int join_path(const char* base, const char* leaf, char* out, size_t out_l
 
 static int err(int code) {
     return -code;
+}
+
+static bool is_keyboard_signal(int signal) {
+    return signal == (int)SIGINT || signal == (int)SIGTSTP;
+}
+
+static void queue_keyboard_signal(int signal) {
+    if (!is_keyboard_signal(signal) || g_pending_keyboard_signal != 0) {
+        return;
+    }
+    g_pending_keyboard_signal = signal;
+}
+
+static int take_keyboard_signal(void) {
+    int signal = g_pending_keyboard_signal;
+    g_pending_keyboard_signal = 0;
+    return signal;
 }
 
 static uint64_t xorshift64(void) {
@@ -437,6 +464,27 @@ static uint64_t resume_parent_after_child_exit(struct syscall_frame* frame, uint
 
     g_wait_status_pid = g_pending_child_pid;
     g_wait_status_code = ((int)(code & 0xFFu)) << 8;
+    g_wait_status_valid = true;
+
+    restore_parent_runtime_state();
+
+    *frame = g_parent_frame;
+    uint64_t* raw = (uint64_t*)(void*)frame;
+    raw[IRET_SLOT_RIP] = g_parent_iret[0];
+    raw[IRET_SLOT_CS] = g_parent_iret[1];
+    raw[IRET_SLOT_RFLAGS] = g_parent_iret[2];
+    raw[IRET_SLOT_RSP] = g_parent_iret[3];
+    raw[IRET_SLOT_SS] = g_parent_iret[4];
+    return g_parent_frame.rax;
+}
+
+static uint64_t resume_parent_after_child_signal(struct syscall_frame* frame, int signal) {
+    if (g_child_has_cleartid && g_child_cleartid_ptr != 0) {
+        *(uint32_t*)(uintptr_t)g_child_cleartid_ptr = 0;
+    }
+
+    g_wait_status_pid = g_pending_child_pid;
+    g_wait_status_code = signal & 0x7F;
     g_wait_status_valid = true;
 
     restore_parent_runtime_state();
@@ -1124,17 +1172,28 @@ static int sys_read(int fd, void* buf, size_t count) {
     }
 
     if (g_fds[fd].kind == FD_TTY) {
+        if (g_pending_keyboard_signal != 0) {
+            return err(EINTR);
+        }
+
         char* out = (char*)buf;
         size_t written = 0;
         while (written < count) {
             int c = (written == 0) ? input_read_char_blocking() : input_poll_char();
+            queue_keyboard_signal(input_poll_signal());
             if (c < 0) {
+                if (written == 0 && g_pending_keyboard_signal != 0) {
+                    return err(EINTR);
+                }
                 break;
             }
             if (c == '\r') {
                 c = '\n';
             }
             out[written++] = (char)c;
+        }
+        if (written == 0 && g_pending_keyboard_signal != 0) {
+            return err(EINTR);
         }
         return (int)written;
     }
@@ -1341,15 +1400,13 @@ static int sys_getdents64(int fd, void* dirp, size_t count) {
         return err(ENOTDIR);
     }
 
-    char names[MAX_CHILDREN][64];
-    uint8_t types[MAX_CHILDREN];
-    size_t nchildren = collect_children(g_fds[fd].path, names, types);
+    size_t nchildren = collect_children(g_fds[fd].path, g_dirent_names, g_dirent_types);
 
     size_t idx = g_fds[fd].offset;
     size_t written = 0;
 
     while (idx < nchildren) {
-        const char* name = names[idx];
+        const char* name = g_dirent_names[idx];
         size_t name_len = strlen(name) + 1u;
         size_t reclen = (sizeof(struct linux_dirent64) + name_len + 7u) & ~7u;
 
@@ -1361,7 +1418,7 @@ static int sys_getdents64(int fd, void* dirp, size_t count) {
         d->d_ino = (uint64_t)(idx + 1u);
         d->d_off = (int64_t)(idx + 1u);
         d->d_reclen = (uint16_t)reclen;
-        d->d_type = types[idx];
+        d->d_type = g_dirent_types[idx];
 
         memcpy(d->d_name, name, name_len);
         memset((uint8_t*)d + sizeof(*d) + name_len, 0, reclen - sizeof(*d) - name_len);
@@ -1932,8 +1989,6 @@ static int load_exec_image(const uint8_t* image, size_t image_size, uint64_t* en
 static int build_exec_stack(const char* execfn, char argv[EXEC_MAX_ARGS][EXEC_STR_MAX], size_t argc,
                             char envp[EXEC_MAX_ENVS][EXEC_STR_MAX], size_t envc, uint64_t entry, uint64_t phdr, uint64_t phent,
                             uint64_t phnum, uint64_t* stack_out) {
-    uint64_t argv_ptrs[EXEC_MAX_ARGS];
-    uint64_t env_ptrs[EXEC_MAX_ENVS];
     const char* platform = "x86_64";
     uint8_t at_random[16] = {
         0x12, 0x6E, 0xA7, 0x39, 0x55, 0xC8, 0x03, 0xF1, 0x88, 0x22, 0x74, 0xB5, 0xE1, 0x9C, 0x41, 0x0D,
@@ -1951,11 +2006,11 @@ static int build_exec_stack(const char* execfn, char argv[EXEC_MAX_ARGS][EXEC_ST
 
     for (int i = (int)envc - 1; i >= 0; --i) {
         sp = exec_stack_push_bytes(sp, envp[i], strlen(envp[i]) + 1u);
-        env_ptrs[i] = sp;
+        g_exec_env_ptrs[i] = sp;
     }
     for (int i = (int)argc - 1; i >= 0; --i) {
         sp = exec_stack_push_bytes(sp, argv[i], strlen(argv[i]) + 1u);
-        argv_ptrs[i] = sp;
+        g_exec_argv_ptrs[i] = sp;
     }
 
     sp &= ~0x0Full;
@@ -1983,12 +2038,12 @@ static int build_exec_stack(const char* execfn, char argv[EXEC_MAX_ARGS][EXEC_ST
 
     sp = exec_stack_push_u64(sp, 0);
     for (int i = (int)envc - 1; i >= 0; --i) {
-        sp = exec_stack_push_u64(sp, env_ptrs[i]);
+        sp = exec_stack_push_u64(sp, g_exec_env_ptrs[i]);
     }
 
     sp = exec_stack_push_u64(sp, 0);
     for (int i = (int)argc - 1; i >= 0; --i) {
-        sp = exec_stack_push_u64(sp, argv_ptrs[i]);
+        sp = exec_stack_push_u64(sp, g_exec_argv_ptrs[i]);
     }
     sp = exec_stack_push_u64(sp, argc);
 
@@ -2020,23 +2075,21 @@ static int sys_execve(struct syscall_frame* frame, const char* path_user, uint64
         return err(ENOENT);
     }
 
-    char argv_local[EXEC_MAX_ARGS][EXEC_STR_MAX];
-    char env_local[EXEC_MAX_ENVS][EXEC_STR_MAX];
     size_t argc = 0;
     size_t envc = 0;
 
-    int argr = copy_user_str_array(argv_user, argv_local, EXEC_MAX_ARGS, &argc);
+    int argr = copy_user_str_array(argv_user, g_exec_argv_scratch, EXEC_MAX_ARGS, &argc);
     if (argr != 0) {
         return argr;
     }
-    int envr = copy_user_str_array(envp_user, env_local, EXEC_MAX_ENVS, &envc);
+    int envr = copy_user_str_array(envp_user, g_exec_env_scratch, EXEC_MAX_ENVS, &envc);
     if (envr != 0) {
         return envr;
     }
 
     if (argc == 0) {
-        strncpy(argv_local[0], abs_path, EXEC_STR_MAX);
-        argv_local[0][EXEC_STR_MAX - 1] = '\0';
+        strncpy(g_exec_argv_scratch[0], abs_path, EXEC_STR_MAX);
+        g_exec_argv_scratch[0][EXEC_STR_MAX - 1] = '\0';
         argc = 1;
     }
 
@@ -2056,7 +2109,7 @@ static int sys_execve(struct syscall_frame* frame, const char* path_user, uint64
     userland_set_image_span(image_start, image_end);
 
     uint64_t user_stack = 0;
-    int sr = build_exec_stack(abs_path, argv_local, argc, env_local, envc, entry, phdr, phent, phnum, &user_stack);
+    int sr = build_exec_stack(abs_path, g_exec_argv_scratch, argc, g_exec_env_scratch, envc, entry, phdr, phent, phnum, &user_stack);
     if (sr != 0) {
         return sr;
     }
@@ -2207,6 +2260,7 @@ void syscall_init(void) {
     g_wait_status_valid = false;
     g_wait_status_pid = 0;
     g_wait_status_code = 0;
+    g_pending_keyboard_signal = 0;
     g_tid_address = 0;
     memset(g_pipes, 0, sizeof(g_pipes));
 
@@ -2238,10 +2292,23 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
     (void)a4;
     (void)a5;
 
+    if (g_pending_keyboard_signal != 0 && g_parent_pending && g_current_pid == g_pending_child_pid) {
+        int signal = take_keyboard_signal();
+        if (is_keyboard_signal(signal)) {
+            return resume_parent_after_child_signal(frame, signal);
+        }
+    }
+
     switch (nr) {
         case 0:
         {
             int r = sys_read((int)a0, (void*)(uintptr_t)a1, (size_t)a2);
+            if (r == err(EINTR)) {
+                int signal = take_keyboard_signal();
+                if (is_keyboard_signal(signal) && g_parent_pending && g_current_pid == g_pending_child_pid) {
+                    return resume_parent_after_child_signal(frame, signal);
+                }
+            }
             return (uint64_t)r;
         }
         case 1:
@@ -2275,7 +2342,16 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
         case 17:
             return (uint64_t)sys_pread64((int)a0, (void*)(uintptr_t)a1, (size_t)a2, (int64_t)a3);
         case 19:
-            return (uint64_t)sys_readv((int)a0, (const struct linux_iovec*)(uintptr_t)a1, (size_t)a2);
+        {
+            int r = sys_readv((int)a0, (const struct linux_iovec*)(uintptr_t)a1, (size_t)a2);
+            if (r == err(EINTR)) {
+                int signal = take_keyboard_signal();
+                if (is_keyboard_signal(signal) && g_parent_pending && g_current_pid == g_pending_child_pid) {
+                    return resume_parent_after_child_signal(frame, signal);
+                }
+            }
+            return (uint64_t)r;
+        }
         case 20:
             return (uint64_t)sys_writev((int)a0, (const struct linux_iovec*)(uintptr_t)a1, (size_t)a2);
         case 21:

@@ -13,6 +13,8 @@ USER_CC := gcc
 BUSYBOX_SRC := external/busybox-src
 BUSYBOX_STATIC := external/busybox-static
 BUSYBOX_ROOTFS := rootfs/bin/busybox
+ZIG_GLOBAL_CACHE := $(BUSYBOX_SRC)/.zig-global-cache
+ZIG_LOCAL_CACHE := $(BUSYBOX_SRC)/.zig-local-cache
 
 CFLAGS := -m64 -ffreestanding -fno-stack-protector -fno-pie -fno-pic -fno-omit-frame-pointer -fno-builtin \
 	-mno-red-zone -mno-mmx -mno-sse -mno-sse2 -Wall -Wextra -Werror -O2 -std=gnu11 -Ikernel/include
@@ -75,4 +77,4 @@ run: disk
 		-serial stdio
 
 clean:
-	rm -rf $(BUILD_DIR)
+	rm -rf $(BUILD_DIR) $(ZIG_GLOBAL_CACHE) $(ZIG_LOCAL_CACHE)

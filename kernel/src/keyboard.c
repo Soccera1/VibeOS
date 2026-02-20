@@ -1,5 +1,6 @@
 #include "keyboard.h"
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "io.h"
@@ -19,6 +20,16 @@ static const char keymap_shift[128] = {
 };
 
 static int shift_pressed;
+static int ctrl_pressed;
+static bool extended_scancode;
+static int pending_signal;
+
+static void keyboard_queue_signal(int signal) {
+    if (signal <= 0 || pending_signal != KEYBOARD_COMBO_SIGNAL_NONE) {
+        return;
+    }
+    pending_signal = signal;
+}
 
 int keyboard_poll_char(void) {
     if ((inb(0x64) & 1u) == 0) {
@@ -26,6 +37,23 @@ int keyboard_poll_char(void) {
     }
 
     uint8_t sc = inb(0x60);
+    if (sc == 0xE0) {
+        extended_scancode = true;
+        return -1;
+    }
+
+    bool extended = extended_scancode;
+    extended_scancode = false;
+
+    if (sc == 0x1D) {
+        ctrl_pressed = 1;
+        return -1;
+    }
+    if (sc == 0x9D) {
+        ctrl_pressed = 0;
+        return -1;
+    }
+
     if (sc == 0x2A || sc == 0x36) {
         shift_pressed = 1;
         return -1;
@@ -37,6 +65,17 @@ int keyboard_poll_char(void) {
 
     if ((sc & 0x80u) != 0) {
         return -1;
+    }
+
+    if (!extended && ctrl_pressed) {
+        if (sc == 0x2E) {
+            keyboard_queue_signal(KEYBOARD_COMBO_SIGNAL_SIGINT);
+            return -1;
+        }
+        if (sc == 0x2C) {
+            keyboard_queue_signal(KEYBOARD_COMBO_SIGNAL_SIGTSTP);
+            return -1;
+        }
     }
 
     if (sc >= 128) {
@@ -57,10 +96,24 @@ int keyboard_poll_char(void) {
 
 int keyboard_read_char_blocking(void) {
     for (;;) {
+        if (pending_signal != KEYBOARD_COMBO_SIGNAL_NONE) {
+            return -1;
+        }
+
         int c = keyboard_poll_char();
         if (c >= 0) {
             return c;
         }
         __asm__ volatile("pause");
     }
+}
+
+int keyboard_poll_signal(void) {
+    int signal = pending_signal;
+    pending_signal = KEYBOARD_COMBO_SIGNAL_NONE;
+    return signal;
+}
+
+int keyboard_peek_signal(void) {
+    return pending_signal;
 }
