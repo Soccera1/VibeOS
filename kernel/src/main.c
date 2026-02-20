@@ -16,7 +16,8 @@
 
 uint64_t kernel_exit_stack_top;
 
-static uint8_t post_user_stack[16384];
+static uint8_t post_user_stack[65536];
+static char shell_ls_names[256][64];
 
 static void kernel_shell(void) __attribute__((noreturn));
 
@@ -171,7 +172,6 @@ static void shell_ls(const char* path) {
         return;
     }
 
-    char names[256][64];
     size_t count = 0;
 
     for (size_t i = 0; i < initramfs_entry_count(); ++i) {
@@ -183,14 +183,14 @@ static void shell_ls(const char* path) {
         if (!top_level_child(dir, e->path, child, sizeof(child))) {
             continue;
         }
-        if (seen_name(names, count, child)) {
+        if (seen_name(shell_ls_names, count, child)) {
             continue;
         }
-        if (count >= ARRAY_LEN(names)) {
+        if (count >= ARRAY_LEN(shell_ls_names)) {
             break;
         }
-        strncpy(names[count], child, sizeof(names[count]));
-        names[count][sizeof(names[count]) - 1] = '\0';
+        strncpy(shell_ls_names[count], child, sizeof(shell_ls_names[count]));
+        shell_ls_names[count][sizeof(shell_ls_names[count]) - 1] = '\0';
         ++count;
     }
 
@@ -200,7 +200,7 @@ static void shell_ls(const char* path) {
     }
 
     for (size_t i = 0; i < count; ++i) {
-        console_write(names[i]);
+        console_write(shell_ls_names[i]);
         console_putc('\n');
     }
 }
