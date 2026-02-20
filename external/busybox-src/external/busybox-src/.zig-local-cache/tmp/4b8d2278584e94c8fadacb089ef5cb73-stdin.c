@@ -1,0 +1,1 @@
+__GNUC__ __GNUC_MINOR__

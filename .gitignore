@@ -1,0 +1,34 @@
+build/
+*.img
+*.iso
+
+# Generic binary artifacts
+*.bin
+*.elf
+*.exe
+*.out
+*.o
+*.a
+*.so
+*.so.*
+*.dylib
+*.dll
+
+# BusyBox binaries
+rootfs/bin/busybox
+external/busybox-static
+external/busybox-src/busybox
+external/busybox-src/busybox_unstripped
+
+# BusyBox build artifacts (top-level)
+external/busybox-src/.busybox_unstripped.cmd
+external/busybox-src/.config
+external/busybox-src/.config.old
+external/busybox-src/.kconfig.d
+external/busybox-src/.kernelrelease
+external/busybox-src/.zigcc-musl-wrapper.sh
+external/busybox-src/busybox_unstripped.out
+
+# Zig caches under BusyBox source
+external/busybox-src/.zig-global-cache/
+external/busybox-src/.zig-local-cache/
