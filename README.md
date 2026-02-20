@@ -1,67 +1,62 @@
 # VibeOS
 
-VibeOS is a small amd64 monolithic-kernel OS prototype that boots on BIOS systems and can launch upstream BusyBox userspace on a TTY.
+VibeOS is an amd64 monolithic-kernel OS prototype that boots via Multiboot2 and implements a Linux-compatible syscall ABI, allowing it to run upstream BusyBox userspace.
 
-## What it includes
+## Features
 
-- 32-bit BIOS bootstrap to 64-bit long mode.
-- Identity-mapped paging for the first 1 GiB.
-- GDT/TSS + IDT setup.
-- Userspace entry (`ring3`) and Linux-style syscall ABI via amd64 `syscall` (plus `int 0x80` compatibility path).
-- Initramfs (`cpio newc`) read-only VFS.
-- TTY I/O over VGA + serial (`COM1`).
-- GPT+BIOS raw disk image tooling with GRUB.
+- **Kernel:** amd64 64-bit long mode, identity-mapped paging for the first 1 GiB.
+- **Boot:** Multiboot2 compliant, supports BIOS+GPT and ISO boot via GRUB.
+- **Syscalls:** Extensive Linux-style syscall ABI via amd64 `syscall` instruction (60+ syscalls implemented).
+- **Process Management:** Support for `fork` (state snapshotting), `execve` (ELF64 loader), and `wait4`.
+- **VFS:** Read-only initramfs (`cpio newc`) with support for pipes, symlinks, and device nodes (`/dev/tty`, `/dev/null`).
+- **I/O:** TTY support over VGA text mode and serial (`COM1`).
+- **Hardware:** XSAVE/AVX/SSE enablement, FSGSBASE support.
+- **Shells:**
+  - **BusyBox:** Primary userspace environment.
+  - **Kernel Shell:** Built-in fallback shell (`vibeos#`) with `ls`, `cat`, `clear`, and `help`.
 
 ## Build
 
+### Prerequisites
+
+- `gcc`, `ld`, `nasm` (for the kernel)
+- `grub-mkrescue`, `grub-install` (for bootable images)
+- `xorriso`, `mtools`, `libisoboot` (usually dependencies of `grub-mkrescue`)
+- `zig` (optional, used to build BusyBox with `zig cc`)
+
+### Build Targets
+
 ```bash
-make iso
+make iso   # Build bootable ISO image
+make disk  # Build BIOS+GPT raw disk image (requires sudo for loop mounts)
 ```
 
 Artifacts:
-
 - `build/vibeos-kernel.bin`
 - `build/initramfs.cpio`
 - `build/vibeos.iso`
+- `build/vibeos-gpt.img`
 
-## Run (ISO)
+## Run
+
+The default `make run` target builds and launches the GPT disk image in QEMU:
+
+```bash
+make run
+```
+
+Or manually:
 
 ```bash
 qemu-system-x86_64 \
-  -m 512M \
-  -cdrom build/vibeos.iso \
-  -boot d \
-  -serial stdio \
-  -display none
-```
-
-## Build BIOS+GPT disk image
-
-```bash
-make disk
-```
-
-`make disk` uses loop devices, filesystem formatting, mounting, and `grub-install`, so it usually requires root/sudo.
-
-## Run (GPT disk)
-
-```bash
-qemu-system-x86_64 \
+  -machine q35,accel=kvm:tcg \
   -m 512M \
   -drive format=raw,file=build/vibeos-gpt.img \
-  -serial stdio \
-  -display none
+  -serial stdio
 ```
 
-## Upstream BusyBox payload
+## Userspace Implementation
 
-`make` now prefers building real upstream BusyBox from source:
+VibeOS prefers building BusyBox from source located in `external/busybox-src`. If `zig` is present on the system, `tools/build_busybox.sh` uses `zig cc -target x86_64-linux-musl` to ensure a static, non-PIE ELF64 (`ET_EXEC`) binary is produced, which simplifies the kernel's loader.
 
-1. `external/busybox-src` (build from source)
-2. `busybox-*.tar.*` in repository root (auto-extract to `external/busybox-src` and build)
-3. `rootfs/bin/busybox` (prebuilt fallback)
-4. `external/busybox-static` (prebuilt fallback)
-
-If `zig` is available, `tools/build_busybox.sh` builds BusyBox with `zig cc -target x86_64-linux-musl` (local zig caches under `external/busybox-src`) and enforces static non-PIE ELF64 (`ET_EXEC`).
-
-The initramfs generator creates common applet symlinks in `/bin`.
+The initramfs generator automatically populates `/bin` with applet symlinks to the BusyBox binary.
