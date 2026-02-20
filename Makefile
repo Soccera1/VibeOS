@@ -6,15 +6,15 @@ INITRAMFS := $(BUILD_DIR)/initramfs.cpio
 ISO_IMAGE := $(BUILD_DIR)/vibeos.iso
 DISK_IMAGE := $(BUILD_DIR)/vibeos-gpt.img
 
-CC := /usr/lib/llvm/21/bin/clang
-LD := /usr/lib/llvm/20/bin/ld.lld
+CC := gcc
+LD := ld
 NASM := nasm
 USER_CC := gcc
 BUSYBOX_SRC := external/busybox-src
 BUSYBOX_STATIC := external/busybox-static
 BUSYBOX_ROOTFS := rootfs/bin/busybox
 
-CFLAGS := -target x86_64-elf -ffreestanding -fno-stack-protector -fno-pic -fno-omit-frame-pointer -fno-builtin \
+CFLAGS := -m64 -ffreestanding -fno-stack-protector -fno-pie -fno-pic -fno-omit-frame-pointer -fno-builtin \
 	-mno-red-zone -mno-mmx -mno-sse -mno-sse2 -Wall -Wextra -Werror -O2 -std=gnu11 -Ikernel/include
 LDFLAGS := -nostdlib -z max-page-size=0x1000 -T kernel/linker.ld
 
