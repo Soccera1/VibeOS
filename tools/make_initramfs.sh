@@ -38,10 +38,6 @@ chmod +x "$ROOT/bin/busybox"
 
 is_blocked_applet() {
   case "$1" in
-    # These rely on full-screen terminal modes that VibeOS does not yet support.
-    vi|less|more|top)
-      return 0
-      ;;
     *)
       return 1
       ;;

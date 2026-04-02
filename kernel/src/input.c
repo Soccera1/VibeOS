@@ -4,8 +4,8 @@
 #include "serial.h"
 
 static int normalize_input_char(int c) {
-    if (c == '\r') {
-        return '\n';
+    if (c == '\n') {
+        return '\r';
     }
     if (c == 0x7f) {  // DEL from many serial terminals for Backspace
         return '\b';
@@ -43,6 +43,10 @@ int input_read_char_blocking(void) {
         }
         __asm__ volatile("pause");
     }
+}
+
+int input_char_ready(void) {
+    return serial_input_ready() || keyboard_input_ready();
 }
 
 int input_poll_signal(void) {

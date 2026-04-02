@@ -8,5 +8,6 @@ enum keyboard_combo_signal {
 
 int keyboard_poll_char(void);
 int keyboard_read_char_blocking(void);
+int keyboard_input_ready(void);
 int keyboard_poll_signal(void);
 int keyboard_peek_signal(void);

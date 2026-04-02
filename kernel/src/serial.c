@@ -32,8 +32,12 @@ void serial_write(const char* s) {
     }
 }
 
+int serial_input_ready(void) {
+    return (inb(COM1 + 5) & 0x01) != 0;
+}
+
 int serial_pollc(void) {
-    if ((inb(COM1 + 5) & 0x01) == 0) {
+    if (!serial_input_ready()) {
         return -1;
     }
     return inb(COM1 + 0);

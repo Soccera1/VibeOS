@@ -52,6 +52,13 @@
 #define TCGETS 0x5401u
 #define TIOCGWINSZ 0x5413u
 
+#define POLLIN 0x0001
+#define POLLPRI 0x0002
+#define POLLOUT 0x0004
+#define POLLERR 0x0008
+#define POLLHUP 0x0010
+#define POLLNVAL 0x0020
+
 #define MAX_FDS 64
 #define MAX_CHILDREN 256
 #define USER_STACK_TOP 0x08000000ull
@@ -138,6 +145,12 @@ struct linux_utsname {
 struct linux_timespec {
     int64_t tv_sec;
     int64_t tv_nsec;
+};
+
+struct linux_pollfd {
+    int fd;
+    int16_t events;
+    int16_t revents;
 };
 
 struct linux_stat {
@@ -623,6 +636,15 @@ static bool pipe_is_referenced(int pipe_id) {
 static bool pipe_has_writer(int pipe_id) {
     for (int fd = 0; fd < MAX_FDS; ++fd) {
         if (g_fds[fd].kind == FD_PIPE_W && g_fds[fd].pipe_id == pipe_id) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool pipe_has_reader(int pipe_id) {
+    for (int fd = 0; fd < MAX_FDS; ++fd) {
+        if (g_fds[fd].kind == FD_PIPE_R && g_fds[fd].pipe_id == pipe_id) {
             return true;
         }
     }
@@ -1657,6 +1679,114 @@ static int sys_chdir(const char* path_user) {
     return 0;
 }
 
+static uint16_t poll_revents_for_fd(const struct linux_pollfd* pfd) {
+    int fd = pfd->fd;
+    uint16_t events = (uint16_t)pfd->events;
+    uint16_t revents = 0;
+
+    if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
+        return POLLNVAL;
+    }
+
+    switch (g_fds[fd].kind) {
+        case FD_TTY:
+            if ((events & (POLLIN | POLLPRI)) != 0u && input_char_ready()) {
+                revents |= POLLIN;
+            }
+            if ((events & POLLOUT) != 0u) {
+                revents |= POLLOUT;
+            }
+            break;
+
+        case FD_NULL:
+            if ((events & POLLOUT) != 0u) {
+                revents |= POLLOUT;
+            }
+            break;
+
+        case FD_PIPE_R:
+        {
+            int pipe_id = g_fds[fd].pipe_id;
+            if (pipe_id >= 0 && pipe_id < MAX_PIPES && g_pipes[pipe_id].used) {
+                if ((events & POLLIN) != 0u && g_pipes[pipe_id].size > 0) {
+                    revents |= POLLIN;
+                }
+                if (g_pipes[pipe_id].size == 0 && !pipe_has_writer(pipe_id)) {
+                    revents |= POLLHUP;
+                }
+            } else {
+                revents |= POLLNVAL;
+            }
+            break;
+        }
+
+        case FD_PIPE_W:
+        {
+            int pipe_id = g_fds[fd].pipe_id;
+            if (pipe_id >= 0 && pipe_id < MAX_PIPES && g_pipes[pipe_id].used) {
+                if (!pipe_has_reader(pipe_id)) {
+                    revents |= POLLERR;
+                } else if ((events & POLLOUT) != 0u && g_pipes[pipe_id].size < PIPE_CAPACITY) {
+                    revents |= POLLOUT;
+                }
+            } else {
+                revents |= POLLNVAL;
+            }
+            break;
+        }
+
+        case FD_FILE:
+        case FD_DIR:
+            if ((events & POLLIN) != 0u) {
+                revents |= POLLIN;
+            }
+            if ((events & POLLOUT) != 0u) {
+                revents |= POLLOUT;
+            }
+            break;
+
+        case FD_FREE:
+            break;
+    }
+
+    return revents;
+}
+
+static int sys_poll(struct linux_pollfd* fds, size_t nfds, int timeout_ms) {
+    if (nfds > 1024u) {
+        return err(EINVAL);
+    }
+
+    for (;;) {
+        if (take_keyboard_signal() != 0) {
+            return err(EINTR);
+        }
+
+        int ready = 0;
+        for (size_t i = 0; i < nfds; ++i) {
+            uint16_t revents = poll_revents_for_fd(&fds[i]);
+            fds[i].revents = (int16_t)revents;
+            if (revents != 0u) {
+                ++ready;
+            }
+        }
+
+        if (ready != 0) {
+            return ready;
+        }
+
+        if (timeout_ms == 0) {
+            return 0;
+        }
+
+        if (timeout_ms > 0) {
+            --timeout_ms;
+        }
+
+        __asm__ volatile("pause");
+    }
+}
+
 static int resolve_user_path(int dirfd, const char* path_user, bool follow_final, char* out, size_t out_len) {
     char path_input[128];
     int cr = copy_user_string(path_user, path_input, sizeof(path_input));
@@ -2323,6 +2453,8 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
             return (uint64_t)sys_fstat((int)a0, (struct linux_stat*)(uintptr_t)a1);
         case 6:
             return (uint64_t)sys_stat_compat((const char*)(uintptr_t)a0, (struct linux_stat*)(uintptr_t)a1, false);
+        case 7:
+            return (uint64_t)sys_poll((struct linux_pollfd*)(uintptr_t)a0, (size_t)a1, (int)(int64_t)a2);
         case 8:
             return (uint64_t)sys_lseek((int)a0, (int64_t)a1, (int)a2);
         case 9:
