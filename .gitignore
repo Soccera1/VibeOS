@@ -20,6 +20,9 @@ rootfs/bin/busybox
 external/busybox-static
 external/busybox-src/busybox
 external/busybox-src/busybox_unstripped
+external/busybox-src/applets/applet_tables
+external/busybox-src/applets/usage
+external/busybox-src/applets/usage_pod
 
 # BusyBox build artifacts (top-level)
 external/busybox-src/.busybox_unstripped.cmd
