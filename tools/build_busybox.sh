@@ -192,11 +192,7 @@ EOF
   unset_cfg "$cfg" "CONFIG_FEATURE_UTMP"
   unset_cfg "$cfg" "CONFIG_FEATURE_WTMP"
   unset_cfg "$cfg" "CONFIG_PAM"
-  # Disable full-screen applets until terminal alt-screen/cursor control is complete.
-  unset_cfg "$cfg" "CONFIG_VI"
-  unset_cfg "$cfg" "CONFIG_LESS"
-  unset_cfg "$cfg" "CONFIG_MORE"
-  unset_cfg "$cfg" "CONFIG_TOP"
+  # Full-screen terminal apps are supported now.
 
   make -C "$SRC_DIR" oldconfig >/dev/null
 
