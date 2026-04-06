@@ -3,7 +3,7 @@ configure: WARNING: If you wanted to set the --build type, don't use --host.
 checking for ggrep... no
 checking for grep... grep
 checking for egrep... grep -E
-Configuring NCURSES 6.5 ABI 6 (Tue Apr  7 02:07:58 AEST 2026)
+Configuring NCURSES 6.5 ABI 6 (Tue Apr  7 02:19:10 AEST 2026)
 checking for package version... 6.5
 checking for package patch date... 20240427
 checking build system type... x86_64-pc-linux-gnu
@@ -65,7 +65,7 @@ checking for exetags... no
 checking for etags... etags
 checking for ctags... yes
 checking for etags... yes
-checking for makeflags variable... 
+checking for makeflags variable... -${MAKEFLAGS}
 checking for x86_64-linux-musl-ranlib... zig ranlib
 checking for x86_64-linux-musl-ld... no
 checking for ld... ld
@@ -392,6 +392,7 @@ Appending rules for normal model (form: ticlib)
 Appending rules for normal model (form: termlib+ext_tinfo)
 Appending rules for normal model (form: base+widechar+ext_funcs)
 creating headers.sh
+make[1]: Entering directory '/home/lily/code/vibeos/external/ncurses-src'
 
 ** Configuration summary for NCURSES 6.5 20240427:
 
@@ -405,3 +406,4 @@ creating headers.sh
    terminfo directory: /home/lily/code/vibeos/external/ncurses-src/build-musl/share/terminfo
 
 ** Include-directory is not in a standard location
+make[1]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src'

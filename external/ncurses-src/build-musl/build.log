@@ -1,5 +1,8 @@
-( cd include && make DESTDIR="" RPATH_LIST="/home/lily/code/vibeos/external/ncurses-src/build-musl/lib" all )
-make[1]: Entering directory '/home/lily/code/vibeos/external/ncurses-src/include'
+make[1]: Entering directory '/home/lily/code/vibeos/external/ncurses-src'
+make[1]: warning: -j12 forced in submake: resetting jobserver mode.
+( cd include && make - -j12 --jobserver-auth=fifo:/tmp/GMfifo113286 DESTDIR="" RPATH_LIST="/home/lily/code/vibeos/external/ncurses-src/build-musl/lib" all )
+make[2]: Entering directory '/home/lily/code/vibeos/external/ncurses-src/include'
+make[2]: warning: -j12 forced in submake: resetting jobserver mode.
 cat curses.head >curses.h
 gawk -f MKterm.h.awk ./Caps ./Caps-ncurses > term.h
 AWK=gawk /bin/sh ./MKkey_defs.sh ./Caps ./Caps-ncurses >>curses.h
@@ -11,18 +14,21 @@ AWK=gawk /bin/sh ./MKkey_defs.sh ./Caps ./Caps-ncurses >>curses.h
 /bin/sh -c 'if test "0" = "1" ; then cat ./curses.events >>curses.h ; fi'
 /bin/sh -c 'if test "cchar_t" = "cchar_t" ; then cat ./curses.wide >>curses.h ; fi'
 cat ./curses.tail >>curses.h
-make[1]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src/include'
-( cd ncurses && make DESTDIR="" RPATH_LIST="/home/lily/code/vibeos/external/ncurses-src/build-musl/lib" all )
-make[1]: Entering directory '/home/lily/code/vibeos/external/ncurses-src/ncurses'
+make[2]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src/include'
+( cd ncurses && make - -j12 --jobserver-auth=fifo:/tmp/GMfifo113286 DESTDIR="" RPATH_LIST="/home/lily/code/vibeos/external/ncurses-src/build-musl/lib" all )
+make[2]: Entering directory '/home/lily/code/vibeos/external/ncurses-src/ncurses'
+make[2]: warning: -j12 forced in submake: resetting jobserver mode.
+gawk -f ./tinfo/MKcodes.awk bigstrings=1 ../include/Caps ../include/Caps-ncurses >codes.c
 cc -o make_hash -DHAVE_CONFIG_H -DUSE_BUILD_CC -I../ncurses -I. -I../include -I./../include -DHAVE_CONFIG_H -DBUILDING_NCURSES -I../ncurses -I. -I../include -DNOMACROS=1 -DNDEBUG -Os ./tinfo/make_hash.c -static  
+/bin/sh -e ./tty/MKexpanded.sh "/home/lily/code/vibeos/external/ncurses-src/build-musl/zigcc-wrapper.sh -E" -DHAVE_CONFIG_H -DBUILDING_NCURSES -I../ncurses -I. -I../include -DNOMACROS=1 -DNDEBUG > expanded.c
+/bin/sh -e ./tinfo/MKfallback.sh /home/lily/code/vibeos/external/ncurses-src/build-musl/share/terminfo ../misc/terminfo.src "tic" "infocmp"  >fallback.c
 FGREP="grep -F" /bin/sh -e ./base/MKlib_gen.sh "/home/lily/code/vibeos/external/ncurses-src/build-musl/zigcc-wrapper.sh -E -DHAVE_CONFIG_H -DBUILDING_NCURSES -I../ncurses -I. -I../include -DNOMACROS=1 -DNDEBUG" "gawk" generated <../include/curses.h >lib_gen.c
-gawk -f ./base/MKkeyname.awk use_sigwinch=1 bigstrings=1 keys.list > lib_keyname.c
+AWK=gawk USE_SIGWINCH=1 /bin/sh ./tinfo/MKkeys_list.sh ../include/Caps ../include/Caps-ncurses | LC_ALL=C sort >keys.list
 FGREP="grep -F" /bin/sh -e ./base/MKlib_gen.sh "/home/lily/code/vibeos/external/ncurses-src/build-musl/zigcc-wrapper.sh -E -DHAVE_CONFIG_H -DBUILDING_NCURSES -I../ncurses -I. -I../include -DNOMACROS=1 -DNDEBUG" "gawk" implemented <../include/curses.h >link_test.c
-cc -o make_keys -DHAVE_CONFIG_H -DUSE_BUILD_CC -I../ncurses -I. -I../include -I./../include -DHAVE_CONFIG_H -DBUILDING_NCURSES -I../ncurses -I. -I../include -DNOMACROS=1 -DNDEBUG -Os ./tinfo/make_keys.c -static  
+gawk -f ./tinfo/MKnames.awk bigstrings=1 ../include/Caps ../include/Caps-ncurses >names.c
 /home/lily/code/vibeos/external/ncurses-src/build-musl/zigcc-wrapper.sh -DHAVE_CONFIG_H -DBUILDING_NCURSES -I../ncurses -I. -I../include -DNOMACROS=1 -DNDEBUG -Os -fno-stack-protector -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables -Qunused-arguments -Wno-error=implicit-function-declaration  -DNCURSES_STATIC -DUSE_TERMLIB -c ../ncurses/./tinfo/access.c -o ../objects/access.o
 /home/lily/code/vibeos/external/ncurses-src/build-musl/zigcc-wrapper.sh -DHAVE_CONFIG_H -DBUILDING_NCURSES -I../ncurses -I. -I../include -DNOMACROS=1 -DNDEBUG -Os -fno-stack-protector -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables -Qunused-arguments -Wno-error=implicit-function-declaration  -DNCURSES_STATIC -DUSE_TERMLIB -c ../ncurses/./tinfo/add_tries.c -o ../objects/add_tries.o
 /home/lily/code/vibeos/external/ncurses-src/build-musl/zigcc-wrapper.sh -DHAVE_CONFIG_H -DBUILDING_NCURSES -I../ncurses -I. -I../include -DNOMACROS=1 -DNDEBUG -Os -fno-stack-protector -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables -Qunused-arguments -Wno-error=implicit-function-declaration  -DNCURSES_STATIC -DUSE_TERMLIB -c ../ncurses/./tinfo/alloc_ttype.c -o ../objects/alloc_ttype.o
-/home/lily/code/vibeos/external/ncurses-src/build-musl/zigcc-wrapper.sh -DHAVE_CONFIG_H -DBUILDING_NCURSES -I../ncurses -I. -I../include -DNOMACROS=1 -DNDEBUG -Os -fno-stack-protector -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables -Qunused-arguments -Wno-error=implicit-function-declaration  -DNCURSES_STATIC -DUSE_TERMLIB -c ../ncurses/codes.c -o ../objects/codes.o
 /home/lily/code/vibeos/external/ncurses-src/build-musl/zigcc-wrapper.sh -DHAVE_CONFIG_H -DBUILDING_NCURSES -I../ncurses -I. -I../include -DNOMACROS=1 -DNDEBUG -Os -fno-stack-protector -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables -Qunused-arguments -Wno-error=implicit-function-declaration  -DNCURSES_STATIC -DUSE_TERMLIB -c ../ncurses/./tinfo/comp_error.c -o ../objects/comp_error.o
 /home/lily/code/vibeos/external/ncurses-src/build-musl/zigcc-wrapper.sh -DHAVE_CONFIG_H -DBUILDING_NCURSES -I../ncurses -I. -I../include -DNOMACROS=1 -DNDEBUG -Os -fno-stack-protector -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables -Qunused-arguments -Wno-error=implicit-function-declaration  -DNCURSES_STATIC -DUSE_TERMLIB -c ../ncurses/./tinfo/comp_hash.c -o ../objects/comp_hash.o
 /home/lily/code/vibeos/external/ncurses-src/build-musl/zigcc-wrapper.sh -DHAVE_CONFIG_H -DBUILDING_NCURSES -I../ncurses -I. -I../include -DNOMACROS=1 -DNDEBUG -Os -fno-stack-protector -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables -Qunused-arguments -Wno-error=implicit-function-declaration  -DNCURSES_STATIC -DUSE_TERMLIB -c ../ncurses/./tinfo/db_iterator.c -o ../objects/db_iterator.o
@@ -38,7 +44,6 @@ cc -o make_keys -DHAVE_CONFIG_H -DUSE_BUILD_CC -I../ncurses -I. -I../include -I.
 /home/lily/code/vibeos/external/ncurses-src/build-musl/zigcc-wrapper.sh -DHAVE_CONFIG_H -DBUILDING_NCURSES -I../ncurses -I. -I../include -DNOMACROS=1 -DNDEBUG -Os -fno-stack-protector -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables -Qunused-arguments -Wno-error=implicit-function-declaration  -DNCURSES_STATIC -DUSE_TERMLIB -c ../ncurses/./tinfo/lib_data.c -o ../objects/lib_data.o
 /home/lily/code/vibeos/external/ncurses-src/build-musl/zigcc-wrapper.sh -DHAVE_CONFIG_H -DBUILDING_NCURSES -I../ncurses -I. -I../include -DNOMACROS=1 -DNDEBUG -Os -fno-stack-protector -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables -Qunused-arguments -Wno-error=implicit-function-declaration  -DNCURSES_STATIC -DUSE_TERMLIB -c ../ncurses/./tinfo/lib_has_cap.c -o ../objects/lib_has_cap.o
 /home/lily/code/vibeos/external/ncurses-src/build-musl/zigcc-wrapper.sh -DHAVE_CONFIG_H -DBUILDING_NCURSES -I../ncurses -I. -I../include -DNOMACROS=1 -DNDEBUG -Os -fno-stack-protector -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables -Qunused-arguments -Wno-error=implicit-function-declaration  -DNCURSES_STATIC -DUSE_TERMLIB -c ../ncurses/./tinfo/lib_kernel.c -o ../objects/lib_kernel.o
-/home/lily/code/vibeos/external/ncurses-src/build-musl/zigcc-wrapper.sh -DHAVE_CONFIG_H -DBUILDING_NCURSES -I../ncurses -I. -I../include -DNOMACROS=1 -DNDEBUG -Os -fno-stack-protector -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables -Qunused-arguments -Wno-error=implicit-function-declaration  -DNCURSES_STATIC -DUSE_TERMLIB -c ../ncurses/lib_keyname.c -o ../objects/lib_keyname.o
 /home/lily/code/vibeos/external/ncurses-src/build-musl/zigcc-wrapper.sh -DHAVE_CONFIG_H -DBUILDING_NCURSES -I../ncurses -I. -I../include -DNOMACROS=1 -DNDEBUG -Os -fno-stack-protector -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables -Qunused-arguments -Wno-error=implicit-function-declaration  -DNCURSES_STATIC -DUSE_TERMLIB -c ../ncurses/./tinfo/lib_longname.c -o ../objects/lib_longname.o
 /home/lily/code/vibeos/external/ncurses-src/build-musl/zigcc-wrapper.sh -DHAVE_CONFIG_H -DBUILDING_NCURSES -I../ncurses -I. -I../include -DNOMACROS=1 -DNDEBUG -Os -fno-stack-protector -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables -Qunused-arguments -Wno-error=implicit-function-declaration  -DNCURSES_STATIC -DUSE_TERMLIB -c ../ncurses/./tinfo/lib_napms.c -o ../objects/lib_napms.o
 /home/lily/code/vibeos/external/ncurses-src/build-musl/zigcc-wrapper.sh -DHAVE_CONFIG_H -DBUILDING_NCURSES -I../ncurses -I. -I../include -DNOMACROS=1 -DNDEBUG -Os -fno-stack-protector -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables -Qunused-arguments -Wno-error=implicit-function-declaration  -DNCURSES_STATIC -DUSE_TERMLIB -c ../ncurses/./tinfo/lib_options.c -o ../objects/lib_options.o
@@ -187,96 +192,24 @@ cc -o make_keys -DHAVE_CONFIG_H -DUSE_BUILD_CC -I../ncurses -I. -I../include -I.
 /home/lily/code/vibeos/external/ncurses-src/build-musl/zigcc-wrapper.sh -DHAVE_CONFIG_H -DBUILDING_NCURSES -I../ncurses -I. -I../include -DNOMACROS=1 -DNDEBUG -Os -fno-stack-protector -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables -Qunused-arguments -Wno-error=implicit-function-declaration  -DNCURSES_STATIC -c ../ncurses/./base/wresize.c -o ../objects/wresize.o
 /bin/sh -e ./tinfo/MKcaptab.sh gawk 1 ./tinfo/MKcaptab.awk ../include/Caps ../include/Caps-ncurses > comp_captab.c
 /bin/sh -e ./tinfo/MKuserdefs.sh gawk 1 ../include/Caps ../include/Caps-ncurses > comp_userdefs.c
-./make_keys keys.list > init_keytry.h
-/home/lily/code/vibeos/external/ncurses-src/build-musl/zigcc-wrapper.sh -DHAVE_CONFIG_H -DBUILDING_NCURSES -I../ncurses -I. -I../include -DNOMACROS=1 -DNDEBUG -Os -fno-stack-protector -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables -Qunused-arguments -Wno-error=implicit-function-declaration  -DNCURSES_STATIC -DUSE_TERMLIB -c ../ncurses/comp_userdefs.c -o ../objects/comp_userdefs.o
-/home/lily/code/vibeos/external/ncurses-src/build-musl/zigcc-wrapper.sh -DHAVE_CONFIG_H -DBUILDING_NCURSES -I../ncurses -I. -I../include -DNOMACROS=1 -DNDEBUG -Os -fno-stack-protector -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables -Qunused-arguments -Wno-error=implicit-function-declaration  -DNCURSES_STATIC -DUSE_TERMLIB -c ../ncurses/./tinfo/init_keytry.c -o ../objects/init_keytry.o
+gawk -f ./base/MKkeyname.awk use_sigwinch=1 bigstrings=1 keys.list > lib_keyname.c
+cc -o make_keys -DHAVE_CONFIG_H -DUSE_BUILD_CC -I../ncurses -I. -I../include -I./../include -DHAVE_CONFIG_H -DBUILDING_NCURSES -I../ncurses -I. -I../include -DNOMACROS=1 -DNDEBUG -Os ./tinfo/make_keys.c -static  
+/home/lily/code/vibeos/external/ncurses-src/build-musl/zigcc-wrapper.sh -DHAVE_CONFIG_H -DBUILDING_NCURSES -I../ncurses -I. -I../include -DNOMACROS=1 -DNDEBUG -Os -fno-stack-protector -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables -Qunused-arguments -Wno-error=implicit-function-declaration  -DNCURSES_STATIC -DUSE_TERMLIB -c ../ncurses/codes.c -o ../objects/codes.o
 /home/lily/code/vibeos/external/ncurses-src/build-musl/zigcc-wrapper.sh -DHAVE_CONFIG_H -DBUILDING_NCURSES -I../ncurses -I. -I../include -DNOMACROS=1 -DNDEBUG -Os -fno-stack-protector -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables -Qunused-arguments -Wno-error=implicit-function-declaration  -DNCURSES_STATIC -DUSE_TERMLIB -c ../ncurses/comp_captab.c -o ../objects/comp_captab.o
+/home/lily/code/vibeos/external/ncurses-src/build-musl/zigcc-wrapper.sh -DHAVE_CONFIG_H -DBUILDING_NCURSES -I../ncurses -I. -I../include -DNOMACROS=1 -DNDEBUG -Os -fno-stack-protector -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables -Qunused-arguments -Wno-error=implicit-function-declaration  -DNCURSES_STATIC -DUSE_TERMLIB -c ../ncurses/comp_userdefs.c -o ../objects/comp_userdefs.o
+/home/lily/code/vibeos/external/ncurses-src/build-musl/zigcc-wrapper.sh -DHAVE_CONFIG_H -DBUILDING_NCURSES -I../ncurses -I. -I../include -DNOMACROS=1 -DNDEBUG -Os -fno-stack-protector -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables -Qunused-arguments -Wno-error=implicit-function-declaration  -DNCURSES_STATIC -DUSE_TERMLIB -c ../ncurses/lib_keyname.c -o ../objects/lib_keyname.o
+./make_keys keys.list > init_keytry.h
+/home/lily/code/vibeos/external/ncurses-src/build-musl/zigcc-wrapper.sh -DHAVE_CONFIG_H -DBUILDING_NCURSES -I../ncurses -I. -I../include -DNOMACROS=1 -DNDEBUG -Os -fno-stack-protector -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables -Qunused-arguments -Wno-error=implicit-function-declaration  -DNCURSES_STATIC -DUSE_TERMLIB -c ../ncurses/./tinfo/init_keytry.c -o ../objects/init_keytry.o
 zig ar -curvU ../lib/libticw.a ../objects/alloc_entry.o ../objects/captoinfo.o ../objects/comp_expand.o ../objects/comp_parse.o ../objects/comp_scan.o ../objects/parse_entry.o ../objects/write_entry.o
+zig ar -curvU ../lib/libncursesw.a ../objects/hardscroll.o ../objects/hashmap.o ../objects/lib_addch.o ../objects/lib_addstr.o ../objects/lib_beep.o ../objects/lib_bkgd.o ../objects/lib_box.o ../objects/lib_chgat.o ../objects/lib_clear.o ../objects/lib_clearok.o ../objects/lib_clrbot.o ../objects/lib_clreol.o ../objects/lib_color.o ../objects/lib_colorset.o ../objects/lib_delch.o ../objects/lib_delwin.o ../objects/lib_echo.o ../objects/lib_endwin.o ../objects/lib_erase.o ../objects/lib_flash.o ../objects/lib_gen.o ../objects/lib_getch.o ../objects/lib_getstr.o ../objects/lib_hline.o ../objects/lib_immedok.o ../objects/lib_inchstr.o ../objects/lib_initscr.o ../objects/lib_insch.o ../objects/lib_insdel.o ../objects/lib_insnstr.o ../objects/lib_instr.o ../objects/lib_isendwin.o ../objects/lib_leaveok.o ../objects/lib_mouse.o ../objects/lib_move.o ../objects/lib_mvcur.o ../objects/lib_mvwin.o ../objects/lib_newterm.o ../objects/lib_newwin.o ../objects/lib_nl.o ../objects/lib_overlay.o ../objects/lib_pad.o ../objects/lib_printw.o ../objects/lib_redrawln.o ../objects/lib_refresh.o ../objects/lib_restart.o ../objects/lib_scanw.o ../objects/lib_screen.o ../objects/lib_scroll.o ../objects/lib_scrollok.o ../objects/lib_scrreg.o ../objects/lib_set_term.o ../objects/lib_slk.o ../objects/lib_slkatr_set.o ../objects/lib_slkatrof.o ../objects/lib_slkatron.o ../objects/lib_slkatrset.o ../objects/lib_slkattr.o ../objects/lib_slkclear.o ../objects/lib_slkcolor.o ../objects/lib_slkinit.o ../objects/lib_slklab.o ../objects/lib_slkrefr.o ../objects/lib_slkset.o ../objects/lib_slktouch.o ../objects/lib_touch.o ../objects/lib_tstp.o ../objects/lib_ungetch.o ../objects/lib_vidattr.o ../objects/lib_vline.o ../objects/lib_wattroff.o ../objects/lib_wattron.o ../objects/lib_winch.o ../objects/lib_window.o ../objects/nc_panel.o ../objects/safe_sprintf.o ../objects/tty_update.o ../objects/varargs.o ../objects/vsscanf.o ../objects/lib_freeall.o ../objects/charable.o ../objects/lib_add_wch.o ../objects/lib_box_set.o ../objects/lib_cchar.o ../objects/lib_erasewchar.o ../objects/lib_get_wch.o ../objects/lib_get_wstr.o ../objects/lib_hline_set.o ../objects/lib_in_wch.o ../objects/lib_in_wchnstr.o ../objects/lib_ins_wch.o ../objects/lib_inwstr.o ../objects/lib_key_name.o ../objects/lib_pecho_wchar.o ../objects/lib_slk_wset.o ../objects/lib_unget_wch.o ../objects/lib_vid_attr.o ../objects/lib_vline_set.o ../objects/lib_wacs.o ../objects/lib_wunctrl.o ../objects/expanded.o ../objects/legacy_coding.o ../objects/lib_dft_fgbg.o ../objects/lib_print.o ../objects/new_pair.o ../objects/resizeterm.o ../objects/use_screen.o ../objects/use_window.o ../objects/wresize.o
 zig ranlib ../lib/libticw.a
+zig ranlib ../lib/libncursesw.a
 zig ar -curvU ../lib/libtinfow.a ../objects/access.o ../objects/add_tries.o ../objects/alloc_ttype.o ../objects/codes.o ../objects/comp_captab.o ../objects/comp_error.o ../objects/comp_hash.o ../objects/comp_userdefs.o ../objects/db_iterator.o ../objects/doalloc.o ../objects/entries.o ../objects/fallback.o ../objects/free_ttype.o ../objects/getenv_num.o ../objects/home_terminfo.o ../objects/init_keytry.o ../objects/lib_acs.o ../objects/lib_baudrate.o ../objects/lib_cur_term.o ../objects/lib_data.o ../objects/lib_has_cap.o ../objects/lib_kernel.o ../objects/lib_keyname.o ../objects/lib_longname.o ../objects/lib_napms.o ../objects/lib_options.o ../objects/lib_raw.o ../objects/lib_setup.o ../objects/lib_termcap.o ../objects/lib_termname.o ../objects/lib_tgoto.o ../objects/lib_ti.o ../objects/lib_tparm.o ../objects/lib_tputs.o ../objects/lib_trace.o ../objects/lib_ttyflags.o ../objects/lib_twait.o ../objects/name_match.o ../objects/names.o ../objects/obsolete.o ../objects/read_entry.o ../objects/read_termcap.o ../objects/strings.o ../objects/tries.o ../objects/trim_sgr0.o ../objects/unctrl.o ../objects/visbuf.o ../objects/define_key.o ../objects/hashed_db.o ../objects/key_defined.o ../objects/keybound.o ../objects/keyok.o ../objects/version.o
 zig ranlib ../lib/libtinfow.a
-zig ar -curvU ../lib/libncursesw.a ../objects/hardscroll.o ../objects/hashmap.o ../objects/lib_addch.o ../objects/lib_addstr.o ../objects/lib_beep.o ../objects/lib_bkgd.o ../objects/lib_box.o ../objects/lib_chgat.o ../objects/lib_clear.o ../objects/lib_clearok.o ../objects/lib_clrbot.o ../objects/lib_clreol.o ../objects/lib_color.o ../objects/lib_colorset.o ../objects/lib_delch.o ../objects/lib_delwin.o ../objects/lib_echo.o ../objects/lib_endwin.o ../objects/lib_erase.o ../objects/lib_flash.o ../objects/lib_gen.o ../objects/lib_getch.o ../objects/lib_getstr.o ../objects/lib_hline.o ../objects/lib_immedok.o ../objects/lib_inchstr.o ../objects/lib_initscr.o ../objects/lib_insch.o ../objects/lib_insdel.o ../objects/lib_insnstr.o ../objects/lib_instr.o ../objects/lib_isendwin.o ../objects/lib_leaveok.o ../objects/lib_mouse.o ../objects/lib_move.o ../objects/lib_mvcur.o ../objects/lib_mvwin.o ../objects/lib_newterm.o ../objects/lib_newwin.o ../objects/lib_nl.o ../objects/lib_overlay.o ../objects/lib_pad.o ../objects/lib_printw.o ../objects/lib_redrawln.o ../objects/lib_refresh.o ../objects/lib_restart.o ../objects/lib_scanw.o ../objects/lib_screen.o ../objects/lib_scroll.o ../objects/lib_scrollok.o ../objects/lib_scrreg.o ../objects/lib_set_term.o ../objects/lib_slk.o ../objects/lib_slkatr_set.o ../objects/lib_slkatrof.o ../objects/lib_slkatron.o ../objects/lib_slkatrset.o ../objects/lib_slkattr.o ../objects/lib_slkclear.o ../objects/lib_slkcolor.o ../objects/lib_slkinit.o ../objects/lib_slklab.o ../objects/lib_slkrefr.o ../objects/lib_slkset.o ../objects/lib_slktouch.o ../objects/lib_touch.o ../objects/lib_tstp.o ../objects/lib_ungetch.o ../objects/lib_vidattr.o ../objects/lib_vline.o ../objects/lib_wattroff.o ../objects/lib_wattron.o ../objects/lib_winch.o ../objects/lib_window.o ../objects/nc_panel.o ../objects/safe_sprintf.o ../objects/tty_update.o ../objects/varargs.o ../objects/vsscanf.o ../objects/lib_freeall.o ../objects/charable.o ../objects/lib_add_wch.o ../objects/lib_box_set.o ../objects/lib_cchar.o ../objects/lib_erasewchar.o ../objects/lib_get_wch.o ../objects/lib_get_wstr.o ../objects/lib_hline_set.o ../objects/lib_in_wch.o ../objects/lib_in_wchnstr.o ../objects/lib_ins_wch.o ../objects/lib_inwstr.o ../objects/lib_key_name.o ../objects/lib_pecho_wchar.o ../objects/lib_slk_wset.o ../objects/lib_unget_wch.o ../objects/lib_vid_attr.o ../objects/lib_vline_set.o ../objects/lib_wacs.o ../objects/lib_wunctrl.o ../objects/expanded.o ../objects/legacy_coding.o ../objects/lib_dft_fgbg.o ../objects/lib_print.o ../objects/new_pair.o ../objects/resizeterm.o ../objects/use_screen.o ../objects/use_window.o ../objects/wresize.o
-zig ranlib ../lib/libncursesw.a
-cc -o report_offsets -DHAVE_CONFIG_H -DUSE_BUILD_CC -I../ncurses -I. -I../include -I./../include -DHAVE_CONFIG_H -DBUILDING_NCURSES -I../ncurses -I. -I../include -DNOMACROS=1 -DNDEBUG -Os ./report_offsets.c -static  
-./report_offsets
-Size/offsets of data structures:
-    4   attr_t
-    4   chtype
-   24   cchar_t
-   28   color_t
-    8   colorpair_t
-    4   mmask_t
-    4   rgb_bits_t
-   20   MEVENT
-    1   NCURSES_BOOL
-   24   TRIES
-
-Sizes of buffers/arrays:
-    5   CCHARW_MAX
-    8   EV_MAX
-  137   FIFO_SIZE
-  256   NAMESIZE
-   16   MB_LEN_MAX
- 4096   PATH_MAX
-
- 1552   SCREEN
-    0   SCREEN._ifd
-  172   SCREEN._fifo
-  720   SCREEN._fifohead
-  940   SCREEN._direct_color
- 1264   SCREEN._panelHook
- 1360   SCREEN.jump
- 1488   SCREEN.rsp
- 1500 + SCREEN._no_padding
- 1501 + SCREEN._use_ritm
- 1502 + SCREEN._assumed_color
- 1520 + SCREEN._resize
- 1536 n SCREEN._windowlist
- 1544 s SCREEN.use_tioctl
- 1545 w SCREEN._screen_acs_fix
-
-  688   TERMINAL
-    0   TERMINAL.type
-   72   TERMINAL.Filedes
-   76   TERMINAL.Ottyb
-  136   TERMINAL.Nttyb
-  196   TERMINAL._baudrate
-  200   TERMINAL._termname
-  208   TERMINAL.tparm_state
-
-   72   TERMTYPE
-   40 + TERMTYPE.ext_str_table
-   66 + TERMTYPE.ext_Strings
-
-  480   TPARM_STATE
-    8   TPARM_STATE.stack
-  328   TPARM_STATE.stack_ptr
-  336   TPARM_STATE.out_buff
-  360   TPARM_STATE.fmt_buff
-  376   TPARM_STATE.static_vars
-
-  112   WINDOW
-   88 w WINDOW._bkgrnd
-
-  480   NCURSES_GLOBALS
-   12   NCURSES_GLOBALS.init_signals
-  112   NCURSES_GLOBALS.tgetent_cache
-  328   NCURSES_GLOBALS.dbd_vars
-  424   NCURSES_GLOBALS.cached_tparm
-  440 + NCURSES_GLOBALS.home_terminfo
-  452 + NCURSES_GLOBALS.safeprint_rows
-  456 w NCURSES_GLOBALS.key_name
-
-  656   NCURSES_PRESCREEN
-   16   NCURSES_PRESCREEN.tparm_state
-  496   NCURSES_PRESCREEN.saved_tty
-  504   NCURSES_PRESCREEN.use_tioctl
-  512   NCURSES_PRESCREEN._outch
-  520 n NCURSES_PRESCREEN.rippedoff
-  648 + NCURSES_PRESCREEN._no_padding
-make[1]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src/ncurses'
-( cd panel && make DESTDIR="" RPATH_LIST="/home/lily/code/vibeos/external/ncurses-src/build-musl/lib" all )
-make[1]: Entering directory '/home/lily/code/vibeos/external/ncurses-src/panel'
+make[2]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src/ncurses'
+( cd panel && make - -j12 --jobserver-auth=fifo:/tmp/GMfifo113286 DESTDIR="" RPATH_LIST="/home/lily/code/vibeos/external/ncurses-src/build-musl/lib" all )
+make[2]: Entering directory '/home/lily/code/vibeos/external/ncurses-src/panel'
+make[2]: warning: -j12 forced in submake: resetting jobserver mode.
 rm -f ../include/panel.h
 /home/lily/code/vibeos/external/ncurses-src/build-musl/zigcc-wrapper.sh -I../ncurses -DHAVE_CONFIG_H -DBUILDING_PANEL -I. -I../include -DNOMACROS=1 -DNDEBUG -Os -fno-stack-protector -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables -Qunused-arguments -Wno-error=implicit-function-declaration  -DNCURSES_STATIC -c ../panel/panel.c -o ../objects/panel.o
 cp ./panel.h ../include/panel.h
@@ -296,9 +229,10 @@ cp ./panel.h ../include/panel.h
 /home/lily/code/vibeos/external/ncurses-src/build-musl/zigcc-wrapper.sh -I../ncurses -DHAVE_CONFIG_H -DBUILDING_PANEL -I. -I../include -DNOMACROS=1 -DNDEBUG -Os -fno-stack-protector -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables -Qunused-arguments -Wno-error=implicit-function-declaration  -DNCURSES_STATIC -c ../panel/p_win.c -o ../objects/p_win.o
 zig ar -curvU ../lib/libpanelw.a ../objects/panel.o ../objects/p_above.o ../objects/p_below.o ../objects/p_bottom.o ../objects/p_delete.o ../objects/p_hide.o ../objects/p_hidden.o ../objects/p_move.o ../objects/p_new.o ../objects/p_replace.o ../objects/p_show.o ../objects/p_top.o ../objects/p_update.o ../objects/p_user.o ../objects/p_win.o
 zig ranlib ../lib/libpanelw.a
-make[1]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src/panel'
-( cd menu && make DESTDIR="" RPATH_LIST="/home/lily/code/vibeos/external/ncurses-src/build-musl/lib" all )
-make[1]: Entering directory '/home/lily/code/vibeos/external/ncurses-src/menu'
+make[2]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src/panel'
+( cd menu && make - -j12 --jobserver-auth=fifo:/tmp/GMfifo113286 DESTDIR="" RPATH_LIST="/home/lily/code/vibeos/external/ncurses-src/build-musl/lib" all )
+make[2]: Entering directory '/home/lily/code/vibeos/external/ncurses-src/menu'
+make[2]: warning: -j12 forced in submake: resetting jobserver mode.
 rm -f ../include/menu.h
 rm -f ../include/eti.h
 rm -f ../include/mf_common.h
@@ -333,12 +267,11 @@ cp ./mf_common.h ../include/mf_common.h
 /home/lily/code/vibeos/external/ncurses-src/build-musl/zigcc-wrapper.sh -I../ncurses -DHAVE_CONFIG_H -DBUILDING_MENU -I. -I../include -DNOMACROS=1 -DNDEBUG -Os -fno-stack-protector -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables -Qunused-arguments -Wno-error=implicit-function-declaration  -DNCURSES_STATIC -c ../menu/m_win.c -o ../objects/m_win.o
 zig ar -curvU ../lib/libmenuw.a ../objects/m_attribs.o ../objects/m_cursor.o ../objects/m_driver.o ../objects/m_format.o ../objects/m_global.o ../objects/m_hook.o ../objects/m_item_cur.o ../objects/m_item_nam.o ../objects/m_item_new.o ../objects/m_item_opt.o ../objects/m_item_top.o ../objects/m_item_use.o ../objects/m_item_val.o ../objects/m_item_vis.o ../objects/m_items.o ../objects/m_new.o ../objects/m_opts.o ../objects/m_pad.o ../objects/m_pattern.o ../objects/m_post.o ../objects/m_req_name.o ../objects/m_scale.o ../objects/m_spacing.o ../objects/m_sub.o ../objects/m_userptr.o ../objects/m_win.o
 zig ranlib ../lib/libmenuw.a
-make[1]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src/menu'
-( cd form && make DESTDIR="" RPATH_LIST="/home/lily/code/vibeos/external/ncurses-src/build-musl/lib" all )
-make[1]: Entering directory '/home/lily/code/vibeos/external/ncurses-src/form'
-rm -f ../include/form.h
+make[2]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src/menu'
+( cd form && make - -j12 --jobserver-auth=fifo:/tmp/GMfifo113286 DESTDIR="" RPATH_LIST="/home/lily/code/vibeos/external/ncurses-src/build-musl/lib" all )
+make[2]: Entering directory '/home/lily/code/vibeos/external/ncurses-src/form'
+make[2]: warning: -j12 forced in submake: resetting jobserver mode.
 /home/lily/code/vibeos/external/ncurses-src/build-musl/zigcc-wrapper.sh -I../ncurses -DHAVE_CONFIG_H -DBUILDING_FORM -I. -I../include -DNOMACROS=1 -DNDEBUG -Os -fno-stack-protector -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables -Qunused-arguments -Wno-error=implicit-function-declaration  -DNCURSES_STATIC -c ../form/fld_arg.c -o ../objects/fld_arg.o
-cp ./form.h ../include/form.h
 /home/lily/code/vibeos/external/ncurses-src/build-musl/zigcc-wrapper.sh -I../ncurses -DHAVE_CONFIG_H -DBUILDING_FORM -I. -I../include -DNOMACROS=1 -DNDEBUG -Os -fno-stack-protector -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables -Qunused-arguments -Wno-error=implicit-function-declaration  -DNCURSES_STATIC -c ../form/fld_attr.c -o ../objects/fld_attr.o
 /home/lily/code/vibeos/external/ncurses-src/build-musl/zigcc-wrapper.sh -I../ncurses -DHAVE_CONFIG_H -DBUILDING_FORM -I. -I../include -DNOMACROS=1 -DNDEBUG -Os -fno-stack-protector -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables -Qunused-arguments -Wno-error=implicit-function-declaration  -DNCURSES_STATIC -c ../form/fld_current.c -o ../objects/fld_current.o
 /home/lily/code/vibeos/external/ncurses-src/build-musl/zigcc-wrapper.sh -I../ncurses -DHAVE_CONFIG_H -DBUILDING_FORM -I. -I../include -DNOMACROS=1 -DNDEBUG -Os -fno-stack-protector -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables -Qunused-arguments -Wno-error=implicit-function-declaration  -DNCURSES_STATIC -c ../form/fld_def.c -o ../objects/fld_def.o
@@ -380,60 +313,59 @@ cp ./form.h ../include/form.h
 /home/lily/code/vibeos/external/ncurses-src/build-musl/zigcc-wrapper.sh -I../ncurses -DHAVE_CONFIG_H -DBUILDING_FORM -I. -I../include -DNOMACROS=1 -DNDEBUG -Os -fno-stack-protector -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables -Qunused-arguments -Wno-error=implicit-function-declaration  -DNCURSES_STATIC -c ../form/fty_regex.c -o ../objects/fty_regex.o
 zig ar -curvU ../lib/libformw.a ../objects/fld_arg.o ../objects/fld_attr.o ../objects/fld_current.o ../objects/fld_def.o ../objects/fld_dup.o ../objects/fld_ftchoice.o ../objects/fld_ftlink.o ../objects/fld_info.o ../objects/fld_just.o ../objects/fld_link.o ../objects/fld_max.o ../objects/fld_move.o ../objects/fld_newftyp.o ../objects/fld_opts.o ../objects/fld_pad.o ../objects/fld_page.o ../objects/fld_stat.o ../objects/fld_type.o ../objects/fld_user.o ../objects/frm_cursor.o ../objects/frm_data.o ../objects/frm_def.o ../objects/frm_driver.o ../objects/frm_hook.o ../objects/frm_opts.o ../objects/frm_page.o ../objects/frm_post.o ../objects/frm_req_name.o ../objects/frm_scale.o ../objects/frm_sub.o ../objects/frm_user.o ../objects/frm_win.o ../objects/fty_alnum.o ../objects/fty_alpha.o ../objects/fty_enum.o ../objects/fty_generic.o ../objects/fty_int.o ../objects/fty_ipv4.o ../objects/fty_num.o ../objects/fty_regex.o
 zig ranlib ../lib/libformw.a
-make[1]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src/form'
-( cd misc && make DESTDIR="" RPATH_LIST="/home/lily/code/vibeos/external/ncurses-src/build-musl/lib" all )
-make[1]: Entering directory '/home/lily/code/vibeos/external/ncurses-src/misc'
-WHICH_XTERM=xterm-new \
-XTERM_KBS=BS \
-datadir=/home/lily/code/vibeos/external/ncurses-src/build-musl/share \
-/bin/sh ./gen_edit.sh >run_tic.sed
-echo '** adjusting tabset paths'
-** adjusting tabset paths
-sed -f run_tic.sed ../misc/terminfo.src >terminfo.tmp
-make[1]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src/misc'
-( cd include && make DESTDIR="" RPATH_LIST="/home/lily/code/vibeos/external/ncurses-src/build-musl/lib" install )
-make[1]: Entering directory '/home/lily/code/vibeos/external/ncurses-src/include'
-mkdir -p /home/lily/code/vibeos/external/ncurses-src/build-musl/include/ncursesw
+make[2]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src/form'
+( cd misc && make - -j12 --jobserver-auth=fifo:/tmp/GMfifo113286 DESTDIR="" RPATH_LIST="/home/lily/code/vibeos/external/ncurses-src/build-musl/lib" all )
+make[2]: Entering directory '/home/lily/code/vibeos/external/ncurses-src/misc'
+make[2]: warning: -j12 forced in submake: resetting jobserver mode.
+make[2]: Nothing to be done for 'all'.
+make[2]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src/misc'
+make[1]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src'
+make[1]: Entering directory '/home/lily/code/vibeos/external/ncurses-src'
+( cd include && make - -j12 --jobserver-auth=fifo:/tmp/GMfifo99664 DESTDIR="" RPATH_LIST="/home/lily/code/vibeos/external/ncurses-src/build-musl/lib" install )
+make[2]: Entering directory '/home/lily/code/vibeos/external/ncurses-src/include'
+make[2]: warning: -j12 forced in submake: resetting jobserver mode.
 installing curses.h in /home/lily/code/vibeos/external/ncurses-src/build-musl/include/ncursesw
 installing unctrl.h in /home/lily/code/vibeos/external/ncurses-src/build-musl/include/ncursesw
 installing ncurses_dll.h in /home/lily/code/vibeos/external/ncurses-src/build-musl/include/ncursesw
 installing term.h in /home/lily/code/vibeos/external/ncurses-src/build-musl/include/ncursesw
 installing termcap.h in /home/lily/code/vibeos/external/ncurses-src/build-musl/include/ncursesw
 installing ./term_entry.h in /home/lily/code/vibeos/external/ncurses-src/build-musl/include/ncursesw
-make[1]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src/include'
-( cd ncurses && make DESTDIR="" RPATH_LIST="/home/lily/code/vibeos/external/ncurses-src/build-musl/lib" install )
-make[1]: Entering directory '/home/lily/code/vibeos/external/ncurses-src/ncurses'
-mkdir -p /home/lily/code/vibeos/external/ncurses-src/build-musl/lib
+make[2]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src/include'
+( cd ncurses && make - -j12 --jobserver-auth=fifo:/tmp/GMfifo99664 DESTDIR="" RPATH_LIST="/home/lily/code/vibeos/external/ncurses-src/build-musl/lib" install )
+make[2]: Entering directory '/home/lily/code/vibeos/external/ncurses-src/ncurses'
+make[2]: warning: -j12 forced in submake: resetting jobserver mode.
 installing ../lib/libticw.a as /home/lily/code/vibeos/external/ncurses-src/build-musl/lib/libticw.a
 /usr/bin/install -c -m 644 ../lib/libticw.a /home/lily/code/vibeos/external/ncurses-src/build-musl/lib/libticw.a
 installing ../lib/libtinfow.a as /home/lily/code/vibeos/external/ncurses-src/build-musl/lib/libtinfow.a
 /usr/bin/install -c -m 644 ../lib/libtinfow.a /home/lily/code/vibeos/external/ncurses-src/build-musl/lib/libtinfow.a
 installing ../lib/libncursesw.a as /home/lily/code/vibeos/external/ncurses-src/build-musl/lib/libncursesw.a
 /usr/bin/install -c -m 644 ../lib/libncursesw.a /home/lily/code/vibeos/external/ncurses-src/build-musl/lib/libncursesw.a
-make[1]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src/ncurses'
-( cd panel && make DESTDIR="" RPATH_LIST="/home/lily/code/vibeos/external/ncurses-src/build-musl/lib" install )
-make[1]: Entering directory '/home/lily/code/vibeos/external/ncurses-src/panel'
+make[2]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src/ncurses'
+( cd panel && make - -j12 --jobserver-auth=fifo:/tmp/GMfifo99664 DESTDIR="" RPATH_LIST="/home/lily/code/vibeos/external/ncurses-src/build-musl/lib" install )
+make[2]: Entering directory '/home/lily/code/vibeos/external/ncurses-src/panel'
+make[2]: warning: -j12 forced in submake: resetting jobserver mode.
 installing ../lib/libpanelw.a as /home/lily/code/vibeos/external/ncurses-src/build-musl/lib/libpanelw.a
 /usr/bin/install -c -m 644 ../lib/libpanelw.a /home/lily/code/vibeos/external/ncurses-src/build-musl/lib/libpanelw.a
 installing ./panel.h in /home/lily/code/vibeos/external/ncurses-src/build-musl/include/ncursesw
-make[1]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src/panel'
-( cd menu && make DESTDIR="" RPATH_LIST="/home/lily/code/vibeos/external/ncurses-src/build-musl/lib" install )
-make[1]: Entering directory '/home/lily/code/vibeos/external/ncurses-src/menu'
+make[2]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src/panel'
+( cd menu && make - -j12 --jobserver-auth=fifo:/tmp/GMfifo99664 DESTDIR="" RPATH_LIST="/home/lily/code/vibeos/external/ncurses-src/build-musl/lib" install )
+make[2]: Entering directory '/home/lily/code/vibeos/external/ncurses-src/menu'
+make[2]: warning: -j12 forced in submake: resetting jobserver mode.
 installing ../lib/libmenuw.a as /home/lily/code/vibeos/external/ncurses-src/build-musl/lib/libmenuw.a
 /usr/bin/install -c -m 644 ../lib/libmenuw.a /home/lily/code/vibeos/external/ncurses-src/build-musl/lib/libmenuw.a
 installing ./eti.h in /home/lily/code/vibeos/external/ncurses-src/build-musl/include/ncursesw
 installing ./menu.h in /home/lily/code/vibeos/external/ncurses-src/build-musl/include/ncursesw
-make[1]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src/menu'
-( cd form && make DESTDIR="" RPATH_LIST="/home/lily/code/vibeos/external/ncurses-src/build-musl/lib" install )
-make[1]: Entering directory '/home/lily/code/vibeos/external/ncurses-src/form'
+make[2]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src/menu'
+( cd form && make - -j12 --jobserver-auth=fifo:/tmp/GMfifo99664 DESTDIR="" RPATH_LIST="/home/lily/code/vibeos/external/ncurses-src/build-musl/lib" install )
+make[2]: Entering directory '/home/lily/code/vibeos/external/ncurses-src/form'
+make[2]: warning: -j12 forced in submake: resetting jobserver mode.
 installing ../lib/libformw.a as /home/lily/code/vibeos/external/ncurses-src/build-musl/lib/libformw.a
 /usr/bin/install -c -m 644 ../lib/libformw.a /home/lily/code/vibeos/external/ncurses-src/build-musl/lib/libformw.a
 installing ./form.h in /home/lily/code/vibeos/external/ncurses-src/build-musl/include/ncursesw
-make[1]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src/form'
-( cd misc && make DESTDIR="" RPATH_LIST="/home/lily/code/vibeos/external/ncurses-src/build-musl/lib" install )
-make[1]: Entering directory '/home/lily/code/vibeos/external/ncurses-src/misc'
-mkdir -p /home/lily/code/vibeos/external/ncurses-src/build-musl/share
-mkdir -p /home/lily/code/vibeos/external/ncurses-src/build-musl/share/tabset
+make[2]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src/form'
+( cd misc && make - -j12 --jobserver-auth=fifo:/tmp/GMfifo99664 DESTDIR="" RPATH_LIST="/home/lily/code/vibeos/external/ncurses-src/build-musl/lib" install )
+make[2]: Entering directory '/home/lily/code/vibeos/external/ncurses-src/misc'
+make[2]: warning: -j12 forced in submake: resetting jobserver mode.
 DESTDIR= \
 prefix=/home/lily/code/vibeos/external/ncurses-src/build-musl \
 exec_prefix=/home/lily/code/vibeos/external/ncurses-src/build-musl \
@@ -464,6 +396,6 @@ installing stdcrt
 installing vt100
 installing vt300
 finished install.data
-mkdir -p /home/lily/code/vibeos/external/ncurses-src/build-musl/bin
 /usr/bin/install -c ncurses-config /home/lily/code/vibeos/external/ncurses-src/build-musl/bin/ncursesw6-config
-make[1]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src/misc'
+make[2]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src/misc'
+make[1]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src'
