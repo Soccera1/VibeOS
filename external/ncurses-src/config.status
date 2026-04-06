@@ -434,7 +434,7 @@ s,@CTAGS@,ctags,;t t
 s,@ETAGS@,etags,;t t
 s,@MAKE_LOWER_TAGS@,,;t t
 s,@MAKE_UPPER_TAGS@,,;t t
-s,@cf_cv_makeflags@,,;t t
+s,@cf_cv_makeflags@,-${MAKEFLAGS},;t t
 s,@RANLIB@,zig ranlib,;t t
 s,@ac_ct_RANLIB@,,;t t
 s,@LD@,ld,;t t

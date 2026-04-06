@@ -43,7 +43,7 @@ configure:1210: found /usr/bin/grep
 configure:1218: result: grep
 configure:1229: checking for egrep
 configure:1285: result: grep -E
-configure:1296: result: Configuring NCURSES 6.5 ABI 6 (Tue Apr  7 02:07:58 AEST 2026)
+configure:1296: result: Configuring NCURSES 6.5 ABI 6 (Tue Apr  7 02:19:10 AEST 2026)
 configure:1300: checking for package version
 configure:1321: result: 6.5
 configure:1324: checking for package patch date
@@ -285,30 +285,48 @@ configure:4433: result: yes
 configure:4452: checking whether make sets ${MAKE}
 configure:4472: result: yes
 configure:4481: checking for ".PHONY" make-support
+make[1]: Entering directory '/home/lily/code/vibeos/external/ncurses-src/conftest'
 ** making always.out 1
 echo 1 > always.out
 ** making always 1
+make[1]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src/conftest'
+make[1]: Entering directory '/home/lily/code/vibeos/external/ncurses-src/conftest'
 ** making once.out 1
 echo 1 > once.out
 ** making once 1
-make: Nothing to be done for 'always'.
+make[1]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src/conftest'
+make[1]: Entering directory '/home/lily/code/vibeos/external/ncurses-src/conftest'
+make[1]: Nothing to be done for 'always'.
 touch once
+make[1]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src/conftest'
+make[1]: Entering directory '/home/lily/code/vibeos/external/ncurses-src/conftest'
 ** making always.out 2
 echo 2 > always.out
 ** making always 2
+make[1]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src/conftest'
+make[1]: Entering directory '/home/lily/code/vibeos/external/ncurses-src/conftest'
 ** making once.out 2
 echo 2 > once.out
 ** making once 2
-make: Nothing to be done for 'always'.
+make[1]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src/conftest'
+make[1]: Entering directory '/home/lily/code/vibeos/external/ncurses-src/conftest'
+make[1]: Nothing to be done for 'always'.
 touch once
+make[1]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src/conftest'
+make[1]: Entering directory '/home/lily/code/vibeos/external/ncurses-src/conftest'
 ** making always.out 3
 echo 3 > always.out
 ** making always 3
+make[1]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src/conftest'
+make[1]: Entering directory '/home/lily/code/vibeos/external/ncurses-src/conftest'
 ** making once.out 3
 echo 3 > once.out
 ** making once 3
-make: Nothing to be done for 'always'.
+make[1]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src/conftest'
+make[1]: Entering directory '/home/lily/code/vibeos/external/ncurses-src/conftest'
+make[1]: Nothing to be done for 'always'.
 touch once
+make[1]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src/conftest'
 configure:4536: result: yes
 configure:4547: checking for exctags
 configure:4573: result: no
@@ -327,7 +345,7 @@ configure:4653: checking for etags
 configure:4668: found /usr/bin/etags
 configure:4677: result: yes
 configure:4700: checking for makeflags variable
-configure:4738: result: 
+configure:4738: result: -${MAKEFLAGS}
 configure:4744: checking for x86_64-linux-musl-ranlib
 configure:4767: result: zig ranlib
 configure:4818: checking for x86_64-linux-musl-ld
@@ -2310,7 +2328,7 @@ cf_cv_lib_util='yes'
 cf_cv_link_dataonly='yes'
 cf_cv_link_funcs=' link symlink'
 cf_cv_make_PHONY='yes'
-cf_cv_makeflags=''
+cf_cv_makeflags='-${MAKEFLAGS}'
 cf_cv_mb_len_max='no'
 cf_cv_mbstate_t='yes'
 cf_cv_mixedcase='yes'
@@ -2330,7 +2348,7 @@ cf_cv_src_modules='ncurses panel menu form'
 cf_cv_struct_dirent64='no'
 cf_cv_sys_time_select='yes'
 cf_cv_system_name='linux-musl'
-cf_cv_timestamp='Tue Apr  7 02:07:58 AEST 2026'
+cf_cv_timestamp='Tue Apr  7 02:19:10 AEST 2026'
 cf_cv_type_of_bool='unsigned char'
 cf_cv_type_sigaction='no'
 cf_cv_typeof_chtype='uint32_t'

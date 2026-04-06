@@ -47,7 +47,7 @@ SHELL		= /bin/sh
 
 THIS		= Makefile
 
-CF_MFLAGS 	= 
+CF_MFLAGS 	= -${MAKEFLAGS}
 
 
 DESTDIR		= 
