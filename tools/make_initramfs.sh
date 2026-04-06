@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 2 ]]; then
-  echo "usage: $0 <output.cpio> <busybox-fallback-bin>" >&2
+if [[ $# -lt 2 ]]; then
+  echo "usage: $0 <output.cpio> <busybox-bin> [sl-bin]" >&2
   exit 1
 fi
 
 OUT_CPIO_INPUT="$1"
 OUT_CPIO_DIR="$(cd "$(dirname "$OUT_CPIO_INPUT")" && pwd)"
 OUT_CPIO="$OUT_CPIO_DIR/$(basename "$OUT_CPIO_INPUT")"
-FALLBACK_BUSYBOX="$2"
+BUSYBOX_BIN="$2"
+SL_BIN="${3:-}"
 
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
@@ -23,15 +24,20 @@ if [[ -d rootfs ]]; then
   popd >/dev/null
 fi
 
-if [[ -x "$FALLBACK_BUSYBOX" ]]; then
-  cp "$FALLBACK_BUSYBOX" "$ROOT/bin/busybox"
+if [[ -x "$BUSYBOX_BIN" ]]; then
+  cp "$BUSYBOX_BIN" "$ROOT/bin/busybox"
 elif [[ -x rootfs/bin/busybox ]]; then
   cp rootfs/bin/busybox "$ROOT/bin/busybox"
 elif [[ -x external/busybox-static ]]; then
   cp external/busybox-static "$ROOT/bin/busybox"
 else
-  echo "BusyBox binary missing: $FALLBACK_BUSYBOX" >&2
+  echo "BusyBox binary missing: $BUSYBOX_BIN" >&2
   exit 1
+fi
+
+if [[ -n "$SL_BIN" && -x "$SL_BIN" ]]; then
+  mkdir -p "$ROOT/usr/bin"
+  cp "$SL_BIN" "$ROOT/usr/bin/sl"
 fi
 
 chmod +x "$ROOT/bin/busybox"
