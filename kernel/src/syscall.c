@@ -84,6 +84,9 @@
 #define ESPIPE 29
 #define ENOMEM 12
 #define EEXIST 17
+#define EROFS 30
+#define ESRCH 3
+#define EPERM 1
 
 #define IRET_SLOT_RIP 15u
 #define IRET_SLOT_CS 16u
@@ -100,8 +103,42 @@
 #define SIGCHLD 17u
 #define SIGINT 2u
 #define SIGTSTP 20u
+#define SIGKILL 9u
+#define SIGTERM 15u
+#define SIGSTOP 19u
+#define SIGCONT 18u
+#define SIGUSR1 10u
+#define SIGUSR2 12u
+#define SIGSEGV 11u
+#define SIGPIPE 13u
+#define SIGALRM 14u
+#define SIGBUS 7u
+#define SIGFPE 8u
+#define SIGILL 4u
+#define SIGQUIT 3u
+#define SIGTRAP 5u
+#define SIGABRT 6u
+#define NSIG 64u
 
 #define WAIT_NOHANG 1u
+
+#define SIG_DFL ((void*)0)
+#define SIG_IGN ((void*)1)
+
+#define SA_NOCLDSTOP 0x00000001u
+#define SA_NOCLDWAIT 0x00000002u
+#define SA_SIGINFO 0x00000004u
+#define SA_ONSTACK 0x08000000u
+#define SA_RESTART 0x10000000u
+#define SA_NODEFER 0x40000000u
+#define SA_RESETHAND 0x80000000u
+
+#define SIG_BLOCK 0
+#define SIG_UNBLOCK 1
+#define SIG_SETMASK 2
+
+#define MAX_ZOMBIES 64
+#define MAX_PENDING_SIGNALS 32
 
 #define FORK_IMAGE_SNAPSHOT_MAX (16u * 1024u * 1024u)
 #define FORK_STACK_SNAPSHOT_MAX (8u * 1024u * 1024u)
@@ -319,6 +356,33 @@ static size_t g_snap_mmap_len;
 static uint8_t g_snap_mmap[FORK_MMAP_SNAPSHOT_MAX];
 static struct pipe_state g_pipes[MAX_PIPES];
 static uint64_t g_tid_address;
+
+struct zombie_info {
+    bool valid;
+    int pid;
+    int ppid;
+    int exit_code;
+    int exit_status;
+};
+
+static struct zombie_info g_zombies[MAX_ZOMBIES];
+static int g_zombie_count = 0;
+
+struct sigaction_data {
+    void* handler;
+    uint64_t flags;
+    uint64_t mask;
+};
+
+static struct sigaction_data g_sig_actions[NSIG];
+static uint64_t g_sig_mask = 0;
+static int g_pending_signals[MAX_PENDING_SIGNALS];
+static int g_pending_signal_count = 0;
+
+static void add_zombie(int pid, int ppid, int exit_code, int exit_status);
+static int find_zombie(int pid);
+static int find_zombie_by_ppid(int ppid);
+static void remove_zombie(int idx);
 
 extern void leave_user_mode(uint64_t code) __attribute__((noreturn));
 extern void syscall_entry(void);
@@ -2261,20 +2325,187 @@ static int sys_wait4(int pid, int* status, int options) {
     if (g_parent_pending && (pid == -1 || pid == g_pending_child_pid || pid == 0)) {
         return (options & WAIT_NOHANG) ? 0 : err(EAGAIN);
     }
+    if (pid > 0) {
+        int zombie_idx = find_zombie(pid);
+        if (zombie_idx >= 0) {
+            if (status != NULL) {
+                *status = g_zombies[zombie_idx].exit_status;
+            }
+            int reaped = g_zombies[zombie_idx].pid;
+            remove_zombie(zombie_idx);
+            return reaped;
+        }
+        if (!g_wait_status_valid || pid != g_wait_status_pid) {
+            return err(ECHILD);
+        }
+        if (status != NULL) {
+            *status = g_wait_status_code;
+        }
+        int reaped = g_wait_status_pid;
+        g_wait_status_valid = false;
+        return reaped;
+    }
+    if (g_zombie_count > 0) {
+        int zombie_idx = find_zombie_by_ppid(g_current_pid);
+        if (zombie_idx >= 0) {
+            if (status != NULL) {
+                *status = g_zombies[zombie_idx].exit_status;
+            }
+            int reaped = g_zombies[zombie_idx].pid;
+            remove_zombie(zombie_idx);
+            return reaped;
+        }
+    }
     if (!g_wait_status_valid) {
         return err(ECHILD);
     }
-    if (pid > 0 && pid != g_wait_status_pid) {
-        return err(ECHILD);
+    int zombie_idx = find_zombie(g_wait_status_pid);
+    if (zombie_idx >= 0) {
+        if (status != NULL) {
+            *status = g_zombies[zombie_idx].exit_status;
+        }
+        int reaped = g_zombies[zombie_idx].pid;
+        remove_zombie(zombie_idx);
+        return reaped;
     }
-
     if (status != NULL) {
         *status = g_wait_status_code;
     }
-
     int reaped = g_wait_status_pid;
     g_wait_status_valid = false;
     return reaped;
+}
+
+static int sys_rt_sigaction(int sig, const void* act, void* oldact) {
+    if (sig < 1 || sig >= (int)NSIG) {
+        return err(EINVAL);
+    }
+    if (act == NULL && oldact == NULL) {
+        return 0;
+    }
+
+    struct sigaction_data* current = &g_sig_actions[sig];
+
+    if (oldact != NULL) {
+        struct sigaction_data* old = (struct sigaction_data*)oldact;
+        old->handler = current->handler;
+        old->flags = current->flags;
+        old->mask = current->mask;
+    }
+
+    if (act != NULL) {
+        const struct sigaction_data* newact = (const struct sigaction_data*)act;
+        current->handler = newact->handler;
+        current->flags = newact->flags & (SA_NOCLDSTOP | SA_NOCLDWAIT | SA_NODEFER | SA_RESETHAND | SA_RESTART);
+        current->mask = newact->mask;
+    }
+
+    return 0;
+}
+
+static int sys_rt_sigprocmask(int how, const uint64_t* set, uint64_t* oldset) {
+    if (oldset != NULL) {
+        *oldset = g_sig_mask;
+    }
+
+    if (set != NULL) {
+        uint64_t newmask = *set;
+        switch (how) {
+            case SIG_BLOCK:
+                g_sig_mask |= newmask;
+                break;
+            case SIG_UNBLOCK:
+                g_sig_mask &= ~newmask;
+                break;
+            case SIG_SETMASK:
+                g_sig_mask = newmask;
+                break;
+            default:
+                return err(EINVAL);
+        }
+        g_sig_mask &= ~((1ull << SIGKILL) | (1ull << SIGSTOP));
+    }
+
+    return 0;
+}
+
+static int sys_kill(int pid, int sig) {
+    if (sig < 0 || sig >= (int)NSIG) {
+        return err(EINVAL);
+    }
+    if (pid <= 0) {
+        return err(ENOSYS);
+    }
+    if (pid == g_current_pid) {
+        if (sig == 0) {
+            return 0;
+        }
+        if (g_parent_pending && g_current_pid == g_pending_child_pid) {
+            return err(EPERM);
+        }
+        if (sig == SIGKILL || sig == SIGSTOP) {
+            return err(ENOSYS);
+        }
+        if (g_pending_signal_count < MAX_PENDING_SIGNALS) {
+            if (g_sig_actions[sig].handler != SIG_IGN) {
+                g_pending_signals[g_pending_signal_count++] = sig;
+            }
+        }
+        return 0;
+    }
+    int zombie_idx = find_zombie(pid);
+    if (zombie_idx >= 0) {
+        return 0;
+    }
+    if (g_parent_pending && pid == g_pending_child_pid) {
+        if (sig == 0) {
+            return 0;
+        }
+        if (sig == SIGKILL) {
+            return err(ENOSYS);
+        }
+        return 0;
+    }
+    return err(ESRCH);
+}
+
+static void add_zombie(int pid, int ppid, int exit_code, int exit_status) {
+    for (int i = 0; i < MAX_ZOMBIES; ++i) {
+        if (!g_zombies[i].valid) {
+            g_zombies[i].valid = true;
+            g_zombies[i].pid = pid;
+            g_zombies[i].ppid = ppid;
+            g_zombies[i].exit_code = exit_code;
+            g_zombies[i].exit_status = exit_status;
+            g_zombie_count++;
+            return;
+        }
+    }
+}
+
+static int find_zombie(int pid) {
+    for (int i = 0; i < MAX_ZOMBIES; ++i) {
+        if (g_zombies[i].valid && g_zombies[i].pid == pid) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int find_zombie_by_ppid(int ppid) {
+    for (int i = 0; i < MAX_ZOMBIES; ++i) {
+        if (g_zombies[i].valid && g_zombies[i].ppid == ppid) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void remove_zombie(int idx) {
+    if (idx >= 0 && idx < MAX_ZOMBIES && g_zombies[idx].valid) {
+        g_zombies[idx].valid = false;
+        g_zombie_count--;
+    }
 }
 
 static int sys_set_tid_address(uint64_t tidptr) {
@@ -2359,6 +2590,7 @@ static uint64_t sys_exit_common(struct syscall_frame* frame, uint64_t code) {
         *(uint32_t*)(uintptr_t)g_tid_address = 0;
     }
     if (g_parent_pending && g_current_pid == g_pending_child_pid) {
+        add_zombie(g_current_pid, g_saved_parent_pid, (int)(code & 0xFF), ((int)(code & 0xFF)) << 8);
         return resume_parent_after_child_exit(frame, code);
     }
     leave_user_mode(code);
@@ -2368,6 +2600,9 @@ static uint64_t sys_exit_common(struct syscall_frame* frame, uint64_t code) {
 void syscall_init(void) {
     memset(g_fds, 0, sizeof(g_fds));
     memset(g_parent_fds, 0, sizeof(g_parent_fds));
+    memset(g_zombies, 0, sizeof(g_zombies));
+    memset(g_sig_actions, 0, sizeof(g_sig_actions));
+    memset(g_pending_signals, 0, sizeof(g_pending_signals));
 
     for (int i = 0; i < 3; ++i) {
         g_fds[i].kind = FD_TTY;
@@ -2392,6 +2627,9 @@ void syscall_init(void) {
     g_wait_status_code = 0;
     g_pending_keyboard_signal = 0;
     g_tid_address = 0;
+    g_zombie_count = 0;
+    g_pending_signal_count = 0;
+    g_sig_mask = 0;
     memset(g_pipes, 0, sizeof(g_pipes));
 
     g_rng_state ^= read_tsc();
@@ -2466,9 +2704,9 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
         case 12:
             return (uint64_t)sys_brk(a0);
         case 13:
-            return 0;
+            return (uint64_t)sys_rt_sigaction((int)a0, (const void*)(uintptr_t)a1, (void*)(uintptr_t)a2);
         case 14:
-            return 0;
+            return (uint64_t)sys_rt_sigprocmask((int)a0, (const uint64_t*)(uintptr_t)a1, (uint64_t*)(uintptr_t)a2);
         case 16:
             return (uint64_t)sys_ioctl((int)a0, a1, (void*)(uintptr_t)a2);
         case 17:
@@ -2512,6 +2750,8 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
             return sys_exit_common(frame, a0);
         case 61:
             return (uint64_t)sys_wait4((int)a0, (int*)(uintptr_t)a1, (int)a2);
+        case 62:
+            return (uint64_t)sys_kill((int)a0, (int)a1);
         case 63:
             return (uint64_t)sys_uname((struct linux_utsname*)(uintptr_t)a0);
         case 72:

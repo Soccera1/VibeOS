@@ -17,7 +17,7 @@ ZIG_GLOBAL_CACHE := $(BUSYBOX_SRC)/.zig-global-cache
 ZIG_LOCAL_CACHE := $(BUSYBOX_SRC)/.zig-local-cache
 
 CFLAGS := -m64 -ffreestanding -fno-stack-protector -fno-pie -fno-pic -fno-omit-frame-pointer -fno-builtin \
-	-mno-red-zone -mno-mmx -mno-sse -mno-sse2 -Wall -Wextra -Werror -O2 -std=gnu11 -Ikernel/include
+	-mno-red-zone -mno-mmx -mno-sse -mno-sse2 -mcmodel=large -Wall -Wextra -Werror -O2 -std=gnu11 -Ikernel/include
 LDFLAGS := -nostdlib -z max-page-size=0x1000 -T kernel/linker.ld
 
 KERNEL_ASM := \
@@ -82,7 +82,7 @@ disk: check-toolchain $(KERNEL_BIN) $(INITRAMFS)
 run: disk
 	qemu-system-x86_64 \
 		-machine q35,accel=kvm:tcg \
-		-m 512M \
+		-m 1G \
 		-drive format=raw,file=$(DISK_IMAGE) \
 		-serial stdio
 
