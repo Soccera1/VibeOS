@@ -8,8 +8,9 @@
 #include "idt.h"
 #include "input.h"
 #include "initramfs.h"
-#include "multiboot2.h"
 #include "io.h"
+#include "kmalloc.h"
+#include "multiboot2.h"
 #include "string.h"
 #include "syscall.h"
 #include "userland.h"
@@ -285,6 +286,8 @@ void kernel_main(uint64_t mb2_info) {
     }
 
     kernel_exit_stack_top = (uint64_t)(uintptr_t)(&post_user_stack[sizeof(post_user_stack)]);
+
+    kmalloc_init();
 
     gdt_init();
     gdt_set_kernel_stack(kernel_exit_stack_top);
