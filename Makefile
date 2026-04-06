@@ -29,6 +29,10 @@ KERNEL_OBJS := $(patsubst %.asm,$(BUILD_DIR)/%.o,$(KERNEL_ASM)) \
 	$(patsubst %.c,$(BUILD_DIR)/%.o,$(KERNEL_C))
 
 USER_BUSYBOX := $(BUILD_DIR)/userspace/busybox
+NCURSES_SRC := external/ncurses-src
+NCURSES_BUILD := $(NCURSES_SRC)/build-musl
+SL_SRC := external/sl-src
+USER_SL := $(BUILD_DIR)/userspace/sl
 
 .PHONY: all clean run iso disk check-toolchain
 
@@ -59,8 +63,14 @@ $(KERNEL_BIN): $(KERNEL_OBJS) kernel/linker.ld | $(BUILD_DIR)
 $(USER_BUSYBOX): | $(BUILD_DIR)
 	./tools/build_busybox.sh $@ "$(BUSYBOX_SRC)" "$(BUSYBOX_STATIC)" "$(BUSYBOX_ROOTFS)"
 
-$(INITRAMFS): $(USER_BUSYBOX)
-	./tools/make_initramfs.sh $@ $(USER_BUSYBOX)
+$(NCURSES_BUILD)/lib/libncursesw.a: | $(BUILD_DIR)
+	./tools/build_ncurses.sh $@ "$(NCURSES_SRC)"
+
+$(USER_SL): $(NCURSES_BUILD)/lib/libncursesw.a | $(BUILD_DIR)
+	./tools/build_sl.sh $@ "$(SL_SRC)" "$(NCURSES_BUILD)"
+
+$(INITRAMFS): $(USER_BUSYBOX) $(USER_SL)
+	./tools/make_initramfs.sh $@ $(USER_BUSYBOX) $(USER_SL)
 
 iso: check-toolchain $(KERNEL_BIN) $(INITRAMFS)
 	./tools/make_iso.sh $(ISO_IMAGE) $(KERNEL_BIN) $(INITRAMFS)
