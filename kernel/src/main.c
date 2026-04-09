@@ -266,9 +266,17 @@ static void kernel_shell(void) {
     }
 }
 
+__attribute__((noreturn)) static void kernel_shutdown(void) {
+    console_write("\nSystem halted.\n");
+    __asm__ volatile("cli");
+    for (;;) {
+        __asm__ volatile("hlt");
+    }
+}
+
 void userland_exit_handler(uint64_t code) {
     console_printf("\n[userland exited: %u]\n", code);
-    kernel_shell();
+    kernel_shutdown();
 }
 
 void kernel_main(uint64_t mb2_info) {

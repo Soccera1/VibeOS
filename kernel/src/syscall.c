@@ -50,6 +50,9 @@
 #define ARCH_GET_FS 0x1003u
 
 #define TCGETS 0x5401u
+#define TCSETS 0x5402u
+#define TCSETSW 0x5403u
+#define TCSETSF 0x5404u
 #define TIOCGWINSZ 0x5413u
 
 #define POLLIN 0x0001
@@ -383,6 +386,10 @@ static void add_zombie(int pid, int ppid, int exit_code, int exit_status);
 static int find_zombie(int pid);
 static int find_zombie_by_ppid(int ppid);
 static void remove_zombie(int idx);
+
+__attribute__((noreturn)) static void do_shutdown(void);
+__attribute__((noreturn)) static void do_halt(void);
+__attribute__((noreturn)) static void do_reboot(void);
 
 extern void leave_user_mode(uint64_t code) __attribute__((noreturn));
 extern void syscall_entry(void);
@@ -1605,6 +1612,10 @@ static int sys_ioctl(int fd, uint64_t req, void* argp) {
         return 0;
     }
 
+    if (req == TCSETS || req == TCSETSW || req == TCSETSF) {
+        return 0;
+    }
+
     return 0;
 }
 
@@ -2040,6 +2051,12 @@ static int64_t sys_mmap(uint64_t addr, size_t len, uint64_t flags) {
     return (int64_t)base;
 }
 
+static int sys_munmap(uint64_t addr, size_t len) {
+    (void)addr;
+    (void)len;
+    return 0;
+}
+
 static int64_t sys_brk(uint64_t brk) {
     uint64_t old = g_brk_current;
     if (brk == 0) {
@@ -2466,6 +2483,11 @@ static int sys_kill(int pid, int sig) {
         }
         return 0;
     }
+    if (g_parent_pending && pid == g_saved_parent_pid && g_saved_parent_pid == 1) {
+        if (sig == SIGUSR1 || sig == SIGUSR2 || sig == SIGTERM) {
+            do_shutdown();
+        }
+    }
     return err(ESRCH);
 }
 
@@ -2511,6 +2533,49 @@ static void remove_zombie(int idx) {
 static int sys_set_tid_address(uint64_t tidptr) {
     g_tid_address = tidptr;
     return g_current_pid;
+}
+
+__attribute__((noreturn)) static void do_shutdown(void) {
+    console_write("\nPowering off...\n");
+    outb(0xf4, 0x00);
+    __asm__ volatile("cli");
+    for (;;) {
+        __asm__ volatile("hlt");
+    }
+}
+
+__attribute__((noreturn)) static void do_halt(void) {
+    console_write("\nSystem halted.\n");
+    __asm__ volatile("cli");
+    for (;;) {
+        __asm__ volatile("hlt");
+    }
+}
+
+__attribute__((noreturn)) static void do_reboot(void) {
+    console_write("\nRebooting...\n");
+    uint8_t good = 0x02;
+    outb(0x64, good);
+    for (;;) {
+        __asm__ volatile("hlt");
+    }
+}
+
+static int sys_reboot(int magic1, int magic2, uint64_t cmd) {
+    if (magic1 != (int)0xfee1dead || magic2 != 672274793) {
+        return err(EINVAL);
+    }
+    switch (cmd) {
+        case LINUX_REBOOT_CMD_POWER_OFF:
+            do_shutdown();
+        case LINUX_REBOOT_CMD_HALT:
+            do_halt();
+        case LINUX_REBOOT_CMD_RESTART:
+        case LINUX_REBOOT_CMD_RESTART2:
+            do_reboot();
+        default:
+            return err(EINVAL);
+    }
 }
 
 static int sys_fork_like(struct syscall_frame* frame, uint64_t clone_flags, uint64_t child_stack, uint64_t child_tid_ptr, uint64_t tls,
@@ -2700,7 +2765,7 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
         case 10:
             return 0;
         case 11:
-            return 0;
+            return (uint64_t)sys_munmap(a0, (size_t)a1);
         case 12:
             return (uint64_t)sys_brk(a0);
         case 13:
@@ -2775,6 +2840,8 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
             return 0;
         case 158:
             return (uint64_t)sys_arch_prctl(a0, a1);
+        case 169:
+            return (uint64_t)sys_reboot((int)a0, (int)a1, a2);
         case 186:
             return (uint64_t)g_current_pid;
         case 202:
