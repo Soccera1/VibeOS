@@ -1,0 +1,48 @@
+name: Build and Release ISO
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nasm grub-pc-bin grub-common xorriso mtools
+
+      - name: Install Zig
+        uses: mlc/setup-zig@v1
+        with:
+          version: 0.13.0
+
+      - name: Build ISO
+        run: make iso
+
+      - name: Generate version number
+        id: version
+        run: |
+          DATE=$(date -u +%Y%m%d)
+          N=$(git tag -l "v0.${DATE}.*" | sed "s/v0\\.${DATE}\\.//" | sort -rn | head -1)
+          if [ -z "$N" ]; then
+            N=0
+          fi
+          N=$((N + 1))
+          VERSION="v0.${DATE}.${N}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: VibeOS ${{ steps.version.outputs.version }}
+          files: build/vibeos.iso
