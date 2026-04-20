@@ -75,7 +75,7 @@ static uint64_t push_auxv(uint64_t sp, uint64_t type, uint64_t value) {
 static uint64_t build_user_stack(const struct user_exec_info* exec) {
     const char* argv[] = {"busybox", "sh", "-i"};
     const char* envp[] = {
-        "TERM=dumb",
+        "TERM=linux",
         "HOME=/",
         "PATH=/bin:/usr/bin",
         "SH_STANDALONE=1",

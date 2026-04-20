@@ -40,6 +40,16 @@ if [[ -n "$SL_BIN" && -x "$SL_BIN" ]]; then
   cp "$SL_BIN" "$ROOT/usr/bin/sl"
 fi
 
+if [[ -f external/ncurses-src/build-musl/share/terminfo/l/linux ]]; then
+  mkdir -p "$ROOT/usr/share/terminfo/l"
+  cp external/ncurses-src/build-musl/share/terminfo/l/linux "$ROOT/usr/share/terminfo/l/linux"
+fi
+
+if [[ -f external/ncurses-src/build-musl/share/terminfo/d/dumb ]]; then
+  mkdir -p "$ROOT/usr/share/terminfo/d"
+  cp external/ncurses-src/build-musl/share/terminfo/d/dumb "$ROOT/usr/share/terminfo/d/dumb"
+fi
+
 chmod +x "$ROOT/bin/busybox"
 
 is_blocked_applet() {
