@@ -13,6 +13,7 @@
 #include "process.h"
 #include "string.h"
 #include "userland.h"
+#include "vm.h"
 
 #define IA32_FS_BASE 0xC0000100u
 #define IA32_STAR 0xC0000081u
@@ -30,6 +31,8 @@
 #define O_CREAT 0x40u
 #define O_NONBLOCK 0x800u
 #define O_DIRECTORY 0x10000u
+
+#define FD_CLOEXEC 1u
 
 #define SEEK_SET 0
 #define SEEK_CUR 1
@@ -70,11 +73,6 @@
 
 #define MAX_FDS 64
 #define MAX_CHILDREN 256
-#define USER_STACK_TOP 0x08000000ull
-#define USER_BRK_BASE 0x09000000ull
-#define USER_MMAP_BASE 0x0C000000ull
-#define USER_MMAP_LIMIT 0x0F000000ull
-
 #define MAP_SHARED 0x01u
 #define MAP_PRIVATE 0x02u
 #define MAP_FIXED 0x10u
@@ -200,11 +198,6 @@
 #define RLIM_INFINITY (~0ull)
 #define APPROX_TSC_CYCLES_PER_USEC 2000ull
 
-#define FORK_IMAGE_SNAPSHOT_MAX (16u * 1024u * 1024u)
-#define FORK_STACK_SNAPSHOT_MAX (8u * 1024u * 1024u)
-#define FORK_BRK_SNAPSHOT_MAX (8u * 1024u * 1024u)
-#define FORK_MMAP_SNAPSHOT_MAX (16u * 1024u * 1024u)
-
 #define MAX_PIPES 64
 #define PIPE_CAPACITY 65536
 
@@ -216,8 +209,6 @@
 #define ELF_MAGIC 0x464C457Fu
 #define ET_EXEC 2u
 #define PT_LOAD 1u
-#define USER_ELF_LIMIT 0x3F000000ull
-
 struct linux_iovec {
     uint64_t base;
     uint64_t len;
@@ -382,6 +373,7 @@ enum fd_kind {
 struct fd_state {
     enum fd_kind kind;
     uint32_t flags;
+    uint32_t fd_flags;
     size_t offset;
     int pipe_id;
     struct fs_entry entry;
@@ -397,8 +389,8 @@ struct pipe_state {
 
 static struct fd_state g_fds[MAX_FDS];
 static char g_cwd[128] = "/";
-static uint64_t g_brk_current = USER_BRK_BASE;
-static uint64_t g_mmap_next = USER_MMAP_BASE;
+static uint64_t g_brk_current = VM_USER_BRK_BASE;
+static uint64_t g_mmap_next = VM_USER_MMAP_BASE;
 static uint64_t g_rng_state = 0x123456789abcdef0ull;
 static char g_dirent_names[MAX_CHILDREN][64];
 static uint8_t g_dirent_types[MAX_CHILDREN];
@@ -448,6 +440,9 @@ static int try_complete_select(struct process* proc);
 static int try_complete_nanosleep(struct process* proc);
 static uint64_t schedule_away(struct syscall_frame* frame);
 static int signal_process_group(int pgid, int sig);
+static int map_exec_segment(struct process* proc, uint64_t vaddr, size_t memsz, const void* src, size_t filesz);
+static void close_cloexec_fds(void);
+static int sys_close(int fd);
 
 __attribute__((noreturn)) static void do_shutdown(void);
 __attribute__((noreturn)) static void do_halt(void);
@@ -651,27 +646,6 @@ static void write_fs_base_current(uint64_t base) {
     wrmsr(IA32_FS_BASE, base);
 }
 
-static int snapshot_range(uint64_t base, size_t len, uint8_t* dst, size_t dst_cap) {
-    if (len == 0) {
-        return 0;
-    }
-    if (len > dst_cap) {
-        return err(ENOMEM);
-    }
-    if (base < 0x1000ull || base + len < base || base + len >= USER_MMAP_LIMIT) {
-        return err(EINVAL);
-    }
-    memcpy(dst, (const void*)(uintptr_t)base, len);
-    return 0;
-}
-
-static void restore_range(uint64_t base, size_t len, const uint8_t* src) {
-    if (len == 0) {
-        return;
-    }
-    memcpy((void*)(uintptr_t)base, src, len);
-}
-
 static void capture_user_context(struct process* proc, struct syscall_frame* frame) {
     if (proc == NULL || frame == NULL) {
         return;
@@ -701,73 +675,9 @@ static void restore_user_context(const struct process* proc, struct syscall_fram
     raw[IRET_SLOT_SS] = proc->saved_iret[4];
 }
 
-static int ensure_snapshot_buffers(struct process* proc) {
-    if (proc == NULL) {
-        return err(EINVAL);
-    }
-    if (proc->snap.valid) {
-        return 0;
-    }
-    return process_alloc_snapshot(proc) == 0 ? 0 : err(ENOMEM);
-}
-
-static int ensure_snapshot_buffer(uint8_t** buf, size_t* cap, size_t need, size_t max_cap) {
-    if (need > max_cap) {
-        return err(ENOMEM);
-    }
-    if (*buf != NULL && !kmalloc_owns(*buf)) {
-        *buf = NULL;
-        *cap = 0;
-    }
-    if (need == 0) {
-        if (*buf != NULL) {
-            kfree(*buf);
-            *buf = NULL;
-        }
-        *cap = 0;
-        return 0;
-    }
-    if (*buf != NULL && *cap >= need) {
-        return 0;
-    }
-
-    void* resized = krealloc(*buf, need);
-    if (resized == NULL) {
-        return err(ENOMEM);
-    }
-
-    *buf = (uint8_t*)resized;
-    *cap = need;
-    return 0;
-}
-
-static void clear_live_process_memory(const struct process* proc) {
-    if (proc == NULL) {
-        return;
-    }
-
-    if (proc->image_end > proc->image_start) {
-        memset((void*)(uintptr_t)proc->image_start, 0, (size_t)(proc->image_end - proc->image_start));
-    }
-    if (proc->snap.stack_len > 0) {
-        memset((void*)(uintptr_t)proc->snap.stack_base, 0, proc->snap.stack_len);
-    }
-    if (proc->brk_current > USER_BRK_BASE) {
-        memset((void*)(uintptr_t)USER_BRK_BASE, 0, (size_t)(proc->brk_current - USER_BRK_BASE));
-    }
-    if (proc->mmap_next > USER_MMAP_BASE) {
-        memset((void*)(uintptr_t)USER_MMAP_BASE, 0, (size_t)(proc->mmap_next - USER_MMAP_BASE));
-    }
-}
-
 static int save_live_process(struct process* proc, struct syscall_frame* frame) {
     if (proc == NULL || frame == NULL) {
         return err(EINVAL);
-    }
-
-    int sr = ensure_snapshot_buffers(proc);
-    if (sr != 0) {
-        return sr;
     }
 
     capture_user_context(proc, frame);
@@ -794,91 +704,34 @@ static int save_live_process(struct process* proc, struct syscall_frame* frame) 
     proc->image_start = image_start;
     proc->image_end = image_end;
 
-    proc->snap.image_base = image_start;
-    proc->snap.image_len = 0;
-    if (image_end > image_start) {
-        proc->snap.image_len = (size_t)(image_end - image_start);
-        sr = ensure_snapshot_buffer(&proc->snap.image, &proc->snap.image_cap, proc->snap.image_len, FORK_IMAGE_SNAPSHOT_MAX);
-        if (sr != 0) {
-            return sr;
-        }
-        sr = snapshot_range(image_start, proc->snap.image_len, proc->snap.image, proc->snap.image_cap);
-        if (sr != 0) {
-            return sr;
-        }
-    } else {
-        sr = ensure_snapshot_buffer(&proc->snap.image, &proc->snap.image_cap, 0, FORK_IMAGE_SNAPSHOT_MAX);
-        if (sr != 0) {
-            return sr;
-        }
-    }
-
-    uint64_t* raw = (uint64_t*)(void*)frame;
-    uint64_t user_rsp = raw[IRET_SLOT_RSP];
-    uint64_t stack_base = user_rsp & ~0x0Full;
-    if (proc->snap.stack_base == 0 || stack_base < proc->snap.stack_base) {
-        proc->snap.stack_base = stack_base;
-    }
-    proc->snap.stack_len = 0;
-    if (proc->snap.stack_base < USER_STACK_TOP) {
-        proc->snap.stack_len = (size_t)(USER_STACK_TOP - proc->snap.stack_base);
-        sr = ensure_snapshot_buffer(&proc->snap.stack, &proc->snap.stack_cap, proc->snap.stack_len, FORK_STACK_SNAPSHOT_MAX);
-        if (sr != 0) {
-            return sr;
-        }
-        sr = snapshot_range(proc->snap.stack_base, proc->snap.stack_len, proc->snap.stack, proc->snap.stack_cap);
-        if (sr != 0) {
-            return sr;
-        }
-    } else {
-        sr = ensure_snapshot_buffer(&proc->snap.stack, &proc->snap.stack_cap, 0, FORK_STACK_SNAPSHOT_MAX);
-        if (sr != 0) {
-            return sr;
-        }
-    }
-
-    proc->snap.brk_current = g_brk_current;
-    proc->snap.brk_len = 0;
-    if (g_brk_current > USER_BRK_BASE) {
-        proc->snap.brk_len = (size_t)(g_brk_current - USER_BRK_BASE);
-        sr = ensure_snapshot_buffer(&proc->snap.brk, &proc->snap.brk_cap, proc->snap.brk_len, FORK_BRK_SNAPSHOT_MAX);
-        if (sr != 0) {
-            return sr;
-        }
-        sr = snapshot_range(USER_BRK_BASE, proc->snap.brk_len, proc->snap.brk, proc->snap.brk_cap);
-        if (sr != 0) {
-            return sr;
-        }
-    } else {
-        sr = ensure_snapshot_buffer(&proc->snap.brk, &proc->snap.brk_cap, 0, FORK_BRK_SNAPSHOT_MAX);
-        if (sr != 0) {
-            return sr;
-        }
-    }
-
-    proc->snap.mmap_next = g_mmap_next;
-    proc->snap.mmap_len = 0;
-    if (g_mmap_next > USER_MMAP_BASE) {
-        proc->snap.mmap_len = (size_t)(g_mmap_next - USER_MMAP_BASE);
-        sr = ensure_snapshot_buffer(&proc->snap.mmap, &proc->snap.mmap_cap, proc->snap.mmap_len, FORK_MMAP_SNAPSHOT_MAX);
-        if (sr != 0) {
-            return sr;
-        }
-        sr = snapshot_range(USER_MMAP_BASE, proc->snap.mmap_len, proc->snap.mmap, proc->snap.mmap_cap);
-        if (sr != 0) {
-            return sr;
-        }
-    } else {
-        sr = ensure_snapshot_buffer(&proc->snap.mmap, &proc->snap.mmap_cap, 0, FORK_MMAP_SNAPSHOT_MAX);
-        if (sr != 0) {
-            return sr;
-        }
-    }
-
     return 0;
 }
 
+static void sync_current_process_runtime(void) {
+    struct process* proc = current_process();
+    if (proc == NULL) {
+        return;
+    }
+
+    proc->ppid = g_current_ppid;
+    proc->pgid = g_current_pgid;
+    proc->sid = g_current_sid;
+    proc->brk_current = g_brk_current;
+    proc->mmap_next = g_mmap_next;
+    proc->tid_address = g_tid_address;
+    proc->fs_base = read_fs_base_current();
+    proc->umask = g_umask;
+    memcpy(proc->fds, g_fds, sizeof(g_fds));
+    memcpy(proc->cwd, g_cwd, sizeof(g_cwd));
+    memcpy(proc->sig_actions, g_sig_actions, sizeof(g_sig_actions));
+    proc->sig_mask = g_sig_mask;
+    memcpy(proc->pending_signals, g_pending_signals, sizeof(g_pending_signals));
+    proc->pending_count = g_pending_signal_count;
+    userland_get_image_span(&proc->image_start, &proc->image_end);
+}
+
 static void load_process_runtime(struct process* proc) {
+    vm_space_activate(&proc->vm);
     process_set_current(proc);
     g_current_pid = proc->pid;
     g_current_ppid = proc->ppid;
@@ -898,17 +751,6 @@ static void load_process_runtime(struct process* proc) {
 
     userland_set_image_span(proc->image_start, proc->image_end);
     write_fs_base_current(proc->fs_base);
-}
-
-static void restore_process_memory(const struct process* proc) {
-    if (proc == NULL) {
-        return;
-    }
-
-    restore_range(proc->snap.image_base, proc->snap.image_len, proc->snap.image);
-    restore_range(proc->snap.stack_base, proc->snap.stack_len, proc->snap.stack);
-    restore_range(USER_BRK_BASE, proc->snap.brk_len, proc->snap.brk);
-    restore_range(USER_MMAP_BASE, proc->snap.mmap_len, proc->snap.mmap);
 }
 
 static struct process* current_process(void) {
@@ -1067,13 +909,17 @@ static bool pipe_is_referenced_in_process_fd_table(const struct process_fd* fds,
     return false;
 }
 
+static bool process_holds_pipe_refs(const struct process* proc) {
+    return proc != NULL && proc->state != PROCESS_FREE && proc->state != PROCESS_ZOMBIE;
+}
+
 static bool pipe_is_referenced(int pipe_id) {
     if (pipe_is_referenced_in_fd_table(g_fds, pipe_id)) {
         return true;
     }
     for (int i = 0; i < MAX_PROCESSES; ++i) {
         struct process* proc = process_at(i);
-        if (proc == NULL || proc == current_process() || proc->state == PROCESS_FREE) {
+        if (proc == current_process() || !process_holds_pipe_refs(proc)) {
             continue;
         }
         if (pipe_is_referenced_in_process_fd_table(proc->fds, pipe_id)) {
@@ -1100,7 +946,7 @@ static bool pipe_has_writer(int pipe_id) {
     }
     for (int i = 0; i < MAX_PROCESSES; ++i) {
         struct process* proc = process_at(i);
-        if (proc == NULL || proc == current_process() || proc->state == PROCESS_FREE) {
+        if (proc == current_process() || !process_holds_pipe_refs(proc)) {
             continue;
         }
         if (pipe_has_writer_in_process_fd_table(proc->fds, pipe_id)) {
@@ -1127,7 +973,7 @@ static bool pipe_has_reader(int pipe_id) {
     }
     for (int i = 0; i < MAX_PROCESSES; ++i) {
         struct process* proc = process_at(i);
-        if (proc == NULL || proc == current_process() || proc->state == PROCESS_FREE) {
+        if (proc == current_process() || !process_holds_pipe_refs(proc)) {
             continue;
         }
         if (pipe_has_reader_in_process_fd_table(proc->fds, pipe_id)) {
@@ -1146,6 +992,50 @@ static int alloc_pipe_slot(void) {
         }
     }
     return err(ENOMEM);
+}
+
+static void release_process_fds(struct process* proc) {
+    if (proc == NULL) {
+        return;
+    }
+
+    int pipe_ids[PROCESS_MAX_FDS];
+    size_t pipe_count = 0;
+    for (int fd = 0; fd < PROCESS_MAX_FDS; ++fd) {
+        if ((proc->fds[fd].kind == FD_PIPE_R || proc->fds[fd].kind == FD_PIPE_W) && proc->fds[fd].pipe_id >= 0) {
+            int pipe_id = proc->fds[fd].pipe_id;
+            bool seen = false;
+            for (size_t i = 0; i < pipe_count; ++i) {
+                if (pipe_ids[i] == pipe_id) {
+                    seen = true;
+                    break;
+                }
+            }
+            if (!seen && pipe_count < ARRAY_LEN(pipe_ids)) {
+                pipe_ids[pipe_count++] = pipe_id;
+            }
+        }
+        memset(&proc->fds[fd], 0, sizeof(proc->fds[fd]));
+        proc->fds[fd].pipe_id = -1;
+    }
+
+    for (size_t i = 0; i < pipe_count; ++i) {
+        int pipe_id = pipe_ids[i];
+        if (pipe_id >= 0 && pipe_id < MAX_PIPES && g_pipes[pipe_id].used && !pipe_is_referenced(pipe_id)) {
+            memset(&g_pipes[pipe_id], 0, sizeof(g_pipes[pipe_id]));
+        }
+    }
+}
+
+static void close_cloexec_fds(void) {
+    for (int fd = 0; fd < MAX_FDS; ++fd) {
+        if (g_fds[fd].kind == FD_FREE) {
+            continue;
+        }
+        if ((g_fds[fd].fd_flags & FD_CLOEXEC) != 0u) {
+            (void)sys_close(fd);
+        }
+    }
 }
 
 static bool is_special_dir(const char* path) {
@@ -1442,7 +1332,15 @@ static int copy_user_string(const char* user, char* out, size_t out_len) {
         return err(EINVAL);
     }
 
+    struct process* proc = current_process();
+    if (proc == NULL) {
+        return err(EFAULT);
+    }
+
     for (size_t i = 0; i < out_len; ++i) {
+        if (!vm_space_range_mapped(&proc->vm, (uint64_t)(uintptr_t)(user + i), 1)) {
+            return err(EFAULT);
+        }
         char c = user[i];
         out[i] = c;
         if (c == '\0') {
@@ -1491,9 +1389,11 @@ static int sys_openat(int dirfd, const char* path_user, uint32_t flags) {
         }
         g_fds[fd].kind = FD_TTY;
         g_fds[fd].flags = flags;
+        g_fds[fd].fd_flags = 0;
         g_fds[fd].offset = 0;
         g_fds[fd].pipe_id = -1;
         strncpy(g_fds[fd].path, path, sizeof(g_fds[fd].path));
+        sync_current_process_runtime();
         return fd;
     }
 
@@ -1504,9 +1404,11 @@ static int sys_openat(int dirfd, const char* path_user, uint32_t flags) {
         }
         g_fds[fd].kind = FD_NULL;
         g_fds[fd].flags = flags;
+        g_fds[fd].fd_flags = 0;
         g_fds[fd].offset = 0;
         g_fds[fd].pipe_id = -1;
         strncpy(g_fds[fd].path, path, sizeof(g_fds[fd].path));
+        sync_current_process_runtime();
         return fd;
     }
 
@@ -1522,9 +1424,11 @@ static int sys_openat(int dirfd, const char* path_user, uint32_t flags) {
             }
             g_fds[fd].kind = FD_NULL;
             g_fds[fd].flags = flags;
+            g_fds[fd].fd_flags = 0;
             g_fds[fd].offset = 0;
             g_fds[fd].pipe_id = -1;
             strncpy(g_fds[fd].path, "/dev/null", sizeof(g_fds[fd].path));
+            sync_current_process_runtime();
             return fd;
         }
         return r;
@@ -1540,6 +1444,7 @@ static int sys_openat(int dirfd, const char* path_user, uint32_t flags) {
     }
 
     g_fds[fd].flags = flags;
+    g_fds[fd].fd_flags = 0;
     g_fds[fd].offset = 0;
     g_fds[fd].pipe_id = -1;
     strncpy(g_fds[fd].path, path, sizeof(g_fds[fd].path));
@@ -1552,6 +1457,7 @@ static int sys_openat(int dirfd, const char* path_user, uint32_t flags) {
     }
 
     (void)size;
+    sync_current_process_runtime();
     return fd;
 }
 
@@ -1569,6 +1475,7 @@ static int sys_close(int fd) {
         !pipe_is_referenced(pipe_id)) {
         memset(&g_pipes[pipe_id], 0, sizeof(g_pipes[pipe_id]));
     }
+    sync_current_process_runtime();
     return 0;
 }
 
@@ -2068,16 +1975,21 @@ static int sys_fcntl(int fd, int cmd, uint64_t arg) {
                 return newfd;
             }
             g_fds[newfd] = g_fds[fd];
+            g_fds[newfd].fd_flags = (cmd == 1030) ? FD_CLOEXEC : 0u;
+            sync_current_process_runtime();
             return newfd;
         }
         case 1:  // F_GETFD
-            return 0;
+            return (int)(g_fds[fd].fd_flags & FD_CLOEXEC);
         case 3:  // F_GETFL
             return (int)g_fds[fd].flags;
         case 2:  // F_SETFD
+            g_fds[fd].fd_flags = (uint32_t)arg & FD_CLOEXEC;
+            sync_current_process_runtime();
             return 0;
         case 4:  // F_SETFL
             g_fds[fd].flags = (g_fds[fd].flags & ~0xFFFFu) | ((uint32_t)arg & 0xFFFFu);
+            sync_current_process_runtime();
             return 0;
         default:
             return err(EINVAL);
@@ -2103,6 +2015,10 @@ static int sys_dup_common(int oldfd, int wanted, bool exact) {
     }
 
     g_fds[newfd] = g_fds[oldfd];
+    if (newfd != oldfd) {
+        g_fds[newfd].fd_flags = 0;
+    }
+    sync_current_process_runtime();
     return newfd;
 }
 
@@ -2138,18 +2054,21 @@ static int sys_pipe2(int* pipefd, uint32_t flags) {
 
     g_fds[rfd].kind = FD_PIPE_R;
     g_fds[rfd].flags = O_RDONLY;
+    g_fds[rfd].fd_flags = 0;
     g_fds[rfd].offset = 0;
     g_fds[rfd].pipe_id = pipe_id;
     strcpy(g_fds[rfd].path, "pipe:[r]");
 
     g_fds[wfd].kind = FD_PIPE_W;
     g_fds[wfd].flags = O_WRONLY;
+    g_fds[wfd].fd_flags = 0;
     g_fds[wfd].offset = 0;
     g_fds[wfd].pipe_id = pipe_id;
     strcpy(g_fds[wfd].path, "pipe:[w]");
 
     pipefd[0] = rfd;
     pipefd[1] = wfd;
+    sync_current_process_runtime();
     return 0;
 }
 
@@ -2185,6 +2104,7 @@ static int sys_chdir(const char* path_user) {
 
     strncpy(g_cwd, path, sizeof(g_cwd));
     g_cwd[sizeof(g_cwd) - 1] = '\0';
+    sync_current_process_runtime();
     return 0;
 }
 
@@ -2766,10 +2686,6 @@ static uint64_t schedule_away(struct syscall_frame* frame) {
         }
 
         if (next != NULL) {
-            if (outgoing != NULL) {
-                clear_live_process_memory(outgoing);
-            }
-            restore_process_memory(next);
             load_process_runtime(next);
             if (next->state == PROCESS_BLOCKED) {
                 int cr = complete_blocked_process(next);
@@ -3339,6 +3255,11 @@ static int64_t sys_mmap(uint64_t addr, size_t len, uint64_t prot, uint64_t flags
         return err(EINVAL);
     }
 
+    struct process* current = current_process();
+    if (current == NULL) {
+        return err(ENOMEM);
+    }
+
     const uint64_t align = 0x1000ull;
     uint64_t span = ((uint64_t)len + align - 1u) & ~(align - 1u);
     bool anonymous = (flags & MAP_ANONYMOUS) != 0u;
@@ -3354,18 +3275,26 @@ static int64_t sys_mmap(uint64_t addr, size_t len, uint64_t prot, uint64_t flags
     uint64_t base = 0;
     if (addr != 0 && (flags & (MAP_FIXED | MAP_FIXED_NOREPLACE)) != 0u) {
         base = addr & ~(align - 1u);
-        if (base < 0x1000ull || base + span >= USER_MMAP_LIMIT) {
+        if (base < 0x1000ull || base + span >= VM_USER_MMAP_LIMIT) {
             return err(ENOMEM);
+        }
+        if ((flags & MAP_FIXED_NOREPLACE) != 0u && vm_space_range_mapped(&current->vm, base, (size_t)span)) {
+            return err(EEXIST);
+        }
+        if ((flags & MAP_FIXED) != 0u) {
+            (void)vm_space_unmap(&current->vm, base, (size_t)span);
         }
     } else {
         base = (g_mmap_next + align - 1u) & ~(align - 1u);
-        if (base + span >= USER_MMAP_LIMIT) {
+        if (base + span >= VM_USER_MMAP_LIMIT) {
             return err(ENOMEM);
         }
         g_mmap_next = base + span;
     }
 
-    memset((void*)(uintptr_t)base, 0, (size_t)span);
+    if (vm_space_map_zero(&current->vm, base, (size_t)span) != 0) {
+        return err(ENOMEM);
+    }
 
     if (!anonymous) {
         if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind != FD_FILE) {
@@ -3377,9 +3306,22 @@ static int64_t sys_mmap(uint64_t addr, size_t len, uint64_t prot, uint64_t flags
         if (file_off < entry->size) {
             size_t remain = entry->size - file_off;
             size_t copy_len = (len < remain) ? len : remain;
-            int rr = fs_read(entry, file_off, (void*)(uintptr_t)base, copy_len);
+            uint8_t* file_data = kmalloc(copy_len);
+            if (file_data == NULL) {
+                (void)vm_space_unmap(&current->vm, base, (size_t)span);
+                return err(ENOMEM);
+            }
+            int rr = fs_read(entry, file_off, file_data, copy_len);
             if (rr < 0) {
+                kfree(file_data);
+                (void)vm_space_unmap(&current->vm, base, (size_t)span);
                 return rr;
+            }
+            int wr = vm_space_write(&current->vm, base, file_data, (size_t)rr);
+            kfree(file_data);
+            if (wr != 0) {
+                (void)vm_space_unmap(&current->vm, base, (size_t)span);
+                return err(ENOMEM);
             }
         }
     }
@@ -3388,21 +3330,38 @@ static int64_t sys_mmap(uint64_t addr, size_t len, uint64_t prot, uint64_t flags
 }
 
 static int sys_munmap(uint64_t addr, size_t len) {
-    (void)addr;
-    (void)len;
-    return 0;
+    struct process* current = current_process();
+    if (current == NULL) {
+        return err(EINVAL);
+    }
+    if (len == 0) {
+        return 0;
+    }
+    return vm_space_unmap(&current->vm, addr, len) == 0 ? 0 : err(EINVAL);
 }
 
 static int64_t sys_brk(uint64_t brk) {
+    struct process* current = current_process();
+    if (current == NULL) {
+        return (int64_t)g_brk_current;
+    }
+
     uint64_t old = g_brk_current;
     if (brk == 0) {
         return (int64_t)g_brk_current;
     }
-    if (brk < USER_BRK_BASE || brk >= USER_MMAP_BASE) {
+    if (brk < VM_USER_BRK_BASE || brk >= VM_USER_MMAP_BASE) {
         return (int64_t)g_brk_current;
     }
     if (brk > old) {
-        memset((void*)(uintptr_t)old, 0, (size_t)(brk - old));
+        if (vm_space_map_zero(&current->vm, old, (size_t)(brk - old)) != 0) {
+            return (int64_t)g_brk_current;
+        }
+    } else if (brk < old) {
+        uint64_t release_start = (brk + VM_PAGE_SIZE - 1ull) & VM_PAGE_MASK;
+        if (release_start < old) {
+            (void)vm_space_unmap(&current->vm, release_start, (size_t)(old - release_start));
+        }
     }
     g_brk_current = brk;
     return (int64_t)g_brk_current;
@@ -3432,21 +3391,21 @@ static int sys_arch_prctl(uint64_t code, uint64_t addr) {
     return err(EINVAL);
 }
 
-static uint64_t exec_stack_push_bytes(uint64_t sp, const void* data, size_t len) {
+static uint64_t exec_stack_push_bytes(uint64_t sp, const void* data, size_t len, struct process* proc) {
     sp -= len;
-    memcpy((void*)(uintptr_t)sp, data, len);
+    (void)vm_space_write(&proc->vm, sp, data, len);
     return sp;
 }
 
-static uint64_t exec_stack_push_u64(uint64_t sp, uint64_t value) {
+static uint64_t exec_stack_push_u64(uint64_t sp, uint64_t value, struct process* proc) {
     sp -= sizeof(uint64_t);
-    *(uint64_t*)(uintptr_t)sp = value;
+    (void)vm_space_write(&proc->vm, sp, &value, sizeof(value));
     return sp;
 }
 
-static uint64_t exec_stack_push_auxv(uint64_t sp, uint64_t type, uint64_t value) {
-    sp = exec_stack_push_u64(sp, value);
-    sp = exec_stack_push_u64(sp, type);
+static uint64_t exec_stack_push_auxv(uint64_t sp, uint64_t type, uint64_t value, struct process* proc) {
+    sp = exec_stack_push_u64(sp, value, proc);
+    sp = exec_stack_push_u64(sp, type, proc);
     return sp;
 }
 
@@ -3456,8 +3415,16 @@ static int copy_user_str_array(uint64_t user_ptr, char out[][EXEC_STR_MAX], size
         return 0;
     }
 
+    struct process* proc = current_process();
+    if (proc == NULL) {
+        return err(EFAULT);
+    }
+
     const uint64_t* list = (const uint64_t*)(uintptr_t)user_ptr;
     for (size_t i = 0; i < max_out; ++i) {
+        if (!vm_space_range_mapped(&proc->vm, user_ptr + i * sizeof(uint64_t), sizeof(uint64_t))) {
+            return err(EFAULT);
+        }
         uint64_t p = list[i];
         if (p == 0) {
             *count_out = i;
@@ -3472,9 +3439,23 @@ static int copy_user_str_array(uint64_t user_ptr, char out[][EXEC_STR_MAX], size
     return err(ENOMEM);
 }
 
-static int load_exec_image(const uint8_t* image, size_t image_size, uint64_t* entry_out, uint64_t* phdr_out, uint64_t* phent_out,
+static int map_exec_segment(struct process* proc, uint64_t vaddr, size_t memsz, const void* src, size_t filesz) {
+    if (proc == NULL) {
+        return err(EINVAL);
+    }
+    if (vm_space_map_zero(&proc->vm, vaddr, memsz) != 0) {
+        return err(ENOMEM);
+    }
+    if (filesz != 0 && vm_space_write(&proc->vm, vaddr, src, filesz) != 0) {
+        return err(ENOMEM);
+    }
+    return 0;
+}
+
+static int load_exec_image(struct process* proc, const uint8_t* image, size_t image_size, uint64_t* entry_out, uint64_t* phdr_out,
+                           uint64_t* phent_out,
                            uint64_t* phnum_out, uint64_t* image_start_out, uint64_t* image_end_out) {
-    if (image_size < sizeof(struct elf64_ehdr)) {
+    if (proc == NULL || image_size < sizeof(struct elf64_ehdr)) {
         return err(EINVAL);
     }
 
@@ -3498,14 +3479,15 @@ static int load_exec_image(const uint8_t* image, size_t image_size, uint64_t* en
         if (ph[i].p_offset + ph[i].p_filesz > image_size) {
             return err(EINVAL);
         }
-        if (ph[i].p_vaddr + ph[i].p_memsz >= USER_ELF_LIMIT) {
+        if (ph[i].p_vaddr + ph[i].p_memsz >= VM_USER_ELF_LIMIT) {
             return err(ENOMEM);
         }
 
-        uint8_t* dest = (uint8_t*)(uintptr_t)ph[i].p_vaddr;
         const uint8_t* src = image + ph[i].p_offset;
-        memset(dest, 0, (size_t)ph[i].p_memsz);
-        memcpy(dest, src, (size_t)ph[i].p_filesz);
+        int mr = map_exec_segment(proc, ph[i].p_vaddr, (size_t)ph[i].p_memsz, src, (size_t)ph[i].p_filesz);
+        if (mr != 0) {
+            return mr;
+        }
 
         if (eh->e_phoff >= ph[i].p_offset && eh->e_phoff + (uint64_t)sizeof(struct elf64_phdr) <= ph[i].p_offset + ph[i].p_filesz) {
             phdr_vaddr = ph[i].p_vaddr + (eh->e_phoff - ph[i].p_offset);
@@ -3535,64 +3517,68 @@ static int load_exec_image(const uint8_t* image, size_t image_size, uint64_t* en
 
 static int build_exec_stack(const char* execfn, char argv[EXEC_MAX_ARGS][EXEC_STR_MAX], size_t argc,
                             char envp[EXEC_MAX_ENVS][EXEC_STR_MAX], size_t envc, uint64_t entry, uint64_t phdr, uint64_t phent,
-                            uint64_t phnum, uint64_t* stack_out) {
+                            uint64_t phnum, uint64_t* stack_out, struct process* proc) {
     const char* platform = "x86_64";
     uint8_t at_random[16] = {
         0x12, 0x6E, 0xA7, 0x39, 0x55, 0xC8, 0x03, 0xF1, 0x88, 0x22, 0x74, 0xB5, 0xE1, 0x9C, 0x41, 0x0D,
     };
 
-    uint64_t sp = USER_STACK_TOP;
-    sp = exec_stack_push_bytes(sp, execfn, strlen(execfn) + 1u);
+    if (proc == NULL || vm_space_map_zero(&proc->vm, VM_USER_STACK_BASE, VM_USER_STACK_SIZE) != 0) {
+        return err(ENOMEM);
+    }
+
+    uint64_t sp = VM_USER_STACK_TOP;
+    sp = exec_stack_push_bytes(sp, execfn, strlen(execfn) + 1u, proc);
     uint64_t execfn_ptr = sp;
 
-    sp = exec_stack_push_bytes(sp, platform, strlen(platform) + 1u);
+    sp = exec_stack_push_bytes(sp, platform, strlen(platform) + 1u, proc);
     uint64_t platform_ptr = sp;
 
-    sp = exec_stack_push_bytes(sp, at_random, sizeof(at_random));
+    sp = exec_stack_push_bytes(sp, at_random, sizeof(at_random), proc);
     uint64_t at_random_ptr = sp;
 
     for (int i = (int)envc - 1; i >= 0; --i) {
-        sp = exec_stack_push_bytes(sp, envp[i], strlen(envp[i]) + 1u);
+        sp = exec_stack_push_bytes(sp, envp[i], strlen(envp[i]) + 1u, proc);
         g_exec_env_ptrs[i] = sp;
     }
     for (int i = (int)argc - 1; i >= 0; --i) {
-        sp = exec_stack_push_bytes(sp, argv[i], strlen(argv[i]) + 1u);
+        sp = exec_stack_push_bytes(sp, argv[i], strlen(argv[i]) + 1u, proc);
         g_exec_argv_ptrs[i] = sp;
     }
 
     sp &= ~0x0Full;
-    sp = exec_stack_push_auxv(sp, 0, 0);
-    sp = exec_stack_push_auxv(sp, 31, execfn_ptr);
-    sp = exec_stack_push_auxv(sp, 51, 2048);
-    sp = exec_stack_push_auxv(sp, 15, platform_ptr);
-    sp = exec_stack_push_auxv(sp, 25, at_random_ptr);
-    sp = exec_stack_push_auxv(sp, 16, 0);
-    sp = exec_stack_push_auxv(sp, 26, 0);
-    sp = exec_stack_push_auxv(sp, 33, 0);
-    sp = exec_stack_push_auxv(sp, 23, 0);
-    sp = exec_stack_push_auxv(sp, 17, 100);
-    sp = exec_stack_push_auxv(sp, 8, 0);
-    sp = exec_stack_push_auxv(sp, 7, 0);
-    sp = exec_stack_push_auxv(sp, 14, 0);
-    sp = exec_stack_push_auxv(sp, 13, 0);
-    sp = exec_stack_push_auxv(sp, 12, 0);
-    sp = exec_stack_push_auxv(sp, 11, 0);
-    sp = exec_stack_push_auxv(sp, 9, entry);
-    sp = exec_stack_push_auxv(sp, 6, 4096);
-    sp = exec_stack_push_auxv(sp, 5, phnum);
-    sp = exec_stack_push_auxv(sp, 4, phent);
-    sp = exec_stack_push_auxv(sp, 3, phdr);
+    sp = exec_stack_push_auxv(sp, 0, 0, proc);
+    sp = exec_stack_push_auxv(sp, 31, execfn_ptr, proc);
+    sp = exec_stack_push_auxv(sp, 51, 2048, proc);
+    sp = exec_stack_push_auxv(sp, 15, platform_ptr, proc);
+    sp = exec_stack_push_auxv(sp, 25, at_random_ptr, proc);
+    sp = exec_stack_push_auxv(sp, 16, 0, proc);
+    sp = exec_stack_push_auxv(sp, 26, 0, proc);
+    sp = exec_stack_push_auxv(sp, 33, 0, proc);
+    sp = exec_stack_push_auxv(sp, 23, 0, proc);
+    sp = exec_stack_push_auxv(sp, 17, 100, proc);
+    sp = exec_stack_push_auxv(sp, 8, 0, proc);
+    sp = exec_stack_push_auxv(sp, 7, 0, proc);
+    sp = exec_stack_push_auxv(sp, 14, 0, proc);
+    sp = exec_stack_push_auxv(sp, 13, 0, proc);
+    sp = exec_stack_push_auxv(sp, 12, 0, proc);
+    sp = exec_stack_push_auxv(sp, 11, 0, proc);
+    sp = exec_stack_push_auxv(sp, 9, entry, proc);
+    sp = exec_stack_push_auxv(sp, 6, 4096, proc);
+    sp = exec_stack_push_auxv(sp, 5, phnum, proc);
+    sp = exec_stack_push_auxv(sp, 4, phent, proc);
+    sp = exec_stack_push_auxv(sp, 3, phdr, proc);
 
-    sp = exec_stack_push_u64(sp, 0);
+    sp = exec_stack_push_u64(sp, 0, proc);
     for (int i = (int)envc - 1; i >= 0; --i) {
-        sp = exec_stack_push_u64(sp, g_exec_env_ptrs[i]);
+        sp = exec_stack_push_u64(sp, g_exec_env_ptrs[i], proc);
     }
 
-    sp = exec_stack_push_u64(sp, 0);
+    sp = exec_stack_push_u64(sp, 0, proc);
     for (int i = (int)argc - 1; i >= 0; --i) {
-        sp = exec_stack_push_u64(sp, g_exec_argv_ptrs[i]);
+        sp = exec_stack_push_u64(sp, g_exec_argv_ptrs[i], proc);
     }
-    sp = exec_stack_push_u64(sp, argc);
+    sp = exec_stack_push_u64(sp, argc, proc);
 
     *stack_out = sp;
     return 0;
@@ -3651,9 +3637,12 @@ static int sys_execve(struct syscall_frame* frame, const char* path_user, uint64
     }
 
     struct process* current = current_process();
-    if (current != NULL) {
-        clear_live_process_memory(current);
+    if (current == NULL) {
+        kfree(image);
+        return err(ENOMEM);
     }
+
+    vm_space_reset_user(&current->vm);
 
     uint64_t entry = 0;
     uint64_t phdr = 0;
@@ -3661,31 +3650,35 @@ static int sys_execve(struct syscall_frame* frame, const char* path_user, uint64
     uint64_t phnum = 0;
     uint64_t image_start = 0;
     uint64_t image_end = 0;
-    int lr = load_exec_image(image, image_entry.size, &entry, &phdr, &phent, &phnum, &image_start, &image_end);
+    int lr = load_exec_image(current, image, image_entry.size, &entry, &phdr, &phent, &phnum, &image_start, &image_end);
     if (lr != 0) {
         kfree(image);
         return lr;
     }
     kfree(image);
 
-    g_brk_current = USER_BRK_BASE;
-    g_mmap_next = USER_MMAP_BASE;
+    g_brk_current = VM_USER_BRK_BASE;
+    g_mmap_next = VM_USER_MMAP_BASE;
     g_tid_address = 0;
     write_fs_base_current(0);
     userland_set_image_span(image_start, image_end);
 
-    if (current != NULL) {
-        current->tid_address = 0;
-        current->fs_base = 0;
-        current->snap.stack_base = 0;
-        current->snap.stack_len = 0;
-    }
+    current->tid_address = 0;
+    current->fs_base = 0;
+    current->image_start = image_start;
+    current->image_end = image_end;
+    current->brk_current = g_brk_current;
+    current->mmap_next = g_mmap_next;
 
     uint64_t user_stack = 0;
-    int sr = build_exec_stack(abs_path, g_exec_argv_scratch, argc, g_exec_env_scratch, envc, entry, phdr, phent, phnum, &user_stack);
+    int sr = build_exec_stack(abs_path, g_exec_argv_scratch, argc, g_exec_env_scratch, envc, entry, phdr, phent, phnum, &user_stack,
+                              current);
     if (sr != 0) {
         return sr;
     }
+
+    close_cloexec_fds();
+    sync_current_process_runtime();
 
     memset(frame, 0, sizeof(*frame));
     uint64_t* raw = (uint64_t*)(void*)frame;
@@ -3841,6 +3834,7 @@ static void terminate_process(struct process* proc, int exit_code, int wait_stat
         return;
     }
 
+    release_process_fds(proc);
     proc->exit_code = exit_code;
     proc->exit_status = wait_status;
     proc->state = PROCESS_ZOMBIE;
@@ -4028,7 +4022,7 @@ static int sys_fork_like(struct syscall_frame* frame, uint64_t clone_flags, uint
         if ((clone_flags & CLONE_SIGNAL_MASK) != SIGCHLD) {
             return err(EINVAL);
         }
-        if (child_stack != 0 && (child_stack < 0x1000ull || child_stack >= USER_MMAP_LIMIT)) {
+        if (child_stack != 0 && (child_stack < 0x1000ull || child_stack >= VM_USER_MMAP_LIMIT)) {
             return err(EINVAL);
         }
         if ((clone_flags & (CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID)) != 0ull && child_tid_ptr == 0) {
@@ -4049,12 +4043,6 @@ static int sys_fork_like(struct syscall_frame* frame, uint64_t clone_flags, uint
     struct process* child = process_alloc();
     if (child == NULL) {
         return err(EAGAIN);
-    }
-
-    sr = ensure_snapshot_buffers(child);
-    if (sr != 0) {
-        process_free(child);
-        return sr;
     }
 
     child->ppid = current->pid;
@@ -4081,38 +4069,11 @@ static int sys_fork_like(struct syscall_frame* frame, uint64_t clone_flags, uint
     memcpy(child->sig_actions, current->sig_actions, sizeof(child->sig_actions));
     memset(child->pending_signals, 0, sizeof(child->pending_signals));
 
-    child->snap.image_base = current->snap.image_base;
-    child->snap.image_len = current->snap.image_len;
-    child->snap.stack_base = current->snap.stack_base;
-    child->snap.stack_len = current->snap.stack_len;
-    child->snap.brk_current = current->snap.brk_current;
-    child->snap.brk_len = current->snap.brk_len;
-    child->snap.mmap_next = current->snap.mmap_next;
-    child->snap.mmap_len = current->snap.mmap_len;
-    sr = ensure_snapshot_buffer(&child->snap.image, &child->snap.image_cap, child->snap.image_len, FORK_IMAGE_SNAPSHOT_MAX);
-    if (sr != 0) {
+    vm_space_destroy(&child->vm);
+    if (vm_space_clone(&child->vm, &current->vm) != 0) {
         process_free(child);
-        return sr;
+        return err(ENOMEM);
     }
-    sr = ensure_snapshot_buffer(&child->snap.stack, &child->snap.stack_cap, child->snap.stack_len, FORK_STACK_SNAPSHOT_MAX);
-    if (sr != 0) {
-        process_free(child);
-        return sr;
-    }
-    sr = ensure_snapshot_buffer(&child->snap.brk, &child->snap.brk_cap, child->snap.brk_len, FORK_BRK_SNAPSHOT_MAX);
-    if (sr != 0) {
-        process_free(child);
-        return sr;
-    }
-    sr = ensure_snapshot_buffer(&child->snap.mmap, &child->snap.mmap_cap, child->snap.mmap_len, FORK_MMAP_SNAPSHOT_MAX);
-    if (sr != 0) {
-        process_free(child);
-        return sr;
-    }
-    memcpy(child->snap.image, current->snap.image, current->snap.image_len);
-    memcpy(child->snap.stack, current->snap.stack, current->snap.stack_len);
-    memcpy(child->snap.brk, current->snap.brk, current->snap.brk_len);
-    memcpy(child->snap.mmap, current->snap.mmap, current->snap.mmap_len);
 
     child->saved_frame = current->saved_frame;
     memcpy(child->saved_iret, current->saved_iret, sizeof(child->saved_iret));
@@ -4166,8 +4127,8 @@ void syscall_init(void) {
     }
 
     strcpy(g_cwd, "/");
-    g_brk_current = USER_BRK_BASE;
-    g_mmap_next = USER_MMAP_BASE;
+    g_brk_current = VM_USER_BRK_BASE;
+    g_mmap_next = VM_USER_MMAP_BASE;
     g_current_pid = 1;
     g_current_ppid = 0;
     g_current_pgid = 1;
@@ -4191,6 +4152,7 @@ void syscall_init(void) {
         init_proc->brk_current = g_brk_current;
         init_proc->mmap_next = g_mmap_next;
         init_proc->umask = g_umask;
+        vm_space_activate(&init_proc->vm);
     }
 
     g_rng_state ^= read_tsc();
