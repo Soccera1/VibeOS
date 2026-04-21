@@ -11,7 +11,7 @@ extern char __kernel_end[];
 extern char __kernel_start[];
 
 #define HEAP_START ((uintptr_t)__kernel_end)
-#define HEAP_SIZE (64u * 1024u * 1024u)
+#define HEAP_SIZE (256u * 1024u * 1024u)
 #define HEAP_END (HEAP_START + HEAP_SIZE)
 #define MIN_BLOCK_SIZE (sizeof(struct block_header) + 16)
 
@@ -25,7 +25,6 @@ struct block_header {
     bool free;
 };
 
-static struct block_header* g_free_list = NULL;
 static bool g_initialized = false;
 static uintptr_t g_heap_break;
 
@@ -40,10 +39,7 @@ static void set_footer(struct block_header* header) {
     footer->free = header->free;
 }
 
-static struct block_header* request_space(size_t size) {
-    size_t total_size = size + sizeof(struct block_header) * 2;
-    total_size = (total_size + 15) & ~15;
-
+static struct block_header* request_space(size_t total_size) {
     if (g_heap_break + total_size > HEAP_END) {
         return NULL;
     }
@@ -61,78 +57,48 @@ static struct block_header* request_space(size_t size) {
     return block;
 }
 
-static void split_block(struct block_header* block, size_t size) {
-    size_t remaining = block->size - size - sizeof(struct block_header) * 2;
+static struct block_header* next_block(struct block_header* block) {
+    uintptr_t next = (uintptr_t)block + block->size;
+    if (next >= g_heap_break) {
+        return NULL;
+    }
+    return (struct block_header*)next;
+}
+
+static struct block_header* prev_block(struct block_header* block) {
+    if ((uintptr_t)block <= HEAP_START) {
+        return NULL;
+    }
+
+    struct block_header* current = (struct block_header*)HEAP_START;
+    struct block_header* previous = NULL;
+    while ((uintptr_t)current < g_heap_break && current != block) {
+        if (current->magic != BLOCK_HEADER_MAGIC || current->size == 0) {
+            return NULL;
+        }
+        previous = current;
+        current = (struct block_header*)((uintptr_t)current + current->size);
+    }
+
+    return current == block ? previous : NULL;
+}
+
+static void split_block(struct block_header* block, size_t total_size) {
+    size_t remaining = block->size - total_size;
 
     if (remaining < MIN_BLOCK_SIZE) {
         return;
     }
 
-    struct block_header* new_block = (struct block_header*)((uintptr_t)block + size);
+    struct block_header* new_block = (struct block_header*)((uintptr_t)block + total_size);
     new_block->magic = BLOCK_HEADER_MAGIC;
-    new_block->size = block->size - size;
+    new_block->size = remaining;
     new_block->free = true;
-    new_block->next = block->next;
-    new_block->prev = block;
-
-    if (block->next) {
-        block->next->prev = new_block;
-    }
-
-    block->next = new_block;
-    block->size = size;
+    new_block->next = NULL;
+    new_block->prev = NULL;
+    block->size = total_size;
     set_footer(block);
     set_footer(new_block);
-}
-
-static void coalesce_forward(struct block_header* block) {
-    if (!block->next || !block->next->free) {
-        return;
-    }
-
-    struct block_header* next = block->next;
-    block->size += next->size;
-    block->next = next->next;
-    if (next->next) {
-        next->next->prev = block;
-    }
-    set_footer(block);
-}
-
-static void coalesce_backward(struct block_header* block) {
-    if (!block->prev || !block->prev->free) {
-        return;
-    }
-
-    struct block_header* prev = block->prev;
-    prev->size += block->size;
-    prev->next = block->next;
-    if (block->next) {
-        block->next->prev = prev;
-    }
-    set_footer(prev);
-}
-
-static void add_to_free_list(struct block_header* block) {
-    block->free = true;
-    block->next = g_free_list;
-    block->prev = NULL;
-    if (g_free_list) {
-        g_free_list->prev = block;
-    }
-    g_free_list = block;
-    set_footer(block);
-}
-
-static void remove_from_free_list(struct block_header* block) {
-    if (block->prev) {
-        block->prev->next = block->next;
-    } else {
-        g_free_list = block->next;
-    }
-    if (block->next) {
-        block->next->prev = block->prev;
-    }
 }
 
 void kmalloc_init(void) {
@@ -141,7 +107,6 @@ void kmalloc_init(void) {
     }
 
     g_heap_break = HEAP_START;
-    g_free_list = NULL;
     g_initialized = true;
 
     console_printf("kmalloc: heap at 0x%lx - 0x%lx (%u MB)\n",
@@ -159,9 +124,8 @@ void* kmalloc(size_t size) {
     size_t total_size = size + sizeof(struct block_header) * 2;
 
     struct block_header* best = NULL;
-    struct block_header* current = g_free_list;
-
-    while (current) {
+    struct block_header* current = (struct block_header*)HEAP_START;
+    while ((uintptr_t)current < g_heap_break) {
         if (current->magic != BLOCK_HEADER_MAGIC) {
             console_printf("kmalloc: corruption detected at %p\n", (void*)current);
             return NULL;
@@ -174,11 +138,10 @@ void* kmalloc(size_t size) {
                 }
             }
         }
-        current = current->next;
+        current = (struct block_header*)((uintptr_t)current + current->size);
     }
 
     if (best) {
-        remove_from_free_list(best);
         best->free = false;
         split_block(best, total_size);
         set_footer(best);
@@ -217,10 +180,17 @@ void kfree(void* ptr) {
     block->free = true;
     set_footer(block);
 
-    coalesce_forward(block);
-    coalesce_backward(block);
+    struct block_header* next = next_block(block);
+    if (next != NULL && next->magic == BLOCK_HEADER_MAGIC && next->free) {
+        block->size += next->size;
+        set_footer(block);
+    }
 
-    add_to_free_list(block);
+    struct block_header* prev = prev_block(block);
+    if (prev != NULL && prev->magic == BLOCK_HEADER_MAGIC && prev->free) {
+        prev->size += block->size;
+        set_footer(prev);
+    }
 }
 
 void* krealloc(void* ptr, size_t new_size) {
@@ -274,4 +244,18 @@ void* kmalloc_aligned(size_t size, size_t alignment) {
     ((void**)aligned)[-1] = raw;
 
     return (void*)aligned;
+}
+
+bool kmalloc_owns(const void* ptr) {
+    if (ptr == NULL) {
+        return false;
+    }
+
+    uintptr_t addr = (uintptr_t)ptr;
+    if (addr < HEAP_START + sizeof(struct block_header) || addr >= g_heap_break) {
+        return false;
+    }
+
+    const struct block_header* block = (const struct block_header*)(addr - sizeof(struct block_header));
+    return block->magic == BLOCK_HEADER_MAGIC;
 }

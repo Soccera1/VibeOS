@@ -9,6 +9,8 @@
 #include "input.h"
 #include "initramfs.h"
 #include "io.h"
+#include "kmalloc.h"
+#include "process.h"
 #include "string.h"
 #include "userland.h"
 
@@ -26,6 +28,7 @@
 #define O_WRONLY 1u
 #define O_RDWR 2u
 #define O_CREAT 0x40u
+#define O_NONBLOCK 0x800u
 #define O_DIRECTORY 0x10000u
 
 #define SEEK_SET 0
@@ -53,7 +56,10 @@
 #define TCSETS 0x5402u
 #define TCSETSW 0x5403u
 #define TCSETSF 0x5404u
+#define TIOCGPGRP 0x540Fu
+#define TIOCSPGRP 0x5410u
 #define TIOCGWINSZ 0x5413u
+#define FIONREAD 0x541Bu
 
 #define POLLIN 0x0001
 #define POLLPRI 0x0002
@@ -90,6 +96,7 @@
 #define EROFS 30
 #define ESRCH 3
 #define EPERM 1
+#define EPIPE 32
 
 #define IRET_SLOT_RIP 15u
 #define IRET_SLOT_CS 16u
@@ -121,9 +128,13 @@
 #define SIGQUIT 3u
 #define SIGTRAP 5u
 #define SIGABRT 6u
+#define SIGTTIN 21u
+#define SIGTTOU 22u
 #define NSIG 64u
 
 #define WAIT_NOHANG 1u
+#define WAIT_UNTRACED 2u
+#define WAIT_CONTINUED 8u
 
 #define SIG_DFL ((void*)0)
 #define SIG_IGN ((void*)1)
@@ -142,6 +153,49 @@
 
 #define MAX_ZOMBIES 64
 #define MAX_PENDING_SIGNALS 32
+#define SELECT_FDSET_BYTES 128u
+
+#define NCCS 19u
+#define VINTR 0u
+#define VQUIT 1u
+#define VERASE 2u
+#define VKILL 3u
+#define VEOF 4u
+#define VTIME 5u
+#define VMIN 6u
+#define VSWTC 7u
+#define VSTART 8u
+#define VSTOP 9u
+#define VSUSP 10u
+#define VEOL 11u
+#define VREPRINT 12u
+#define VDISCARD 13u
+#define VWERASE 14u
+#define VLNEXT 15u
+#define VEOL2 16u
+
+#define IGNBRK 0x00000001u
+#define BRKINT 0x00000002u
+#define ICRNL 0x00000100u
+#define IXON 0x00000400u
+
+#define OPOST 0x00000001u
+#define ONLCR 0x00000004u
+
+#define CS8 0x00000030u
+#define CREAD 0x00000080u
+
+#define ISIG 0x00000001u
+#define ICANON 0x00000002u
+#define ECHO 0x00000008u
+#define ECHOE 0x00000010u
+#define ECHOK 0x00000020u
+#define ECHOCTL 0x00000200u
+#define ECHOKE 0x00000800u
+#define IEXTEN 0x00008000u
+
+#define RLIM_INFINITY (~0ull)
+#define APPROX_TSC_CYCLES_PER_USEC 2000ull
 
 #define FORK_IMAGE_SNAPSHOT_MAX (16u * 1024u * 1024u)
 #define FORK_STACK_SNAPSHOT_MAX (8u * 1024u * 1024u)
@@ -185,6 +239,30 @@ struct linux_utsname {
 struct linux_timespec {
     int64_t tv_sec;
     int64_t tv_nsec;
+};
+
+struct linux_timeval {
+    int64_t tv_sec;
+    int64_t tv_usec;
+};
+
+struct linux_termios {
+    uint32_t c_iflag;
+    uint32_t c_oflag;
+    uint32_t c_cflag;
+    uint32_t c_lflag;
+    uint8_t c_line;
+    uint8_t c_cc[19];
+};
+
+struct linux_pselect_sigmask {
+    uint64_t sigmask;
+    uint64_t sigsetsize;
+};
+
+struct linux_rlimit {
+    uint64_t rlim_cur;
+    uint64_t rlim_max;
 };
 
 struct linux_pollfd {
@@ -321,42 +399,9 @@ static uint64_t g_exec_env_ptrs[EXEC_MAX_ENVS];
 static uint64_t g_fake_time_ns;
 static int g_current_pid = 1;
 static int g_current_ppid = 0;
-static int g_next_pid = 2;
-static int g_pending_child_pid;
-static int g_saved_parent_pid = 1;
-static int g_saved_parent_ppid = 0;
-static bool g_parent_pending;
-static bool g_child_has_cleartid;
-static uint64_t g_child_cleartid_ptr;
-static bool g_wait_status_valid;
-static int g_wait_status_pid;
-static int g_wait_status_code;
+static int g_current_pgid = 1;
+static int g_current_sid = 1;
 static int g_pending_keyboard_signal;
-
-static struct fd_state g_parent_fds[MAX_FDS];
-static char g_parent_cwd[128];
-static uint64_t g_parent_brk_current;
-static uint64_t g_parent_mmap_next;
-static uint64_t g_parent_fs_base;
-static uint64_t g_parent_tid_address;
-static struct syscall_frame g_parent_frame;
-static uint64_t g_parent_iret[5];
-
-static uint64_t g_snap_image_base;
-static size_t g_snap_image_len;
-static uint8_t g_snap_image[FORK_IMAGE_SNAPSHOT_MAX];
-
-static uint64_t g_snap_stack_base;
-static size_t g_snap_stack_len;
-static uint8_t g_snap_stack[FORK_STACK_SNAPSHOT_MAX];
-
-static uint64_t g_snap_brk_base;
-static size_t g_snap_brk_len;
-static uint8_t g_snap_brk[FORK_BRK_SNAPSHOT_MAX];
-
-static uint64_t g_snap_mmap_base;
-static size_t g_snap_mmap_len;
-static uint8_t g_snap_mmap[FORK_MMAP_SNAPSHOT_MAX];
 static struct pipe_state g_pipes[MAX_PIPES];
 static uint64_t g_tid_address;
 
@@ -364,6 +409,7 @@ struct zombie_info {
     bool valid;
     int pid;
     int ppid;
+    int pgid;
     int exit_code;
     int exit_status;
 };
@@ -371,21 +417,27 @@ struct zombie_info {
 static struct zombie_info g_zombies[MAX_ZOMBIES];
 static int g_zombie_count = 0;
 
-struct sigaction_data {
-    void* handler;
-    uint64_t flags;
-    uint64_t mask;
-};
-
 static struct sigaction_data g_sig_actions[NSIG];
 static uint64_t g_sig_mask = 0;
 static int g_pending_signals[MAX_PENDING_SIGNALS];
 static int g_pending_signal_count = 0;
+static uint32_t g_umask = 022u;
+static struct linux_termios g_tty_termios;
+static int g_terminal_fg_pgrp = 1;
+static int g_scheduler_index = 0;
 
-static void add_zombie(int pid, int ppid, int exit_code, int exit_status);
-static int find_zombie(int pid);
-static int find_zombie_by_ppid(int ppid);
+static void add_zombie(int pid, int ppid, int pgid, int exit_code, int exit_status);
 static void remove_zombie(int idx);
+static struct process* current_process(void);
+static int save_live_process(struct process* proc, struct syscall_frame* frame);
+static int try_complete_wait4(struct process* proc);
+static int try_complete_tty_read(struct process* proc);
+static int try_complete_pipe_read(struct process* proc);
+static int try_complete_pipe_write(struct process* proc);
+static int try_complete_select(struct process* proc);
+static int try_complete_nanosleep(struct process* proc);
+static uint64_t schedule_away(struct syscall_frame* frame);
+static int signal_process_group(int pgid, int sig);
 
 __attribute__((noreturn)) static void do_shutdown(void);
 __attribute__((noreturn)) static void do_halt(void);
@@ -399,6 +451,27 @@ static int join_path(const char* base, const char* leaf, char* out, size_t out_l
 
 static int err(int code) {
     return -code;
+}
+
+static void init_default_tty_termios(void) {
+    memset(&g_tty_termios, 0, sizeof(g_tty_termios));
+    g_tty_termios.c_iflag = IGNBRK | BRKINT | ICRNL | IXON;
+    g_tty_termios.c_oflag = OPOST | ONLCR;
+    g_tty_termios.c_cflag = CREAD | CS8;
+    g_tty_termios.c_lflag = ISIG | ICANON | ECHO | ECHOE | ECHOK | ECHOCTL | ECHOKE | IEXTEN;
+    g_tty_termios.c_cc[VINTR] = 3;
+    g_tty_termios.c_cc[VQUIT] = 28;
+    g_tty_termios.c_cc[VERASE] = 127;
+    g_tty_termios.c_cc[VKILL] = 21;
+    g_tty_termios.c_cc[VEOF] = 4;
+    g_tty_termios.c_cc[VMIN] = 1;
+    g_tty_termios.c_cc[VSTART] = 17;
+    g_tty_termios.c_cc[VSTOP] = 19;
+    g_tty_termios.c_cc[VSUSP] = 26;
+    g_tty_termios.c_cc[VREPRINT] = 18;
+    g_tty_termios.c_cc[VDISCARD] = 15;
+    g_tty_termios.c_cc[VWERASE] = 23;
+    g_tty_termios.c_cc[VLNEXT] = 22;
 }
 
 static bool is_keyboard_signal(int signal) {
@@ -416,6 +489,88 @@ static int take_keyboard_signal(void) {
     int signal = g_pending_keyboard_signal;
     g_pending_keyboard_signal = 0;
     return signal;
+}
+
+static bool tty_is_foreground_group(void) {
+    return g_terminal_fg_pgrp == g_current_pgid;
+}
+
+static void service_keyboard_signal_for_tty(void) {
+    int signal = input_peek_signal();
+    if (signal == 0) {
+        return;
+    }
+
+    if (tty_is_foreground_group()) {
+        queue_keyboard_signal(input_poll_signal());
+        return;
+    }
+
+    (void)input_poll_signal();
+}
+
+static bool fd_is_nonblocking(int fd) {
+    return (g_fds[fd].flags & O_NONBLOCK) != 0u;
+}
+
+static bool tty_input_ready(void) {
+    service_keyboard_signal_for_tty();
+    return g_pending_keyboard_signal != 0 || input_char_ready();
+}
+
+static int handle_pending_keyboard_signal(struct syscall_frame* frame) {
+    if (g_pending_keyboard_signal == 0) {
+        return 0;
+    }
+
+    int sig = take_keyboard_signal();
+    struct process* current = current_process();
+    if (current != NULL && frame != NULL) {
+        int sr = save_live_process(current, frame);
+        if (sr != 0) {
+            return sr;
+        }
+    }
+
+    int r = signal_process_group(g_terminal_fg_pgrp, sig);
+    if (r != 0) {
+        return err(EINTR);
+    }
+
+    current = current_process();
+    if (current != NULL && (current->state == PROCESS_STOPPED || current->state == PROCESS_ZOMBIE)) {
+        return (int)schedule_away(frame);
+    }
+
+    return err(EINTR);
+}
+
+static uint64_t timeout_to_tsc_cycles(int64_t sec, int64_t nsec) {
+    if (sec <= 0 && nsec <= 0) {
+        return 0;
+    }
+
+    uint64_t total_usec = 0;
+    if (sec > 0) {
+        if ((uint64_t)sec > UINT64_MAX / 1000000ull) {
+            return UINT64_MAX;
+        }
+        total_usec = (uint64_t)sec * 1000000ull;
+    }
+    if (nsec > 0) {
+        total_usec += (uint64_t)nsec / 1000ull;
+    }
+    if (total_usec > UINT64_MAX / APPROX_TSC_CYCLES_PER_USEC) {
+        return UINT64_MAX;
+    }
+    return total_usec * APPROX_TSC_CYCLES_PER_USEC;
+}
+
+static bool timeout_expired(uint64_t start, uint64_t budget) {
+    if (budget == UINT64_MAX) {
+        return false;
+    }
+    return (read_tsc() - start) >= budget;
 }
 
 static uint64_t xorshift64(void) {
@@ -462,24 +617,142 @@ static void restore_range(uint64_t base, size_t len, const uint8_t* src) {
     memcpy((void*)(uintptr_t)base, src, len);
 }
 
-static int snapshot_parent_memory(struct syscall_frame* frame) {
+static void capture_user_context(struct process* proc, struct syscall_frame* frame) {
+    if (proc == NULL || frame == NULL) {
+        return;
+    }
+
+    proc->saved_frame = *frame;
+    uint64_t* raw = (uint64_t*)(void*)frame;
+    proc->saved_iret[0] = raw[IRET_SLOT_RIP];
+    proc->saved_iret[1] = raw[IRET_SLOT_CS];
+    proc->saved_iret[2] = raw[IRET_SLOT_RFLAGS];
+    proc->saved_iret[3] = raw[IRET_SLOT_RSP];
+    proc->saved_iret[4] = raw[IRET_SLOT_SS];
+    proc->has_saved_context = true;
+}
+
+static void restore_user_context(const struct process* proc, struct syscall_frame* frame) {
+    if (proc == NULL || frame == NULL || !proc->has_saved_context) {
+        return;
+    }
+
+    *frame = proc->saved_frame;
+    uint64_t* raw = (uint64_t*)(void*)frame;
+    raw[IRET_SLOT_RIP] = proc->saved_iret[0];
+    raw[IRET_SLOT_CS] = proc->saved_iret[1];
+    raw[IRET_SLOT_RFLAGS] = proc->saved_iret[2];
+    raw[IRET_SLOT_RSP] = proc->saved_iret[3];
+    raw[IRET_SLOT_SS] = proc->saved_iret[4];
+}
+
+static int ensure_snapshot_buffers(struct process* proc) {
+    if (proc == NULL) {
+        return err(EINVAL);
+    }
+    if (proc->snap.valid) {
+        return 0;
+    }
+    return process_alloc_snapshot(proc) == 0 ? 0 : err(ENOMEM);
+}
+
+static int ensure_snapshot_buffer(uint8_t** buf, size_t* cap, size_t need, size_t max_cap) {
+    if (need > max_cap) {
+        return err(ENOMEM);
+    }
+    if (*buf != NULL && !kmalloc_owns(*buf)) {
+        *buf = NULL;
+        *cap = 0;
+    }
+    if (need == 0) {
+        if (*buf != NULL) {
+            kfree(*buf);
+            *buf = NULL;
+        }
+        *cap = 0;
+        return 0;
+    }
+    if (*buf != NULL && *cap >= need) {
+        return 0;
+    }
+
+    void* resized = krealloc(*buf, need);
+    if (resized == NULL) {
+        return err(ENOMEM);
+    }
+
+    *buf = (uint8_t*)resized;
+    *cap = need;
+    return 0;
+}
+
+static void clear_live_process_memory(const struct process* proc) {
+    if (proc == NULL) {
+        return;
+    }
+
+    if (proc->image_end > proc->image_start) {
+        memset((void*)(uintptr_t)proc->image_start, 0, (size_t)(proc->image_end - proc->image_start));
+    }
+    if (proc->snap.stack_len > 0) {
+        memset((void*)(uintptr_t)proc->snap.stack_base, 0, proc->snap.stack_len);
+    }
+    if (proc->brk_current > USER_BRK_BASE) {
+        memset((void*)(uintptr_t)USER_BRK_BASE, 0, (size_t)(proc->brk_current - USER_BRK_BASE));
+    }
+    if (proc->mmap_next > USER_MMAP_BASE) {
+        memset((void*)(uintptr_t)USER_MMAP_BASE, 0, (size_t)(proc->mmap_next - USER_MMAP_BASE));
+    }
+}
+
+static int save_live_process(struct process* proc, struct syscall_frame* frame) {
+    if (proc == NULL || frame == NULL) {
+        return err(EINVAL);
+    }
+
+    int sr = ensure_snapshot_buffers(proc);
+    if (sr != 0) {
+        return sr;
+    }
+
+    capture_user_context(proc, frame);
+
+    proc->ppid = g_current_ppid;
+    proc->pgid = g_current_pgid;
+    proc->sid = g_current_sid;
+    proc->brk_current = g_brk_current;
+    proc->mmap_next = g_mmap_next;
+    proc->tid_address = g_tid_address;
+    proc->fs_base = read_fs_base_current();
+    proc->umask = g_umask;
+
+    memcpy(proc->fds, g_fds, sizeof(g_fds));
+    memcpy(proc->cwd, g_cwd, sizeof(g_cwd));
+    memcpy(proc->sig_actions, g_sig_actions, sizeof(g_sig_actions));
+    proc->sig_mask = g_sig_mask;
+    memcpy(proc->pending_signals, g_pending_signals, sizeof(g_pending_signals));
+    proc->pending_count = g_pending_signal_count;
+
     uint64_t image_start = 0;
     uint64_t image_end = 0;
     userland_get_image_span(&image_start, &image_end);
+    proc->image_start = image_start;
+    proc->image_end = image_end;
 
-    g_snap_image_base = 0;
-    g_snap_image_len = 0;
-    g_snap_stack_base = 0;
-    g_snap_stack_len = 0;
-    g_snap_brk_base = USER_BRK_BASE;
-    g_snap_brk_len = 0;
-    g_snap_mmap_base = USER_MMAP_BASE;
-    g_snap_mmap_len = 0;
-
+    proc->snap.image_base = image_start;
+    proc->snap.image_len = 0;
     if (image_end > image_start) {
-        g_snap_image_base = image_start;
-        g_snap_image_len = (size_t)(image_end - image_start);
-        int sr = snapshot_range(g_snap_image_base, g_snap_image_len, g_snap_image, sizeof(g_snap_image));
+        proc->snap.image_len = (size_t)(image_end - image_start);
+        sr = ensure_snapshot_buffer(&proc->snap.image, &proc->snap.image_cap, proc->snap.image_len, FORK_IMAGE_SNAPSHOT_MAX);
+        if (sr != 0) {
+            return sr;
+        }
+        sr = snapshot_range(image_start, proc->snap.image_len, proc->snap.image, proc->snap.image_cap);
+        if (sr != 0) {
+            return sr;
+        }
+    } else {
+        sr = ensure_snapshot_buffer(&proc->snap.image, &proc->snap.image_cap, 0, FORK_IMAGE_SNAPSHOT_MAX);
         if (sr != 0) {
             return sr;
         }
@@ -487,31 +760,58 @@ static int snapshot_parent_memory(struct syscall_frame* frame) {
 
     uint64_t* raw = (uint64_t*)(void*)frame;
     uint64_t user_rsp = raw[IRET_SLOT_RSP];
-    if (user_rsp == 0 || user_rsp > USER_STACK_TOP) {
-        return err(EINVAL);
-    }
-
-    g_snap_stack_base = user_rsp & ~0x0Full;
-    if (g_snap_stack_base > USER_STACK_TOP) {
-        return err(EINVAL);
-    }
-    g_snap_stack_len = (size_t)(USER_STACK_TOP - g_snap_stack_base);
-    int sr = snapshot_range(g_snap_stack_base, g_snap_stack_len, g_snap_stack, sizeof(g_snap_stack));
-    if (sr != 0) {
-        return sr;
-    }
-
-    if (g_brk_current > USER_BRK_BASE) {
-        g_snap_brk_len = (size_t)(g_brk_current - USER_BRK_BASE);
-        sr = snapshot_range(g_snap_brk_base, g_snap_brk_len, g_snap_brk, sizeof(g_snap_brk));
+    proc->snap.stack_base = user_rsp & ~0x0Full;
+    proc->snap.stack_len = 0;
+    if (proc->snap.stack_base < USER_STACK_TOP) {
+        proc->snap.stack_len = (size_t)(USER_STACK_TOP - proc->snap.stack_base);
+        sr = ensure_snapshot_buffer(&proc->snap.stack, &proc->snap.stack_cap, proc->snap.stack_len, FORK_STACK_SNAPSHOT_MAX);
+        if (sr != 0) {
+            return sr;
+        }
+        sr = snapshot_range(proc->snap.stack_base, proc->snap.stack_len, proc->snap.stack, proc->snap.stack_cap);
+        if (sr != 0) {
+            return sr;
+        }
+    } else {
+        sr = ensure_snapshot_buffer(&proc->snap.stack, &proc->snap.stack_cap, 0, FORK_STACK_SNAPSHOT_MAX);
         if (sr != 0) {
             return sr;
         }
     }
 
+    proc->snap.brk_current = g_brk_current;
+    proc->snap.brk_len = 0;
+    if (g_brk_current > USER_BRK_BASE) {
+        proc->snap.brk_len = (size_t)(g_brk_current - USER_BRK_BASE);
+        sr = ensure_snapshot_buffer(&proc->snap.brk, &proc->snap.brk_cap, proc->snap.brk_len, FORK_BRK_SNAPSHOT_MAX);
+        if (sr != 0) {
+            return sr;
+        }
+        sr = snapshot_range(USER_BRK_BASE, proc->snap.brk_len, proc->snap.brk, proc->snap.brk_cap);
+        if (sr != 0) {
+            return sr;
+        }
+    } else {
+        sr = ensure_snapshot_buffer(&proc->snap.brk, &proc->snap.brk_cap, 0, FORK_BRK_SNAPSHOT_MAX);
+        if (sr != 0) {
+            return sr;
+        }
+    }
+
+    proc->snap.mmap_next = g_mmap_next;
+    proc->snap.mmap_len = 0;
     if (g_mmap_next > USER_MMAP_BASE) {
-        g_snap_mmap_len = (size_t)(g_mmap_next - USER_MMAP_BASE);
-        sr = snapshot_range(g_snap_mmap_base, g_snap_mmap_len, g_snap_mmap, sizeof(g_snap_mmap));
+        proc->snap.mmap_len = (size_t)(g_mmap_next - USER_MMAP_BASE);
+        sr = ensure_snapshot_buffer(&proc->snap.mmap, &proc->snap.mmap_cap, proc->snap.mmap_len, FORK_MMAP_SNAPSHOT_MAX);
+        if (sr != 0) {
+            return sr;
+        }
+        sr = snapshot_range(USER_MMAP_BASE, proc->snap.mmap_len, proc->snap.mmap, proc->snap.mmap_cap);
+        if (sr != 0) {
+            return sr;
+        }
+    } else {
+        sr = ensure_snapshot_buffer(&proc->snap.mmap, &proc->snap.mmap_cap, 0, FORK_MMAP_SNAPSHOT_MAX);
         if (sr != 0) {
             return sr;
         }
@@ -520,67 +820,74 @@ static int snapshot_parent_memory(struct syscall_frame* frame) {
     return 0;
 }
 
-static void restore_parent_runtime_state(void) {
-    restore_range(g_snap_image_base, g_snap_image_len, g_snap_image);
-    restore_range(g_snap_stack_base, g_snap_stack_len, g_snap_stack);
-    restore_range(g_snap_brk_base, g_snap_brk_len, g_snap_brk);
-    restore_range(g_snap_mmap_base, g_snap_mmap_len, g_snap_mmap);
+static void load_process_runtime(struct process* proc) {
+    process_set_current(proc);
+    g_current_pid = proc->pid;
+    g_current_ppid = proc->ppid;
+    g_current_pgid = proc->pgid;
+    g_current_sid = proc->sid;
+    g_brk_current = proc->brk_current;
+    g_mmap_next = proc->mmap_next;
+    g_tid_address = proc->tid_address;
+    g_umask = proc->umask;
 
-    memcpy(g_fds, g_parent_fds, sizeof(g_fds));
-    memcpy(g_cwd, g_parent_cwd, sizeof(g_cwd));
-    g_brk_current = g_parent_brk_current;
-    g_mmap_next = g_parent_mmap_next;
-    g_tid_address = g_parent_tid_address;
-    write_fs_base_current(g_parent_fs_base);
+    memcpy(g_fds, proc->fds, sizeof(g_fds));
+    memcpy(g_cwd, proc->cwd, sizeof(g_cwd));
+    memcpy(g_sig_actions, proc->sig_actions, sizeof(g_sig_actions));
+    g_sig_mask = proc->sig_mask;
+    memcpy(g_pending_signals, proc->pending_signals, sizeof(g_pending_signals));
+    g_pending_signal_count = proc->pending_count;
 
-    g_current_pid = g_saved_parent_pid;
-    g_current_ppid = g_saved_parent_ppid;
-    g_parent_pending = false;
-    g_pending_child_pid = 0;
-    g_child_has_cleartid = false;
-    g_child_cleartid_ptr = 0;
+    userland_set_image_span(proc->image_start, proc->image_end);
+    write_fs_base_current(proc->fs_base);
 }
 
-static uint64_t resume_parent_after_child_exit(struct syscall_frame* frame, uint64_t code) {
-    if (g_child_has_cleartid && g_child_cleartid_ptr != 0) {
-        *(uint32_t*)(uintptr_t)g_child_cleartid_ptr = 0;
+static void restore_process_memory(const struct process* proc) {
+    if (proc == NULL) {
+        return;
     }
 
-    g_wait_status_pid = g_pending_child_pid;
-    g_wait_status_code = ((int)(code & 0xFFu)) << 8;
-    g_wait_status_valid = true;
-
-    restore_parent_runtime_state();
-
-    *frame = g_parent_frame;
-    uint64_t* raw = (uint64_t*)(void*)frame;
-    raw[IRET_SLOT_RIP] = g_parent_iret[0];
-    raw[IRET_SLOT_CS] = g_parent_iret[1];
-    raw[IRET_SLOT_RFLAGS] = g_parent_iret[2];
-    raw[IRET_SLOT_RSP] = g_parent_iret[3];
-    raw[IRET_SLOT_SS] = g_parent_iret[4];
-    return g_parent_frame.rax;
+    restore_range(proc->snap.image_base, proc->snap.image_len, proc->snap.image);
+    restore_range(proc->snap.stack_base, proc->snap.stack_len, proc->snap.stack);
+    restore_range(USER_BRK_BASE, proc->snap.brk_len, proc->snap.brk);
+    restore_range(USER_MMAP_BASE, proc->snap.mmap_len, proc->snap.mmap);
 }
 
-static uint64_t resume_parent_after_child_signal(struct syscall_frame* frame, int signal) {
-    if (g_child_has_cleartid && g_child_cleartid_ptr != 0) {
-        *(uint32_t*)(uintptr_t)g_child_cleartid_ptr = 0;
+static struct process* current_process(void) {
+    return process_current();
+}
+
+static bool has_other_runnable_process(const struct process* current) {
+    for (int i = 0; i < MAX_PROCESSES; ++i) {
+        struct process* proc = process_at(i);
+        if (proc == NULL || proc->state != PROCESS_RUNNABLE) {
+            continue;
+        }
+        if (proc != current) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static struct process* pick_next_runnable_process(const struct process* current) {
+    for (int i = 0; i < MAX_PROCESSES; ++i) {
+        g_scheduler_index = (g_scheduler_index + 1) % MAX_PROCESSES;
+        struct process* proc = process_at(g_scheduler_index);
+        if (proc == NULL || proc->state != PROCESS_RUNNABLE || !proc->has_saved_context) {
+            continue;
+        }
+        if (proc == current) {
+            continue;
+        }
+        return proc;
     }
 
-    g_wait_status_pid = g_pending_child_pid;
-    g_wait_status_code = signal & 0x7F;
-    g_wait_status_valid = true;
+    if (current != NULL && current->state == PROCESS_RUNNABLE && current->has_saved_context) {
+        return (struct process*)current;
+    }
 
-    restore_parent_runtime_state();
-
-    *frame = g_parent_frame;
-    uint64_t* raw = (uint64_t*)(void*)frame;
-    raw[IRET_SLOT_RIP] = g_parent_iret[0];
-    raw[IRET_SLOT_CS] = g_parent_iret[1];
-    raw[IRET_SLOT_RFLAGS] = g_parent_iret[2];
-    raw[IRET_SLOT_RSP] = g_parent_iret[3];
-    raw[IRET_SLOT_SS] = g_parent_iret[4];
-    return g_parent_frame.rax;
+    return NULL;
 }
 
 static bool is_null_path(const char* path) {
@@ -694,12 +1001,36 @@ static bool pipe_is_referenced_in_fd_table(const struct fd_state* fds, int pipe_
     return false;
 }
 
+static bool pipe_is_referenced_in_process_fd_table(const struct process_fd* fds, int pipe_id) {
+    for (int fd = 0; fd < PROCESS_MAX_FDS; ++fd) {
+        if ((fds[fd].kind == FD_PIPE_R || fds[fd].kind == FD_PIPE_W) && fds[fd].pipe_id == pipe_id) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool pipe_is_referenced(int pipe_id) {
     if (pipe_is_referenced_in_fd_table(g_fds, pipe_id)) {
         return true;
     }
-    if (g_parent_pending && pipe_is_referenced_in_fd_table(g_parent_fds, pipe_id)) {
-        return true;
+    for (int i = 0; i < MAX_PROCESSES; ++i) {
+        struct process* proc = process_at(i);
+        if (proc == NULL || proc == current_process() || proc->state == PROCESS_FREE) {
+            continue;
+        }
+        if (pipe_is_referenced_in_process_fd_table(proc->fds, pipe_id)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool pipe_has_writer_in_process_fd_table(const struct process_fd* fds, int pipe_id) {
+    for (int fd = 0; fd < PROCESS_MAX_FDS; ++fd) {
+        if (fds[fd].kind == FD_PIPE_W && fds[fd].pipe_id == pipe_id) {
+            return true;
+        }
     }
     return false;
 }
@@ -710,12 +1041,39 @@ static bool pipe_has_writer(int pipe_id) {
             return true;
         }
     }
+    for (int i = 0; i < MAX_PROCESSES; ++i) {
+        struct process* proc = process_at(i);
+        if (proc == NULL || proc == current_process() || proc->state == PROCESS_FREE) {
+            continue;
+        }
+        if (pipe_has_writer_in_process_fd_table(proc->fds, pipe_id)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool pipe_has_reader_in_process_fd_table(const struct process_fd* fds, int pipe_id) {
+    for (int fd = 0; fd < PROCESS_MAX_FDS; ++fd) {
+        if (fds[fd].kind == FD_PIPE_R && fds[fd].pipe_id == pipe_id) {
+            return true;
+        }
+    }
     return false;
 }
 
 static bool pipe_has_reader(int pipe_id) {
     for (int fd = 0; fd < MAX_FDS; ++fd) {
         if (g_fds[fd].kind == FD_PIPE_R && g_fds[fd].pipe_id == pipe_id) {
+            return true;
+        }
+    }
+    for (int i = 0; i < MAX_PROCESSES; ++i) {
+        struct process* proc = process_at(i);
+        if (proc == NULL || proc == current_process() || proc->state == PROCESS_FREE) {
+            continue;
+        }
+        if (pipe_has_reader_in_process_fd_table(proc->fds, pipe_id)) {
             return true;
         }
     }
@@ -1256,7 +1614,7 @@ static int sys_close(int fd) {
     return 0;
 }
 
-static int sys_read(int fd, void* buf, size_t count) {
+static int sys_read(int fd, void* buf, size_t count, struct syscall_frame* frame) {
     if (count == 0) {
         return 0;
     }
@@ -1265,18 +1623,52 @@ static int sys_read(int fd, void* buf, size_t count) {
     }
 
     if (g_fds[fd].kind == FD_TTY) {
+        service_keyboard_signal_for_tty();
         if (g_pending_keyboard_signal != 0) {
-            return err(EINTR);
+            return handle_pending_keyboard_signal(frame);
         }
 
         char* out = (char*)buf;
         size_t written = 0;
+        bool nonblocking = fd_is_nonblocking(fd);
         while (written < count) {
-            int c = (written == 0) ? input_read_char_blocking() : input_poll_char();
-            queue_keyboard_signal(input_poll_signal());
+            int c = -1;
+            if (!nonblocking && written == 0) {
+                for (;;) {
+                    service_keyboard_signal_for_tty();
+                    if (g_pending_keyboard_signal != 0) {
+                        return handle_pending_keyboard_signal(frame);
+                    }
+                    c = input_poll_char();
+                    if (c >= 0) {
+                        break;
+                    }
+                    if (frame != NULL && has_other_runnable_process(current_process())) {
+                        struct process* proc = current_process();
+                        int sr = save_live_process(proc, frame);
+                        if (sr != 0) {
+                            return sr;
+                        }
+                        proc->state = PROCESS_BLOCKED;
+                        proc->wait.reason = PROCESS_WAIT_TTY_READ;
+                        proc->wait.fd = fd;
+                        proc->wait.ptr0 = (uint64_t)(uintptr_t)buf;
+                        proc->wait.ptr1 = count;
+                        proc->wait.has_timeout = false;
+                        return (int)schedule_away(frame);
+                    }
+                    __asm__ volatile("pause");
+                }
+            } else {
+                service_keyboard_signal_for_tty();
+                c = input_poll_char();
+            }
             if (c < 0) {
                 if (written == 0 && g_pending_keyboard_signal != 0) {
-                    return err(EINTR);
+                    return handle_pending_keyboard_signal(frame);
+                }
+                if (written == 0 && nonblocking) {
+                    return err(EAGAIN);
                 }
                 break;
             }
@@ -1286,7 +1678,7 @@ static int sys_read(int fd, void* buf, size_t count) {
             out[written++] = (char)c;
         }
         if (written == 0 && g_pending_keyboard_signal != 0) {
-            return err(EINTR);
+            return handle_pending_keyboard_signal(frame);
         }
         return (int)written;
     }
@@ -1302,8 +1694,29 @@ static int sys_read(int fd, void* buf, size_t count) {
         }
 
         struct pipe_state* p = &g_pipes[pipe_id];
-        if (p->size == 0) {
-            return pipe_has_writer(pipe_id) ? err(EAGAIN) : 0;
+        while (p->size == 0) {
+            if (!pipe_has_writer(pipe_id)) {
+                return 0;
+            }
+            if (fd_is_nonblocking(fd)) {
+                return err(EAGAIN);
+            }
+            if (frame != NULL && has_other_runnable_process(current_process())) {
+                struct process* proc = current_process();
+                int sr = save_live_process(proc, frame);
+                if (sr != 0) {
+                    return sr;
+                }
+                proc->state = PROCESS_BLOCKED;
+                proc->wait.reason = PROCESS_WAIT_PIPE_READ;
+                proc->wait.fd = fd;
+                proc->wait.aux0 = pipe_id;
+                proc->wait.ptr0 = (uint64_t)(uintptr_t)buf;
+                proc->wait.ptr1 = count;
+                proc->wait.has_timeout = false;
+                return (int)schedule_away(frame);
+            }
+            __asm__ volatile("pause");
         }
 
         size_t n = (count < p->size) ? count : p->size;
@@ -1344,7 +1757,7 @@ static int sys_read(int fd, void* buf, size_t count) {
     return (int)n;
 }
 
-static int sys_write(int fd, const void* buf, size_t count) {
+static int sys_write(int fd, const void* buf, size_t count, struct syscall_frame* frame) {
     if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
         return err(EBADF);
     }
@@ -1358,11 +1771,36 @@ static int sys_write(int fd, const void* buf, size_t count) {
         if (pipe_id < 0 || pipe_id >= MAX_PIPES || !g_pipes[pipe_id].used) {
             return err(EBADF);
         }
+        if (!pipe_has_reader(pipe_id)) {
+            return err(EPIPE);
+        }
 
         struct pipe_state* p = &g_pipes[pipe_id];
         size_t avail = PIPE_CAPACITY - p->size;
-        if (avail == 0) {
-            return err(EAGAIN);
+        while (avail == 0) {
+            if (!pipe_has_reader(pipe_id)) {
+                return err(EPIPE);
+            }
+            if (fd_is_nonblocking(fd)) {
+                return err(EAGAIN);
+            }
+            if (frame != NULL && has_other_runnable_process(current_process())) {
+                struct process* proc = current_process();
+                int sr = save_live_process(proc, frame);
+                if (sr != 0) {
+                    return sr;
+                }
+                proc->state = PROCESS_BLOCKED;
+                proc->wait.reason = PROCESS_WAIT_PIPE_WRITE;
+                proc->wait.fd = fd;
+                proc->wait.aux0 = pipe_id;
+                proc->wait.ptr0 = (uint64_t)(uintptr_t)buf;
+                proc->wait.ptr1 = count;
+                proc->wait.has_timeout = false;
+                return (int)schedule_away(frame);
+            }
+            __asm__ volatile("pause");
+            avail = PIPE_CAPACITY - p->size;
         }
 
         size_t n = (count < avail) ? count : avail;
@@ -1394,14 +1832,14 @@ static int sys_write(int fd, const void* buf, size_t count) {
     return (int)count;
 }
 
-static int sys_writev(int fd, const struct linux_iovec* iov, size_t iovcnt) {
+static int sys_writev(int fd, const struct linux_iovec* iov, size_t iovcnt, struct syscall_frame* frame) {
     if (iovcnt > 1024) {
         return err(EINVAL);
     }
 
     int total = 0;
     for (size_t i = 0; i < iovcnt; ++i) {
-        int n = sys_write(fd, (const void*)(uintptr_t)iov[i].base, (size_t)iov[i].len);
+        int n = sys_write(fd, (const void*)(uintptr_t)iov[i].base, (size_t)iov[i].len, frame);
         if (n < 0) {
             return n;
         }
@@ -1410,14 +1848,14 @@ static int sys_writev(int fd, const struct linux_iovec* iov, size_t iovcnt) {
     return total;
 }
 
-static int sys_readv(int fd, const struct linux_iovec* iov, size_t iovcnt) {
+static int sys_readv(int fd, const struct linux_iovec* iov, size_t iovcnt, struct syscall_frame* frame) {
     if (iovcnt > 1024) {
         return err(EINVAL);
     }
 
     int total = 0;
     for (size_t i = 0; i < iovcnt; ++i) {
-        int n = sys_read(fd, (void*)(uintptr_t)iov[i].base, (size_t)iov[i].len);
+        int n = sys_read(fd, (void*)(uintptr_t)iov[i].base, (size_t)iov[i].len, frame);
         if (n < 0) {
             return n;
         }
@@ -1566,7 +2004,7 @@ static int64_t sys_sendfile(int out_fd, int in_fd, int64_t* offset, size_t count
         if (chunk > 4096u) {
             chunk = 4096u;
         }
-        int w = sys_write(out_fd, base + written, chunk);
+        int w = sys_write(out_fd, base + written, chunk, NULL);
         if (w < 0) {
             return (written > 0) ? (int64_t)written : (int64_t)w;
         }
@@ -1595,8 +2033,27 @@ static int sys_ioctl(int fd, uint64_t req, void* argp) {
 
     if (req == TCGETS) {
         if (argp != NULL) {
-            memset(argp, 0, 64);
+            memcpy(argp, &g_tty_termios, sizeof(g_tty_termios));
         }
+        return 0;
+    }
+
+    if (req == TIOCGPGRP) {
+        if (argp != NULL) {
+            *(int*)(uintptr_t)argp = g_terminal_fg_pgrp;
+        }
+        return 0;
+    }
+
+    if (req == TIOCSPGRP) {
+        if (argp == NULL) {
+            return err(EFAULT);
+        }
+        int pgid = *(const int*)(uintptr_t)argp;
+        if (pgid <= 0) {
+            return err(EINVAL);
+        }
+        g_terminal_fg_pgrp = pgid;
         return 0;
     }
 
@@ -1613,6 +2070,16 @@ static int sys_ioctl(int fd, uint64_t req, void* argp) {
     }
 
     if (req == TCSETS || req == TCSETSW || req == TCSETSF) {
+        if (argp != NULL) {
+            memcpy(&g_tty_termios, argp, sizeof(g_tty_termios));
+        }
+        return 0;
+    }
+
+    if (req == FIONREAD) {
+        if (argp != NULL) {
+            *(int*)(uintptr_t)argp = input_char_ready() ? 1 : 0;
+        }
         return 0;
     }
 
@@ -1765,7 +2232,7 @@ static uint16_t poll_revents_for_fd(const struct linux_pollfd* pfd) {
 
     switch (g_fds[fd].kind) {
         case FD_TTY:
-            if ((events & (POLLIN | POLLPRI)) != 0u && input_char_ready()) {
+            if ((events & (POLLIN | POLLPRI)) != 0u && tty_input_ready()) {
                 revents |= POLLIN;
             }
             if ((events & POLLOUT) != 0u) {
@@ -1827,12 +2294,620 @@ static uint16_t poll_revents_for_fd(const struct linux_pollfd* pfd) {
     return revents;
 }
 
+static bool fdset_has_fd(const uint8_t* set, int fd) {
+    return (set[fd >> 3] & (uint8_t)(1u << (fd & 7))) != 0u;
+}
+
+static void fdset_add_fd(uint8_t* set, int fd) {
+    set[fd >> 3] |= (uint8_t)(1u << (fd & 7));
+}
+
+static int select_scan(int nfds, const uint8_t* read_in, const uint8_t* write_in, const uint8_t* except_in, uint8_t* read_out,
+                       uint8_t* write_out, uint8_t* except_out) {
+    int ready = 0;
+
+    for (int fd = 0; fd < nfds; ++fd) {
+        bool want_read = read_in != NULL && fdset_has_fd(read_in, fd);
+        bool want_write = write_in != NULL && fdset_has_fd(write_in, fd);
+        bool want_except = except_in != NULL && fdset_has_fd(except_in, fd);
+
+        if (!want_read && !want_write && !want_except) {
+            continue;
+        }
+        if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
+            return err(EBADF);
+        }
+
+        struct linux_pollfd pfd;
+        pfd.fd = fd;
+        pfd.events = 0;
+        pfd.revents = 0;
+        if (want_read) {
+            pfd.events |= POLLIN | POLLPRI;
+        }
+        if (want_write) {
+            pfd.events |= POLLOUT;
+        }
+
+        uint16_t revents = poll_revents_for_fd(&pfd);
+        bool fd_ready = false;
+
+        if (want_read && (revents & (POLLIN | POLLHUP | POLLERR)) != 0u) {
+            fdset_add_fd(read_out, fd);
+            fd_ready = true;
+        }
+        if (want_write && (revents & (POLLOUT | POLLERR)) != 0u) {
+            fdset_add_fd(write_out, fd);
+            fd_ready = true;
+        }
+        if (want_except && (revents & POLLPRI) != 0u) {
+            fdset_add_fd(except_out, fd);
+            fd_ready = true;
+        }
+
+        if (fd_ready) {
+            ++ready;
+        }
+    }
+
+    return ready;
+}
+
+static bool child_matches_wait_target(const struct process* parent, const struct process* child, int pid) {
+    if (parent == NULL || child == NULL || child->ppid != parent->pid) {
+        return false;
+    }
+    if (pid == -1) {
+        return true;
+    }
+    if (pid == 0) {
+        return child->pgid == parent->pgid;
+    }
+    if (pid < -1) {
+        return child->pgid == -pid;
+    }
+    return child->pid == pid;
+}
+
+static bool zombie_matches_wait_target(const struct process* parent, const struct zombie_info* zombie, int pid) {
+    if (parent == NULL || zombie == NULL || !zombie->valid || zombie->ppid != parent->pid) {
+        return false;
+    }
+    if (pid == -1) {
+        return true;
+    }
+    if (pid == 0) {
+        return zombie->pgid == parent->pgid;
+    }
+    if (pid < -1) {
+        return zombie->pgid == -pid;
+    }
+    return zombie->pid == pid;
+}
+
+static int find_zombie_for_wait(const struct process* parent, int pid) {
+    for (int i = 0; i < MAX_ZOMBIES; ++i) {
+        if (zombie_matches_wait_target(parent, &g_zombies[i], pid)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static bool has_matching_child(const struct process* parent, int pid) {
+    for (int i = 0; i < MAX_PROCESSES; ++i) {
+        struct process* child = process_at(i);
+        if (child == NULL || child->state == PROCESS_FREE) {
+            continue;
+        }
+        if (!child_matches_wait_target(parent, child, pid)) {
+            continue;
+        }
+        return true;
+    }
+    return false;
+}
+
+static int find_waitable_child_event(struct process* parent, int pid, int options, int* status_out) {
+    for (int i = 0; i < MAX_PROCESSES; ++i) {
+        struct process* child = process_at(i);
+        if (child == NULL || child->state == PROCESS_FREE || child->state == PROCESS_ZOMBIE) {
+            continue;
+        }
+        if (!child_matches_wait_target(parent, child, pid)) {
+            continue;
+        }
+        if (!child->has_wait_event) {
+            continue;
+        }
+
+        int status = child->last_wait_status;
+        if ((status & 0xFFu) == 0x7Fu) {
+            if ((options & WAIT_UNTRACED) == 0) {
+                continue;
+            }
+        } else if (status == 0xFFFF) {
+            if ((options & WAIT_CONTINUED) == 0) {
+                continue;
+            }
+        }
+
+        if (status_out != NULL) {
+            *status_out = status;
+        }
+        return child->pid;
+    }
+    return 0;
+}
+
+static bool process_block_ready(const struct process* proc) {
+    if (proc == NULL || proc->state != PROCESS_BLOCKED) {
+        return false;
+    }
+    if (proc->pending_count > 0) {
+        return true;
+    }
+
+    switch (proc->wait.reason) {
+        case PROCESS_WAIT_TTY_READ:
+            service_keyboard_signal_for_tty();
+            return g_pending_keyboard_signal != 0 || input_char_ready();
+        case PROCESS_WAIT_PIPE_READ:
+        {
+            int pipe_id = proc->wait.aux0;
+            return pipe_id >= 0 && pipe_id < MAX_PIPES &&
+                   ((!g_pipes[pipe_id].used) || g_pipes[pipe_id].size > 0 || !pipe_has_writer(pipe_id));
+        }
+        case PROCESS_WAIT_PIPE_WRITE:
+        {
+            int pipe_id = proc->wait.aux0;
+            return pipe_id >= 0 && pipe_id < MAX_PIPES &&
+                   ((!g_pipes[pipe_id].used) || !pipe_has_reader(pipe_id) || g_pipes[pipe_id].size < PIPE_CAPACITY);
+        }
+        case PROCESS_WAIT_WAIT4:
+            return find_zombie_for_wait(proc, proc->wait.aux0) >= 0 ||
+                   find_waitable_child_event((struct process*)proc, proc->wait.aux0, proc->wait.aux1, NULL) != 0;
+        case PROCESS_WAIT_SELECT:
+        {
+            if (proc->wait.has_timeout && read_tsc() >= proc->wait.deadline_ns) {
+                return true;
+            }
+            uint8_t read_out[SELECT_FDSET_BYTES];
+            uint8_t write_out[SELECT_FDSET_BYTES];
+            uint8_t except_out[SELECT_FDSET_BYTES];
+            memset(read_out, 0, sizeof(read_out));
+            memset(write_out, 0, sizeof(write_out));
+            memset(except_out, 0, sizeof(except_out));
+            return select_scan(proc->wait.nfds, proc->wait.ptr0 != 0 ? proc->wait.readfds : NULL,
+                               proc->wait.ptr1 != 0 ? proc->wait.writefds : NULL,
+                               proc->wait.ptr2 != 0 ? proc->wait.exceptfds : NULL, read_out, write_out, except_out) > 0;
+        }
+        case PROCESS_WAIT_NANOSLEEP:
+            return read_tsc() >= proc->wait.deadline_ns;
+        case PROCESS_WAIT_NONE:
+        default:
+            return false;
+        }
+}
+
+static struct process* pick_ready_blocked_process(void) {
+    for (int i = 0; i < MAX_PROCESSES; ++i) {
+        g_scheduler_index = (g_scheduler_index + 1) % MAX_PROCESSES;
+        struct process* proc = process_at(g_scheduler_index);
+        if (proc == NULL || !proc->has_saved_context) {
+            continue;
+        }
+        if (process_block_ready(proc)) {
+            return proc;
+        }
+    }
+    return NULL;
+}
+
+static bool has_schedulable_process_except(const struct process* current) {
+    for (int i = 0; i < MAX_PROCESSES; ++i) {
+        struct process* proc = process_at(i);
+        if (proc == NULL || proc == current || proc->state == PROCESS_FREE || proc->state == PROCESS_ZOMBIE ||
+            proc->state == PROCESS_STOPPED) {
+            continue;
+        }
+        return true;
+    }
+    return false;
+}
+
+static void unblock_process(struct process* proc, int64_t retval) {
+    proc->state = PROCESS_RUNNABLE;
+    proc->saved_frame.rax = (uint64_t)retval;
+    proc->wait.reason = PROCESS_WAIT_NONE;
+}
+
+static int try_complete_wait4(struct process* proc) {
+    if (proc->pending_count > 0) {
+        (void)process_take_pending_signal(proc);
+        unblock_process(proc, err(EINTR));
+        return 0;
+    }
+
+    int zombie_idx = find_zombie_for_wait(proc, proc->wait.aux0);
+    if (zombie_idx >= 0) {
+        if (proc->wait.ptr0 != 0) {
+            *(int*)(uintptr_t)proc->wait.ptr0 = g_zombies[zombie_idx].exit_status;
+        }
+        int reaped = g_zombies[zombie_idx].pid;
+        remove_zombie(zombie_idx);
+        struct process* child = process_find(reaped);
+        if (child != NULL && child->state == PROCESS_ZOMBIE) {
+            process_free(child);
+        }
+        unblock_process(proc, reaped);
+        return 0;
+    }
+
+    int status = 0;
+    int pid = find_waitable_child_event(proc, proc->wait.aux0, proc->wait.aux1, &status);
+    if (pid == 0) {
+        return err(EAGAIN);
+    }
+
+    if (proc->wait.ptr0 != 0) {
+        *(int*)(uintptr_t)proc->wait.ptr0 = status;
+    }
+
+    struct process* child = process_find(pid);
+    if (child != NULL) {
+        child->has_wait_event = false;
+        if (child->state == PROCESS_ZOMBIE) {
+            process_free(child);
+        }
+    }
+
+    unblock_process(proc, pid);
+    return 0;
+}
+
+static int try_complete_tty_read(struct process* proc) {
+    service_keyboard_signal_for_tty();
+    if (g_pending_keyboard_signal != 0) {
+        int sig = take_keyboard_signal();
+        (void)signal_process_group(g_terminal_fg_pgrp, sig);
+    }
+    if (proc->state == PROCESS_STOPPED || proc->state == PROCESS_ZOMBIE) {
+        return 0;
+    }
+    if (proc->pending_count > 0) {
+        (void)process_take_pending_signal(proc);
+        unblock_process(proc, err(EINTR));
+        return 0;
+    }
+
+    service_keyboard_signal_for_tty();
+    if (g_pending_keyboard_signal != 0) {
+        int sig = take_keyboard_signal();
+        (void)sig;
+        unblock_process(proc, err(EINTR));
+        return 0;
+    }
+
+    char* out = (char*)(uintptr_t)proc->wait.ptr0;
+    size_t count = (size_t)proc->wait.ptr1;
+    size_t written = 0;
+    while (written < count) {
+        int c = input_poll_char();
+        if (c < 0) {
+            break;
+        }
+        if (c == '\r') {
+            c = '\n';
+        }
+        out[written++] = (char)c;
+    }
+
+    if (written == 0) {
+        return err(EAGAIN);
+    }
+
+    unblock_process(proc, (int64_t)written);
+    return 0;
+}
+
+static int try_complete_pipe_read(struct process* proc) {
+    if (proc->pending_count > 0) {
+        (void)process_take_pending_signal(proc);
+        unblock_process(proc, err(EINTR));
+        return 0;
+    }
+
+    int pipe_id = proc->wait.aux0;
+    if (pipe_id < 0 || pipe_id >= MAX_PIPES || !g_pipes[pipe_id].used) {
+        unblock_process(proc, 0);
+        return 0;
+    }
+
+    struct pipe_state* p = &g_pipes[pipe_id];
+    if (p->size == 0 && pipe_has_writer(pipe_id)) {
+        return err(EAGAIN);
+    }
+    if (p->size == 0) {
+        unblock_process(proc, 0);
+        return 0;
+    }
+
+    void* buf = (void*)(uintptr_t)proc->wait.ptr0;
+    size_t count = (size_t)proc->wait.ptr1;
+    size_t n = (count < p->size) ? count : p->size;
+    size_t first = n;
+    size_t start = p->read_off;
+    if (first > PIPE_CAPACITY - start) {
+        first = PIPE_CAPACITY - start;
+    }
+    memcpy(buf, &p->data[start], first);
+    if (n > first) {
+        memcpy((uint8_t*)buf + first, &p->data[0], n - first);
+    }
+    p->read_off = (p->read_off + n) % PIPE_CAPACITY;
+    p->size -= n;
+
+    unblock_process(proc, (int64_t)n);
+    return 0;
+}
+
+static int try_complete_pipe_write(struct process* proc) {
+    if (proc->pending_count > 0) {
+        (void)process_take_pending_signal(proc);
+        unblock_process(proc, err(EINTR));
+        return 0;
+    }
+
+    int pipe_id = proc->wait.aux0;
+    if (pipe_id < 0 || pipe_id >= MAX_PIPES || !g_pipes[pipe_id].used) {
+        unblock_process(proc, err(EBADF));
+        return 0;
+    }
+    if (!pipe_has_reader(pipe_id)) {
+        unblock_process(proc, err(EPIPE));
+        return 0;
+    }
+
+    struct pipe_state* p = &g_pipes[pipe_id];
+    size_t avail = PIPE_CAPACITY - p->size;
+    if (avail == 0) {
+        return err(EAGAIN);
+    }
+
+    const void* buf = (const void*)(uintptr_t)proc->wait.ptr0;
+    size_t count = (size_t)proc->wait.ptr1;
+    size_t n = (count < avail) ? count : avail;
+    size_t write_off = (p->read_off + p->size) % PIPE_CAPACITY;
+    size_t first = n;
+    if (first > PIPE_CAPACITY - write_off) {
+        first = PIPE_CAPACITY - write_off;
+    }
+    memcpy(&p->data[write_off], buf, first);
+    if (n > first) {
+        memcpy(&p->data[0], (const uint8_t*)buf + first, n - first);
+    }
+    p->size += n;
+
+    unblock_process(proc, (int64_t)n);
+    return 0;
+}
+
+static int try_complete_select(struct process* proc) {
+    service_keyboard_signal_for_tty();
+    if (g_pending_keyboard_signal != 0) {
+        int sig = take_keyboard_signal();
+        (void)signal_process_group(g_terminal_fg_pgrp, sig);
+    }
+    if (proc->state == PROCESS_STOPPED || proc->state == PROCESS_ZOMBIE) {
+        return 0;
+    }
+    if (proc->pending_count > 0) {
+        (void)process_take_pending_signal(proc);
+        unblock_process(proc, err(EINTR));
+        return 0;
+    }
+
+    int nfds = proc->wait.nfds;
+    size_t bytes = (size_t)((nfds + 7) >> 3);
+    uint8_t read_out[SELECT_FDSET_BYTES];
+    uint8_t write_out[SELECT_FDSET_BYTES];
+    uint8_t except_out[SELECT_FDSET_BYTES];
+    memset(read_out, 0, sizeof(read_out));
+    memset(write_out, 0, sizeof(write_out));
+    memset(except_out, 0, sizeof(except_out));
+
+    if (proc->wait.has_timeout && read_tsc() >= proc->wait.deadline_ns) {
+        if (proc->wait.ptr0 != 0 && bytes > 0) {
+            memset((void*)(uintptr_t)proc->wait.ptr0, 0, bytes);
+        }
+        if (proc->wait.ptr1 != 0 && bytes > 0) {
+            memset((void*)(uintptr_t)proc->wait.ptr1, 0, bytes);
+        }
+        if (proc->wait.ptr2 != 0 && bytes > 0) {
+            memset((void*)(uintptr_t)proc->wait.ptr2, 0, bytes);
+        }
+        unblock_process(proc, 0);
+        return 0;
+    }
+
+    int ready = select_scan(nfds, proc->wait.ptr0 != 0 ? proc->wait.readfds : NULL, proc->wait.ptr1 != 0 ? proc->wait.writefds : NULL,
+                            proc->wait.ptr2 != 0 ? proc->wait.exceptfds : NULL, read_out, write_out, except_out);
+    if (ready <= 0) {
+        return ready == 0 ? err(EAGAIN) : ready;
+    }
+
+    if (proc->wait.ptr0 != 0 && bytes > 0) {
+        memcpy((void*)(uintptr_t)proc->wait.ptr0, read_out, bytes);
+    }
+    if (proc->wait.ptr1 != 0 && bytes > 0) {
+        memcpy((void*)(uintptr_t)proc->wait.ptr1, write_out, bytes);
+    }
+    if (proc->wait.ptr2 != 0 && bytes > 0) {
+        memcpy((void*)(uintptr_t)proc->wait.ptr2, except_out, bytes);
+    }
+
+    unblock_process(proc, ready);
+    return 0;
+}
+
+static int try_complete_nanosleep(struct process* proc) {
+    if (proc->pending_count > 0) {
+        (void)process_take_pending_signal(proc);
+        unblock_process(proc, err(EINTR));
+        return 0;
+    }
+
+    if (read_tsc() < proc->wait.deadline_ns) {
+        return err(EAGAIN);
+    }
+    unblock_process(proc, 0);
+    return 0;
+}
+
+static int complete_blocked_process(struct process* proc) {
+    switch (proc->wait.reason) {
+        case PROCESS_WAIT_TTY_READ:
+            return try_complete_tty_read(proc);
+        case PROCESS_WAIT_PIPE_READ:
+            return try_complete_pipe_read(proc);
+        case PROCESS_WAIT_PIPE_WRITE:
+            return try_complete_pipe_write(proc);
+        case PROCESS_WAIT_WAIT4:
+            return try_complete_wait4(proc);
+        case PROCESS_WAIT_SELECT:
+            return try_complete_select(proc);
+        case PROCESS_WAIT_NANOSLEEP:
+            return try_complete_nanosleep(proc);
+        case PROCESS_WAIT_NONE:
+        default:
+            return 0;
+    }
+}
+
+static uint64_t schedule_away(struct syscall_frame* frame) {
+    struct process* outgoing = current_process();
+
+    for (;;) {
+        struct process* next = pick_next_runnable_process(outgoing);
+        if (next == NULL) {
+            next = pick_ready_blocked_process();
+        }
+
+        if (next != NULL) {
+            if (outgoing != NULL) {
+                clear_live_process_memory(outgoing);
+            }
+            restore_process_memory(next);
+            load_process_runtime(next);
+            if (next->state == PROCESS_BLOCKED) {
+                int cr = complete_blocked_process(next);
+                if (cr != 0) {
+                    if (next->state == PROCESS_BLOCKED) {
+                        continue;
+                    }
+                }
+                if (next->state != PROCESS_RUNNABLE) {
+                    continue;
+                }
+                load_process_runtime(next);
+            }
+            next->state = PROCESS_RUNNING;
+            restore_user_context(next, frame);
+            return frame->rax;
+        }
+
+        __asm__ volatile("pause");
+    }
+}
+
+static int sys_select_common(int nfds, void* readfds, void* writefds, void* exceptfds, bool has_timeout, int64_t timeout_sec,
+                             int64_t timeout_nsec) {
+    if (nfds < 0 || nfds > 1024) {
+        return err(EINVAL);
+    }
+
+    size_t bytes = (size_t)((nfds + 7) >> 3);
+    if (bytes > SELECT_FDSET_BYTES) {
+        return err(EINVAL);
+    }
+
+    uint8_t read_in[SELECT_FDSET_BYTES];
+    uint8_t write_in[SELECT_FDSET_BYTES];
+    uint8_t except_in[SELECT_FDSET_BYTES];
+    memset(read_in, 0, sizeof(read_in));
+    memset(write_in, 0, sizeof(write_in));
+    memset(except_in, 0, sizeof(except_in));
+
+    if (readfds != NULL && bytes > 0) {
+        memcpy(read_in, readfds, bytes);
+    }
+    if (writefds != NULL && bytes > 0) {
+        memcpy(write_in, writefds, bytes);
+    }
+    if (exceptfds != NULL && bytes > 0) {
+        memcpy(except_in, exceptfds, bytes);
+    }
+
+    uint64_t start = read_tsc();
+    uint64_t budget = has_timeout ? timeout_to_tsc_cycles(timeout_sec, timeout_nsec) : UINT64_MAX;
+
+    for (;;) {
+        service_keyboard_signal_for_tty();
+        if (g_pending_keyboard_signal != 0 && tty_is_foreground_group()) {
+            return err(EINTR);
+        }
+
+        uint8_t read_out[SELECT_FDSET_BYTES];
+        uint8_t write_out[SELECT_FDSET_BYTES];
+        uint8_t except_out[SELECT_FDSET_BYTES];
+        memset(read_out, 0, sizeof(read_out));
+        memset(write_out, 0, sizeof(write_out));
+        memset(except_out, 0, sizeof(except_out));
+
+        int ready = select_scan(nfds, readfds != NULL ? read_in : NULL, writefds != NULL ? write_in : NULL,
+                                exceptfds != NULL ? except_in : NULL, read_out, write_out, except_out);
+        if (ready < 0) {
+            return ready;
+        }
+        if (ready > 0) {
+            if (readfds != NULL && bytes > 0) {
+                memcpy(readfds, read_out, bytes);
+            }
+            if (writefds != NULL && bytes > 0) {
+                memcpy(writefds, write_out, bytes);
+            }
+            if (exceptfds != NULL && bytes > 0) {
+                memcpy(exceptfds, except_out, bytes);
+            }
+            return ready;
+        }
+
+        if (readfds != NULL && bytes > 0) {
+            memset(readfds, 0, bytes);
+        }
+        if (writefds != NULL && bytes > 0) {
+            memset(writefds, 0, bytes);
+        }
+        if (exceptfds != NULL && bytes > 0) {
+            memset(exceptfds, 0, bytes);
+        }
+
+        if (has_timeout && timeout_expired(start, budget)) {
+            return 0;
+        }
+
+        __asm__ volatile("pause");
+    }
+}
+
 static int sys_poll(struct linux_pollfd* fds, size_t nfds, int timeout_ms) {
     if (nfds > 1024u) {
         return err(EINVAL);
     }
 
     for (;;) {
+        service_keyboard_signal_for_tty();
         if (take_keyboard_signal() != 0) {
             return err(EINTR);
         }
@@ -2022,6 +3097,274 @@ static int sys_clock_gettime(struct linux_timespec* ts) {
     ts->tv_sec = (int64_t)(g_fake_time_ns / 1000000000ull);
     ts->tv_nsec = (int64_t)(g_fake_time_ns % 1000000000ull);
     return 0;
+}
+
+static int sys_select(int nfds, void* readfds, void* writefds, void* exceptfds, struct linux_timeval* timeout, struct syscall_frame* frame) {
+    if (timeout == NULL) {
+        size_t bytes = (size_t)((nfds + 7) >> 3);
+        uint8_t read_in[SELECT_FDSET_BYTES];
+        uint8_t write_in[SELECT_FDSET_BYTES];
+        uint8_t except_in[SELECT_FDSET_BYTES];
+        uint8_t read_out[SELECT_FDSET_BYTES];
+        uint8_t write_out[SELECT_FDSET_BYTES];
+        uint8_t except_out[SELECT_FDSET_BYTES];
+        memset(read_in, 0, sizeof(read_in));
+        memset(write_in, 0, sizeof(write_in));
+        memset(except_in, 0, sizeof(except_in));
+        memset(read_out, 0, sizeof(read_out));
+        memset(write_out, 0, sizeof(write_out));
+        memset(except_out, 0, sizeof(except_out));
+        if (readfds != NULL && bytes > 0) {
+            memcpy(read_in, readfds, bytes);
+        }
+        if (writefds != NULL && bytes > 0) {
+            memcpy(write_in, writefds, bytes);
+        }
+        if (exceptfds != NULL && bytes > 0) {
+            memcpy(except_in, exceptfds, bytes);
+        }
+        int ready = select_scan(nfds, readfds != NULL ? read_in : NULL, writefds != NULL ? write_in : NULL,
+                                exceptfds != NULL ? except_in : NULL, read_out, write_out, except_out);
+        if (ready != 0) {
+            if (ready > 0) {
+                if (readfds != NULL && bytes > 0) {
+                    memcpy(readfds, read_out, bytes);
+                }
+                if (writefds != NULL && bytes > 0) {
+                    memcpy(writefds, write_out, bytes);
+                }
+                if (exceptfds != NULL && bytes > 0) {
+                    memcpy(exceptfds, except_out, bytes);
+                }
+            }
+            return ready;
+        }
+        if (frame == NULL || !has_other_runnable_process(current_process())) {
+            return sys_select_common(nfds, readfds, writefds, exceptfds, false, 0, 0);
+        }
+
+        struct process* proc = current_process();
+        int sr = save_live_process(proc, frame);
+        if (sr != 0) {
+            return sr;
+        }
+        proc->state = PROCESS_BLOCKED;
+        proc->wait.reason = PROCESS_WAIT_SELECT;
+        proc->wait.nfds = nfds;
+        proc->wait.ptr0 = (uint64_t)(uintptr_t)readfds;
+        proc->wait.ptr1 = (uint64_t)(uintptr_t)writefds;
+        proc->wait.ptr2 = (uint64_t)(uintptr_t)exceptfds;
+        proc->wait.has_timeout = false;
+        if (readfds != NULL && bytes > 0) {
+            memcpy(proc->wait.readfds, readfds, bytes);
+        }
+        if (writefds != NULL && bytes > 0) {
+            memcpy(proc->wait.writefds, writefds, bytes);
+        }
+        if (exceptfds != NULL && bytes > 0) {
+            memcpy(proc->wait.exceptfds, exceptfds, bytes);
+        }
+        return (int)schedule_away(frame);
+    }
+    int r = sys_select_common(nfds, readfds, writefds, exceptfds, true, timeout->tv_sec, timeout->tv_usec * 1000);
+    if (r != 0 || frame == NULL || !has_other_runnable_process(current_process())) {
+        return r;
+    }
+
+    struct process* proc = current_process();
+    int sr = save_live_process(proc, frame);
+    if (sr != 0) {
+        return sr;
+    }
+    proc->state = PROCESS_BLOCKED;
+    proc->wait.reason = PROCESS_WAIT_SELECT;
+    proc->wait.nfds = nfds;
+    proc->wait.ptr0 = (uint64_t)(uintptr_t)readfds;
+    proc->wait.ptr1 = (uint64_t)(uintptr_t)writefds;
+    proc->wait.ptr2 = (uint64_t)(uintptr_t)exceptfds;
+    proc->wait.has_timeout = true;
+    proc->wait.deadline_ns = read_tsc() + timeout_to_tsc_cycles(timeout->tv_sec, timeout->tv_usec * 1000);
+    size_t bytes = (size_t)((nfds + 7) >> 3);
+    if (readfds != NULL && bytes > 0) {
+        memcpy(proc->wait.readfds, readfds, bytes);
+    }
+    if (writefds != NULL && bytes > 0) {
+        memcpy(proc->wait.writefds, writefds, bytes);
+    }
+    if (exceptfds != NULL && bytes > 0) {
+        memcpy(proc->wait.exceptfds, exceptfds, bytes);
+    }
+    return (int)schedule_away(frame);
+}
+
+static int sys_pselect6(int nfds, void* readfds, void* writefds, void* exceptfds, const struct linux_timespec* timeout,
+                        const struct linux_pselect_sigmask* sigmask_data, struct syscall_frame* frame) {
+    (void)sigmask_data;
+    if (timeout == NULL) {
+        return sys_select(nfds, readfds, writefds, exceptfds, NULL, frame);
+    }
+    int r = sys_select_common(nfds, readfds, writefds, exceptfds, true, timeout->tv_sec, timeout->tv_nsec);
+    if (r != 0 || frame == NULL || !has_other_runnable_process(current_process())) {
+        return r;
+    }
+
+    struct process* proc = current_process();
+    int sr = save_live_process(proc, frame);
+    if (sr != 0) {
+        return sr;
+    }
+    proc->state = PROCESS_BLOCKED;
+    proc->wait.reason = PROCESS_WAIT_SELECT;
+    proc->wait.nfds = nfds;
+    proc->wait.ptr0 = (uint64_t)(uintptr_t)readfds;
+    proc->wait.ptr1 = (uint64_t)(uintptr_t)writefds;
+    proc->wait.ptr2 = (uint64_t)(uintptr_t)exceptfds;
+    proc->wait.has_timeout = true;
+    proc->wait.deadline_ns = read_tsc() + timeout_to_tsc_cycles(timeout->tv_sec, timeout->tv_nsec);
+    size_t bytes = (size_t)((nfds + 7) >> 3);
+    if (readfds != NULL && bytes > 0) {
+        memcpy(proc->wait.readfds, readfds, bytes);
+    }
+    if (writefds != NULL && bytes > 0) {
+        memcpy(proc->wait.writefds, writefds, bytes);
+    }
+    if (exceptfds != NULL && bytes > 0) {
+        memcpy(proc->wait.exceptfds, exceptfds, bytes);
+    }
+    return (int)schedule_away(frame);
+}
+
+static int sys_nanosleep(const struct linux_timespec* req, struct linux_timespec* rem, struct syscall_frame* frame) {
+    if (req == NULL) {
+        return err(EFAULT);
+    }
+    if (req->tv_sec < 0 || req->tv_nsec < 0 || req->tv_nsec >= 1000000000ll) {
+        return err(EINVAL);
+    }
+
+    uint64_t start = read_tsc();
+    uint64_t budget = timeout_to_tsc_cycles(req->tv_sec, req->tv_nsec);
+    while (!timeout_expired(start, budget)) {
+        service_keyboard_signal_for_tty();
+        if (g_pending_keyboard_signal != 0 && tty_is_foreground_group()) {
+            if (rem != NULL) {
+                rem->tv_sec = 0;
+                rem->tv_nsec = 0;
+            }
+            return err(EINTR);
+        }
+        if (frame != NULL && has_other_runnable_process(current_process())) {
+            struct process* proc = current_process();
+            int sr = save_live_process(proc, frame);
+            if (sr != 0) {
+                return sr;
+            }
+            proc->state = PROCESS_BLOCKED;
+            proc->wait.reason = PROCESS_WAIT_NANOSLEEP;
+            proc->wait.has_timeout = true;
+            proc->wait.deadline_ns = start + budget;
+            return (int)schedule_away(frame);
+        }
+        __asm__ volatile("pause");
+    }
+
+    g_fake_time_ns += (uint64_t)req->tv_sec * 1000000000ull + (uint64_t)req->tv_nsec;
+    if (rem != NULL) {
+        rem->tv_sec = 0;
+        rem->tv_nsec = 0;
+    }
+    return 0;
+}
+
+static int sys_umask(uint32_t mask) {
+    uint32_t old = g_umask;
+    g_umask = mask & 0777u;
+    return (int)old;
+}
+
+static int sys_getrlimit(int resource, struct linux_rlimit* rlim) {
+    (void)resource;
+    if (rlim == NULL) {
+        return err(EFAULT);
+    }
+
+    rlim->rlim_cur = RLIM_INFINITY;
+    rlim->rlim_max = RLIM_INFINITY;
+    return 0;
+}
+
+static int sys_prlimit64(int pid, int resource, const struct linux_rlimit* new_limit, struct linux_rlimit* old_limit) {
+    (void)resource;
+    if (pid != 0 && pid != g_current_pid) {
+        return err(ESRCH);
+    }
+    if (old_limit != NULL) {
+        old_limit->rlim_cur = RLIM_INFINITY;
+        old_limit->rlim_max = RLIM_INFINITY;
+    }
+    if (new_limit != NULL) {
+        return 0;
+    }
+    return 0;
+}
+
+static int sys_setpgid(int pid, int pgid) {
+    if (pid == 0) {
+        pid = g_current_pid;
+    }
+    if (pgid == 0) {
+        pgid = pid;
+    }
+    if (pid <= 0 || pgid <= 0) {
+        return err(EINVAL);
+    }
+
+    struct process* target = process_find(pid);
+    if (target == NULL || target->state == PROCESS_ZOMBIE) {
+        return err(ESRCH);
+    }
+    if (target->pid != g_current_pid && target->ppid != g_current_pid) {
+        return err(EPERM);
+    }
+
+    target->pgid = pgid;
+    if (target == current_process()) {
+        g_current_pgid = pgid;
+    }
+
+    return 0;
+}
+
+static int sys_getpgrp(void) {
+    return g_current_pgid;
+}
+
+static int sys_setsid(void) {
+    if (g_current_pid == g_current_pgid) {
+        return err(EPERM);
+    }
+
+    struct process* current = current_process();
+    if (current == NULL) {
+        return err(ESRCH);
+    }
+
+    g_current_sid = g_current_pid;
+    g_current_pgid = g_current_pid;
+    current->sid = g_current_sid;
+    current->pgid = g_current_pgid;
+    return g_current_sid;
+}
+
+static int sys_getpgid(int pid) {
+    if (pid == 0) {
+        pid = g_current_pid;
+    }
+    struct process* target = process_find(pid);
+    if (target == NULL) {
+        return err(ESRCH);
+    }
+    return target->pgid;
 }
 
 static int64_t sys_mmap(uint64_t addr, size_t len, uint64_t flags) {
@@ -2332,65 +3675,50 @@ static int sys_execve(struct syscall_frame* frame, const char* path_user, uint64
     return 0;
 }
 
-static int sys_wait4(int pid, int* status, int options) {
-    if ((options & ~WAIT_NOHANG) != 0) {
+static int sys_wait4(int pid, int* status, int options, struct syscall_frame* frame) {
+    if ((options & ~(WAIT_NOHANG | WAIT_UNTRACED | WAIT_CONTINUED)) != 0) {
         return err(EINVAL);
     }
-    if (pid < -1) {
+    struct process* current = current_process();
+    if (current == NULL) {
         return err(ECHILD);
     }
-    if (g_parent_pending && (pid == -1 || pid == g_pending_child_pid || pid == 0)) {
-        return (options & WAIT_NOHANG) ? 0 : err(EAGAIN);
-    }
-    if (pid > 0) {
-        int zombie_idx = find_zombie(pid);
-        if (zombie_idx >= 0) {
-            if (status != NULL) {
-                *status = g_zombies[zombie_idx].exit_status;
-            }
-            int reaped = g_zombies[zombie_idx].pid;
-            remove_zombie(zombie_idx);
-            return reaped;
-        }
-        if (!g_wait_status_valid || pid != g_wait_status_pid) {
-            return err(ECHILD);
-        }
-        if (status != NULL) {
-            *status = g_wait_status_code;
-        }
-        int reaped = g_wait_status_pid;
-        g_wait_status_valid = false;
-        return reaped;
-    }
-    if (g_zombie_count > 0) {
-        int zombie_idx = find_zombie_by_ppid(g_current_pid);
-        if (zombie_idx >= 0) {
-            if (status != NULL) {
-                *status = g_zombies[zombie_idx].exit_status;
-            }
-            int reaped = g_zombies[zombie_idx].pid;
-            remove_zombie(zombie_idx);
-            return reaped;
-        }
-    }
-    if (!g_wait_status_valid) {
+
+    if (!has_matching_child(current, pid) && find_zombie_for_wait(current, pid) < 0) {
         return err(ECHILD);
     }
-    int zombie_idx = find_zombie(g_wait_status_pid);
-    if (zombie_idx >= 0) {
-        if (status != NULL) {
-            *status = g_zombies[zombie_idx].exit_status;
+
+    current->wait.reason = PROCESS_WAIT_WAIT4;
+    current->wait.aux0 = pid;
+    current->wait.aux1 = options;
+    current->wait.ptr0 = (uint64_t)(uintptr_t)status;
+    current->wait.has_timeout = false;
+    int immediate = try_complete_wait4(current);
+    if (immediate == 0 && current->state == PROCESS_RUNNABLE) {
+        current->state = PROCESS_RUNNING;
+        return (int)current->saved_frame.rax;
+    }
+    current->wait.reason = PROCESS_WAIT_NONE;
+
+    if ((options & WAIT_NOHANG) != 0) {
+        return 0;
+    }
+
+    if (frame != NULL && has_other_runnable_process(current)) {
+        int sr = save_live_process(current, frame);
+        if (sr != 0) {
+            return sr;
         }
-        int reaped = g_zombies[zombie_idx].pid;
-        remove_zombie(zombie_idx);
-        return reaped;
+        current->state = PROCESS_BLOCKED;
+        current->wait.reason = PROCESS_WAIT_WAIT4;
+        current->wait.aux0 = pid;
+        current->wait.aux1 = options;
+        current->wait.ptr0 = (uint64_t)(uintptr_t)status;
+        current->wait.has_timeout = false;
+        return (int)schedule_away(frame);
     }
-    if (status != NULL) {
-        *status = g_wait_status_code;
-    }
-    int reaped = g_wait_status_pid;
-    g_wait_status_valid = false;
-    return reaped;
+
+    return err(EAGAIN);
 }
 
 static int sys_rt_sigaction(int sig, const void* act, void* oldact) {
@@ -2446,81 +3774,162 @@ static int sys_rt_sigprocmask(int how, const uint64_t* set, uint64_t* oldset) {
     return 0;
 }
 
+static void queue_signal_for_process(struct process* proc, int sig) {
+    if (proc == NULL || sig <= 0 || sig >= (int)NSIG) {
+        return;
+    }
+
+    if (proc == current_process()) {
+        if (g_pending_signal_count >= MAX_PENDING_SIGNALS) {
+            return;
+        }
+        for (int i = 0; i < g_pending_signal_count; ++i) {
+            if (g_pending_signals[i] == sig) {
+                return;
+            }
+        }
+        g_pending_signals[g_pending_signal_count++] = sig;
+        return;
+    }
+
+    process_queue_signal(proc, sig);
+}
+
+static void note_child_status_change(struct process* proc, int status) {
+    if (proc == NULL) {
+        return;
+    }
+
+    proc->last_wait_status = status;
+    proc->has_wait_event = true;
+
+    struct process* parent = process_find(proc->ppid);
+    if (parent != NULL) {
+        queue_signal_for_process(parent, SIGCHLD);
+    }
+}
+
+static void terminate_process(struct process* proc, int exit_code, int wait_status) {
+    if (proc == NULL || proc->state == PROCESS_ZOMBIE || proc->state == PROCESS_FREE) {
+        return;
+    }
+
+    proc->exit_code = exit_code;
+    proc->exit_status = wait_status;
+    proc->state = PROCESS_ZOMBIE;
+    add_zombie(proc->pid, proc->ppid, proc->pgid, exit_code, wait_status);
+    note_child_status_change(proc, wait_status);
+}
+
+static void stop_process(struct process* proc, int sig) {
+    if (proc == NULL || proc->state == PROCESS_ZOMBIE || proc->state == PROCESS_STOPPED || proc->state == PROCESS_FREE) {
+        return;
+    }
+    proc->state = PROCESS_STOPPED;
+    proc->stop_signal = sig;
+    note_child_status_change(proc, 0x7Fu | (sig << 8));
+}
+
+static void continue_process(struct process* proc) {
+    if (proc == NULL || proc->state != PROCESS_STOPPED) {
+        return;
+    }
+    proc->state = PROCESS_RUNNABLE;
+    proc->saved_frame.rax = (uint64_t)err(EINTR);
+    proc->wait.reason = PROCESS_WAIT_NONE;
+    note_child_status_change(proc, 0xFFFF);
+}
+
+static int signal_process(struct process* proc, int sig) {
+    if (proc == NULL) {
+        return err(ESRCH);
+    }
+    if (sig == 0) {
+        return 0;
+    }
+
+    struct sigaction_data* action = &proc->sig_actions[sig];
+    if (action->handler == SIGNAL_HANDLER_IGN) {
+        return 0;
+    }
+    if (action->handler != SIGNAL_HANDLER_DFL) {
+        queue_signal_for_process(proc, sig);
+        return 0;
+    }
+
+    switch (sig) {
+        case SIGSTOP:
+        case SIGTSTP:
+        case SIGTTIN:
+        case SIGTTOU:
+            stop_process(proc, sig);
+            return 0;
+        case SIGCONT:
+            continue_process(proc);
+            return 0;
+        case SIGKILL:
+            terminate_process(proc, 128 + sig, sig & 0x7F);
+            return 0;
+        case SIGINT:
+        case SIGTERM:
+        case SIGQUIT:
+        case SIGABRT:
+        case SIGPIPE:
+            terminate_process(proc, 128 + sig, sig & 0x7F);
+            return 0;
+        default:
+            queue_signal_for_process(proc, sig);
+            return 0;
+    }
+}
+
+static int signal_process_group(int pgid, int sig) {
+    int delivered = 0;
+    for (int i = 0; i < MAX_PROCESSES; ++i) {
+        struct process* proc = process_at(i);
+        if (proc == NULL || proc->state == PROCESS_FREE || proc->pgid != pgid) {
+            continue;
+        }
+        int r = signal_process(proc, sig);
+        if (r == 0) {
+            delivered++;
+        }
+    }
+    return delivered > 0 ? 0 : err(ESRCH);
+}
+
 static int sys_kill(int pid, int sig) {
     if (sig < 0 || sig >= (int)NSIG) {
         return err(EINVAL);
     }
-    if (pid <= 0) {
+
+    if (pid == 0) {
+        pid = -g_current_pgid;
+    }
+
+    if (pid < -1) {
+        return signal_process_group(-pid, sig);
+    }
+
+    if (pid == -1) {
         return err(ENOSYS);
     }
-    if (pid == g_current_pid) {
-        if (sig == 0) {
-            return 0;
-        }
-        if (g_parent_pending && g_current_pid == g_pending_child_pid) {
-            return err(EPERM);
-        }
-        if (sig == SIGKILL || sig == SIGSTOP) {
-            return err(ENOSYS);
-        }
-        if (g_pending_signal_count < MAX_PENDING_SIGNALS) {
-            if (g_sig_actions[sig].handler != SIG_IGN) {
-                g_pending_signals[g_pending_signal_count++] = sig;
-            }
-        }
-        return 0;
-    }
-    int zombie_idx = find_zombie(pid);
-    if (zombie_idx >= 0) {
-        return 0;
-    }
-    if (g_parent_pending && pid == g_pending_child_pid) {
-        if (sig == 0) {
-            return 0;
-        }
-        if (sig == SIGKILL) {
-            return err(ENOSYS);
-        }
-        return 0;
-    }
-    if (g_parent_pending && pid == g_saved_parent_pid && g_saved_parent_pid == 1) {
-        if (sig == SIGUSR1 || sig == SIGUSR2 || sig == SIGTERM) {
-            do_shutdown();
-        }
-    }
-    return err(ESRCH);
+    return signal_process(process_find(pid), sig);
 }
 
-static void add_zombie(int pid, int ppid, int exit_code, int exit_status) {
+static void add_zombie(int pid, int ppid, int pgid, int exit_code, int exit_status) {
     for (int i = 0; i < MAX_ZOMBIES; ++i) {
         if (!g_zombies[i].valid) {
             g_zombies[i].valid = true;
             g_zombies[i].pid = pid;
             g_zombies[i].ppid = ppid;
+            g_zombies[i].pgid = pgid;
             g_zombies[i].exit_code = exit_code;
             g_zombies[i].exit_status = exit_status;
             g_zombie_count++;
             return;
         }
     }
-}
-
-static int find_zombie(int pid) {
-    for (int i = 0; i < MAX_ZOMBIES; ++i) {
-        if (g_zombies[i].valid && g_zombies[i].pid == pid) {
-            return i;
-        }
-    }
-    return -1;
-}
-
-static int find_zombie_by_ppid(int ppid) {
-    for (int i = 0; i < MAX_ZOMBIES; ++i) {
-        if (g_zombies[i].valid && g_zombies[i].ppid == ppid) {
-            return i;
-        }
-    }
-    return -1;
 }
 
 static void remove_zombie(int idx) {
@@ -2532,6 +3941,10 @@ static void remove_zombie(int idx) {
 
 static int sys_set_tid_address(uint64_t tidptr) {
     g_tid_address = tidptr;
+    struct process* current = current_process();
+    if (current != NULL) {
+        current->tid_address = tidptr;
+    }
     return g_current_pid;
 }
 
@@ -2580,10 +3993,6 @@ static int sys_reboot(int magic1, int magic2, uint64_t cmd) {
 
 static int sys_fork_like(struct syscall_frame* frame, uint64_t clone_flags, uint64_t child_stack, uint64_t child_tid_ptr, uint64_t tls,
                          bool from_clone) {
-    if (g_parent_pending) {
-        return err(EAGAIN);
-    }
-
     if (from_clone) {
         uint64_t allowed = CLONE_SIGNAL_MASK | CLONE_VM | CLONE_VFORK | CLONE_SETTLS | CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID;
         if ((clone_flags & ~allowed) != 0ull) {
@@ -2600,71 +4009,123 @@ static int sys_fork_like(struct syscall_frame* frame, uint64_t clone_flags, uint
         }
     }
 
-    int snap = snapshot_parent_memory(frame);
-    if (snap != 0) {
-        return snap;
+    struct process* current = current_process();
+    if (current == NULL) {
+        return err(EAGAIN);
     }
 
-    memcpy(g_parent_fds, g_fds, sizeof(g_fds));
-    memcpy(g_parent_cwd, g_cwd, sizeof(g_cwd));
-    g_parent_brk_current = g_brk_current;
-    g_parent_mmap_next = g_mmap_next;
-    g_parent_tid_address = g_tid_address;
-    g_parent_fs_base = read_fs_base_current();
+    int sr = save_live_process(current, frame);
+    if (sr != 0) {
+        return sr;
+    }
 
-    g_saved_parent_pid = g_current_pid;
-    g_saved_parent_ppid = g_current_ppid;
+    struct process* child = process_alloc();
+    if (child == NULL) {
+        return err(EAGAIN);
+    }
 
-    int child_pid = g_next_pid++;
+    sr = ensure_snapshot_buffers(child);
+    if (sr != 0) {
+        process_free(child);
+        return sr;
+    }
 
-    g_parent_frame = *frame;
-    g_parent_frame.rax = (uint64_t)child_pid;
+    child->ppid = current->pid;
+    child->pgid = current->pgid;
+    child->sid = current->sid;
+    child->state = PROCESS_RUNNABLE;
+    child->is_child = true;
+    child->image_start = current->image_start;
+    child->image_end = current->image_end;
+    child->brk_current = current->brk_current;
+    child->mmap_next = current->mmap_next;
+    child->umask = current->umask;
+    child->fs_base = ((from_clone && (clone_flags & CLONE_SETTLS) != 0ull) ? tls : current->fs_base);
+    child->tid_address = ((from_clone && (clone_flags & CLONE_CHILD_CLEARTID)) != 0ull) ? child_tid_ptr : current->tid_address;
+    child->sig_mask = current->sig_mask;
+    child->pending_count = 0;
+    child->has_wait_event = false;
+    child->stop_signal = 0;
+    child->exit_code = 0;
+    child->exit_status = 0;
 
-    uint64_t* raw = (uint64_t*)(void*)frame;
-    g_parent_iret[0] = raw[IRET_SLOT_RIP];
-    g_parent_iret[1] = raw[IRET_SLOT_CS];
-    g_parent_iret[2] = raw[IRET_SLOT_RFLAGS];
-    g_parent_iret[3] = raw[IRET_SLOT_RSP];
-    g_parent_iret[4] = raw[IRET_SLOT_SS];
+    memcpy(child->fds, current->fds, sizeof(child->fds));
+    memcpy(child->cwd, current->cwd, sizeof(child->cwd));
+    memcpy(child->sig_actions, current->sig_actions, sizeof(child->sig_actions));
+    memset(child->pending_signals, 0, sizeof(child->pending_signals));
 
+    child->snap.image_base = current->snap.image_base;
+    child->snap.image_len = current->snap.image_len;
+    child->snap.stack_base = current->snap.stack_base;
+    child->snap.stack_len = current->snap.stack_len;
+    child->snap.brk_current = current->snap.brk_current;
+    child->snap.brk_len = current->snap.brk_len;
+    child->snap.mmap_next = current->snap.mmap_next;
+    child->snap.mmap_len = current->snap.mmap_len;
+    sr = ensure_snapshot_buffer(&child->snap.image, &child->snap.image_cap, child->snap.image_len, FORK_IMAGE_SNAPSHOT_MAX);
+    if (sr != 0) {
+        process_free(child);
+        return sr;
+    }
+    sr = ensure_snapshot_buffer(&child->snap.stack, &child->snap.stack_cap, child->snap.stack_len, FORK_STACK_SNAPSHOT_MAX);
+    if (sr != 0) {
+        process_free(child);
+        return sr;
+    }
+    sr = ensure_snapshot_buffer(&child->snap.brk, &child->snap.brk_cap, child->snap.brk_len, FORK_BRK_SNAPSHOT_MAX);
+    if (sr != 0) {
+        process_free(child);
+        return sr;
+    }
+    sr = ensure_snapshot_buffer(&child->snap.mmap, &child->snap.mmap_cap, child->snap.mmap_len, FORK_MMAP_SNAPSHOT_MAX);
+    if (sr != 0) {
+        process_free(child);
+        return sr;
+    }
+    memcpy(child->snap.image, current->snap.image, current->snap.image_len);
+    memcpy(child->snap.stack, current->snap.stack, current->snap.stack_len);
+    memcpy(child->snap.brk, current->snap.brk, current->snap.brk_len);
+    memcpy(child->snap.mmap, current->snap.mmap, current->snap.mmap_len);
+
+    child->saved_frame = current->saved_frame;
+    memcpy(child->saved_iret, current->saved_iret, sizeof(child->saved_iret));
+    child->saved_frame.rax = 0;
     if (from_clone && child_stack != 0) {
-        raw[IRET_SLOT_RSP] = child_stack;
+        child->saved_iret[3] = child_stack;
     }
+    child->has_saved_context = true;
+    child->wait.reason = PROCESS_WAIT_NONE;
 
-    if (from_clone && (clone_flags & CLONE_SETTLS) != 0ull) {
-        write_fs_base_current(tls);
-    }
+    current->saved_frame.rax = (uint64_t)child->pid;
     if (from_clone && (clone_flags & CLONE_CHILD_SETTID) != 0ull) {
-        *(uint32_t*)(uintptr_t)child_tid_ptr = (uint32_t)child_pid;
+        *(uint32_t*)(uintptr_t)child_tid_ptr = (uint32_t)child->pid;
     }
 
-    g_child_has_cleartid = from_clone && ((clone_flags & CLONE_CHILD_CLEARTID) != 0ull);
-    g_child_cleartid_ptr = g_child_has_cleartid ? child_tid_ptr : 0;
-
-    g_parent_pending = true;
-    g_pending_child_pid = child_pid;
-    g_wait_status_valid = false;
-    g_current_pid = child_pid;
-    g_current_ppid = g_saved_parent_pid;
-
-    return 0;
+    return child->pid;
 }
 
 static uint64_t sys_exit_common(struct syscall_frame* frame, uint64_t code) {
     if (g_tid_address != 0) {
         *(uint32_t*)(uintptr_t)g_tid_address = 0;
     }
-    if (g_parent_pending && g_current_pid == g_pending_child_pid) {
-        add_zombie(g_current_pid, g_saved_parent_pid, (int)(code & 0xFF), ((int)(code & 0xFF)) << 8);
-        return resume_parent_after_child_exit(frame, code);
+
+    struct process* current = current_process();
+    if (current == NULL) {
+        leave_user_mode(code);
     }
-    leave_user_mode(code);
-    return 0;
+
+    terminate_process(current, (int)(code & 0xFFu), ((int)(code & 0xFFu)) << 8);
+
+    if (!has_schedulable_process_except(current)) {
+        leave_user_mode(code);
+    }
+
+    return schedule_away(frame);
 }
 
 void syscall_init(void) {
+    process_init();
     memset(g_fds, 0, sizeof(g_fds));
-    memset(g_parent_fds, 0, sizeof(g_parent_fds));
     memset(g_zombies, 0, sizeof(g_zombies));
     memset(g_sig_actions, 0, sizeof(g_sig_actions));
     memset(g_pending_signals, 0, sizeof(g_pending_signals));
@@ -2682,20 +4143,28 @@ void syscall_init(void) {
     g_mmap_next = USER_MMAP_BASE;
     g_current_pid = 1;
     g_current_ppid = 0;
-    g_next_pid = 2;
-    g_parent_pending = false;
-    g_pending_child_pid = 0;
-    g_child_has_cleartid = false;
-    g_child_cleartid_ptr = 0;
-    g_wait_status_valid = false;
-    g_wait_status_pid = 0;
-    g_wait_status_code = 0;
+    g_current_pgid = 1;
+    g_current_sid = 1;
     g_pending_keyboard_signal = 0;
     g_tid_address = 0;
+    g_umask = 022u;
+    g_terminal_fg_pgrp = 1;
     g_zombie_count = 0;
     g_pending_signal_count = 0;
     g_sig_mask = 0;
     memset(g_pipes, 0, sizeof(g_pipes));
+    init_default_tty_termios();
+
+    struct process* init_proc = current_process();
+    if (init_proc != NULL) {
+        memcpy(init_proc->fds, g_fds, sizeof(g_fds));
+        memcpy(init_proc->cwd, g_cwd, sizeof(g_cwd));
+        init_proc->pgid = 1;
+        init_proc->sid = 1;
+        init_proc->brk_current = g_brk_current;
+        init_proc->mmap_next = g_mmap_next;
+        init_proc->umask = g_umask;
+    }
 
     g_rng_state ^= read_tsc();
 
@@ -2725,27 +4194,14 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
     (void)a4;
     (void)a5;
 
-    if (g_pending_keyboard_signal != 0 && g_parent_pending && g_current_pid == g_pending_child_pid) {
-        int signal = take_keyboard_signal();
-        if (is_keyboard_signal(signal)) {
-            return resume_parent_after_child_signal(frame, signal);
-        }
-    }
-
     switch (nr) {
         case 0:
         {
-            int r = sys_read((int)a0, (void*)(uintptr_t)a1, (size_t)a2);
-            if (r == err(EINTR)) {
-                int signal = take_keyboard_signal();
-                if (is_keyboard_signal(signal) && g_parent_pending && g_current_pid == g_pending_child_pid) {
-                    return resume_parent_after_child_signal(frame, signal);
-                }
-            }
+            int r = sys_read((int)a0, (void*)(uintptr_t)a1, (size_t)a2, frame);
             return (uint64_t)r;
         }
         case 1:
-            return (uint64_t)sys_write((int)a0, (const void*)(uintptr_t)a1, (size_t)a2);
+            return (uint64_t)sys_write((int)a0, (const void*)(uintptr_t)a1, (size_t)a2, frame);
         case 2:
             return (uint64_t)sys_openat(AT_FDCWD, (const char*)(uintptr_t)a0, (uint32_t)a1);
         case 3:
@@ -2778,27 +4234,26 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
             return (uint64_t)sys_pread64((int)a0, (void*)(uintptr_t)a1, (size_t)a2, (int64_t)a3);
         case 19:
         {
-            int r = sys_readv((int)a0, (const struct linux_iovec*)(uintptr_t)a1, (size_t)a2);
-            if (r == err(EINTR)) {
-                int signal = take_keyboard_signal();
-                if (is_keyboard_signal(signal) && g_parent_pending && g_current_pid == g_pending_child_pid) {
-                    return resume_parent_after_child_signal(frame, signal);
-                }
-            }
+            int r = sys_readv((int)a0, (const struct linux_iovec*)(uintptr_t)a1, (size_t)a2, frame);
             return (uint64_t)r;
         }
         case 20:
-            return (uint64_t)sys_writev((int)a0, (const struct linux_iovec*)(uintptr_t)a1, (size_t)a2);
+            return (uint64_t)sys_writev((int)a0, (const struct linux_iovec*)(uintptr_t)a1, (size_t)a2, frame);
         case 21:
             return (uint64_t)sys_access_like(AT_FDCWD, (const char*)(uintptr_t)a0);
         case 22:
             return (uint64_t)sys_pipe2((int*)(uintptr_t)a0, 0);
+        case 23:
+            return (uint64_t)sys_select((int)a0, (void*)(uintptr_t)a1, (void*)(uintptr_t)a2, (void*)(uintptr_t)a3,
+                                        (struct linux_timeval*)(uintptr_t)a4, frame);
         case 28:
             return 0;
         case 32:
             return (uint64_t)sys_dup_common((int)a0, 0, false);
         case 33:
             return (uint64_t)sys_dup_common((int)a0, (int)a1, true);
+        case 35:
+            return (uint64_t)sys_nanosleep((const struct linux_timespec*)(uintptr_t)a0, (struct linux_timespec*)(uintptr_t)a1, frame);
         case 39:
             return (uint64_t)g_current_pid;
         case 40:
@@ -2814,9 +4269,20 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
         case 60:
             return sys_exit_common(frame, a0);
         case 61:
-            return (uint64_t)sys_wait4((int)a0, (int*)(uintptr_t)a1, (int)a2);
+            return (uint64_t)sys_wait4((int)a0, (int*)(uintptr_t)a1, (int)a2, frame);
         case 62:
-            return (uint64_t)sys_kill((int)a0, (int)a1);
+        {
+            int r = sys_kill((int)a0, (int)a1);
+            struct process* current = current_process();
+            if (current != NULL && (current->state == PROCESS_STOPPED || current->state == PROCESS_ZOMBIE)) {
+                int sr = save_live_process(current, frame);
+                if (sr != 0) {
+                    return (uint64_t)sr;
+                }
+                return schedule_away(frame);
+            }
+            return (uint64_t)r;
+        }
         case 63:
             return (uint64_t)sys_uname((struct linux_utsname*)(uintptr_t)a0);
         case 72:
@@ -2827,13 +4293,25 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
             return (uint64_t)sys_chdir((const char*)(uintptr_t)a0);
         case 89:
             return (uint64_t)sys_readlinkat(AT_FDCWD, (const char*)(uintptr_t)a0, (char*)(uintptr_t)a1, (size_t)a2);
+        case 95:
+            return (uint64_t)sys_umask((uint32_t)a0);
+        case 97:
+            return (uint64_t)sys_getrlimit((int)a0, (struct linux_rlimit*)(uintptr_t)a1);
         case 102:
         case 104:
         case 107:
         case 108:
             return 0;
+        case 109:
+            return (uint64_t)sys_setpgid((int)a0, (int)a1);
         case 110:
             return (uint64_t)g_current_ppid;
+        case 111:
+            return (uint64_t)sys_getpgrp();
+        case 112:
+            return (uint64_t)sys_setsid();
+        case 121:
+            return (uint64_t)sys_getpgid((int)a0);
         case 131:
             return 0;
         case 157:
@@ -2862,6 +4340,10 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
             return (uint64_t)sys_readlinkat((int)a0, (const char*)(uintptr_t)a1, (char*)(uintptr_t)a2, (size_t)a3);
         case 269:
             return (uint64_t)sys_access_like((int)a0, (const char*)(uintptr_t)a1);
+        case 270:
+            return (uint64_t)sys_pselect6((int)a0, (void*)(uintptr_t)a1, (void*)(uintptr_t)a2, (void*)(uintptr_t)a3,
+                                          (const struct linux_timespec*)(uintptr_t)a4,
+                                          (const struct linux_pselect_sigmask*)(uintptr_t)a5, frame);
         case 273:
             return 0;
         case 292:
@@ -2869,7 +4351,8 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
         case 293:
             return (uint64_t)sys_pipe2((int*)(uintptr_t)a0, (uint32_t)a1);
         case 302:
-            return 0;
+            return (uint64_t)sys_prlimit64((int)a0, (int)a1, (const struct linux_rlimit*)(uintptr_t)a2,
+                                           (struct linux_rlimit*)(uintptr_t)a3);
         case 318:
             return (uint64_t)sys_getrandom((void*)(uintptr_t)a0, (size_t)a1);
         case 332:
