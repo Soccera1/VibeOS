@@ -4,7 +4,9 @@
 
 #include "common.h"
 #include "console.h"
+#include "fs.h"
 #include "initramfs.h"
+#include "kmalloc.h"
 #include "string.h"
 
 #define ELF_MAGIC 0x464C457Fu
@@ -75,7 +77,7 @@ static uint64_t push_auxv(uint64_t sp, uint64_t type, uint64_t value) {
 static uint64_t build_user_stack(const struct user_exec_info* exec, const char* execfn,
                                  const char* const* argv, size_t argc) {
     const char* envp[] = {
-        "TERM=linux",
+        "TERM=vt100",
         "HOME=/",
         "PATH=/bin:/usr/bin",
         "SH_STANDALONE=1",
@@ -248,17 +250,32 @@ static int userland_run_program(const char* path, const char* const* argv, size_
     g_user_image_start = 0;
     g_user_image_end = 0;
 
-    struct initramfs_entry program;
-    if (initramfs_find(path, &program) != 0) {
+    struct fs_entry program;
+    if (fs_lookup(path, &program) != 0 || (program.mode & FS_S_IFMT) != FS_S_IFREG) {
         console_write(missing_message);
         return -1;
     }
 
-    struct user_exec_info exec;
-    if (load_elf64_exec(program.data, program.size, &exec) != 0) {
+    uint8_t* image = kmalloc(program.size);
+    if (image == NULL) {
+        console_write("kernel out of memory while loading userspace image\n");
+        return -1;
+    }
+
+    int rr = fs_read(&program, 0, image, program.size);
+    if (rr < 0 || (size_t)rr != program.size) {
+        kfree(image);
         console_write(load_failed_message);
         return -1;
     }
+
+    struct user_exec_info exec;
+    if (load_elf64_exec(image, program.size, &exec) != 0) {
+        kfree(image);
+        console_write(load_failed_message);
+        return -1;
+    }
+    kfree(image);
 
     uint64_t user_stack = build_user_stack(&exec, path, argv, argc);
     console_write(launch_message);

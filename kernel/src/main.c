@@ -4,6 +4,7 @@
 
 #include "common.h"
 #include "console.h"
+#include "fs.h"
 #include "gdt.h"
 #include "idt.h"
 #include "input.h"
@@ -123,48 +124,6 @@ static void split_cmd(const char* line, char* cmd, size_t cmd_len, char* arg, si
     arg[j] = '\0';
 }
 
-static bool top_level_child(const char* dir, const char* full, char* out, size_t out_len) {
-    if (strcmp(full, "/") == 0) {
-        return false;
-    }
-
-    const char* rest = NULL;
-    size_t dir_len = strlen(dir);
-
-    if (strcmp(dir, "/") == 0) {
-        if (full[0] != '/' || full[1] == '\0') {
-            return false;
-        }
-        rest = full + 1;
-    } else {
-        if (strncmp(full, dir, dir_len) != 0 || full[dir_len] != '/') {
-            return false;
-        }
-        rest = full + dir_len + 1;
-    }
-
-    if (*rest == '\0') {
-        return false;
-    }
-
-    size_t i = 0;
-    while (rest[i] != '\0' && rest[i] != '/' && i + 1 < out_len) {
-        out[i] = rest[i];
-        ++i;
-    }
-    out[i] = '\0';
-    return i > 0;
-}
-
-static bool seen_name(char names[256][64], size_t count, const char* name) {
-    for (size_t i = 0; i < count; ++i) {
-        if (strcmp(names[i], name) == 0) {
-            return true;
-        }
-    }
-    return false;
-}
-
 static void shell_ls(const char* path) {
     const char* dir = (path[0] == '\0') ? "/" : path;
 
@@ -174,26 +133,9 @@ static void shell_ls(const char* path) {
     }
 
     size_t count = 0;
-
-    for (size_t i = 0; i < initramfs_entry_count(); ++i) {
-        const struct initramfs_entry* e = initramfs_entry_at(i);
-        if (e == NULL) {
-            continue;
-        }
-        char child[64];
-        if (!top_level_child(dir, e->path, child, sizeof(child))) {
-            continue;
-        }
-        if (seen_name(shell_ls_names, count, child)) {
-            continue;
-        }
-        if (count >= ARRAY_LEN(shell_ls_names)) {
-            break;
-        }
-        strncpy(shell_ls_names[count], child, sizeof(shell_ls_names[count]));
-        shell_ls_names[count][sizeof(shell_ls_names[count]) - 1] = '\0';
-        ++count;
-    }
+    uint8_t types[ARRAY_LEN(shell_ls_names)];
+    count = fs_collect_children(dir, shell_ls_names, types, ARRAY_LEN(shell_ls_names));
+    (void)types;
 
     if (count == 0) {
         console_write("(empty)\n");
@@ -212,16 +154,33 @@ static void shell_cat(const char* path) {
         return;
     }
 
-    struct initramfs_entry e;
-    if (initramfs_find(path, &e) != 0) {
+    struct fs_entry e;
+    if (fs_lookup(path, &e) != 0 || (e.mode & FS_S_IFMT) == FS_S_IFDIR) {
         console_write("cat: not found\n");
         return;
     }
 
-    for (size_t i = 0; i < e.size; ++i) {
-        console_putc((char)e.data[i]);
+    uint8_t chunk[256];
+    size_t offset = 0;
+    uint8_t last = 0;
+    bool saw_data = false;
+    while (offset < e.size) {
+        size_t want = e.size - offset;
+        if (want > sizeof(chunk)) {
+            want = sizeof(chunk);
+        }
+        int rr = fs_read(&e, offset, chunk, want);
+        if (rr <= 0) {
+            break;
+        }
+        for (int i = 0; i < rr; ++i) {
+            console_putc((char)chunk[i]);
+        }
+        last = chunk[rr - 1];
+        saw_data = true;
+        offset += (size_t)rr;
     }
-    if (e.size == 0 || e.data[e.size - 1] != '\n') {
+    if (!saw_data || last != '\n') {
         console_putc('\n');
     }
 }
@@ -231,12 +190,12 @@ static void shell_help(void) {
         "VibeOS kernel fallback shell\n"
         "\n"
         "This shell is only available when the normal userspace shell did not start.\n"
-        "Use it to inspect the initramfs or retry BusyBox.\n"
+        "Use it to inspect the boot filesystems or retry BusyBox.\n"
         "\n"
         "Useful commands:\n"
-        "  ls /        list top-level initramfs entries\n"
+        "  ls /        list top-level filesystem entries\n"
         "  ls /bin     see available programs\n"
-        "  cat /etc/motd  read a text file from the initramfs\n"
+        "  cat /etc/motd  read a text file from the mounted filesystems\n"
         "  busybox     try launching /bin/busybox sh -i\n"
         "  clear       clear the screen\n"
         "\n"
@@ -302,14 +261,29 @@ void kernel_main(uint64_t mb2_info) {
     console_init();
     console_write("VibeOS amd64 monolithic kernel prototype\n");
 
-    const struct mb2_tag_module* module = mb2_find_first_module(mb2_info);
-    if (module == NULL) {
+    const struct mb2_tag_module* initramfs_module = mb2_find_module(mb2_info, 0);
+    if (initramfs_module == NULL) {
         console_write("No initramfs module provided by bootloader\n");
     } else {
-        const uint8_t* start = (const uint8_t*)(uintptr_t)module->mod_start;
-        size_t size = (size_t)(module->mod_end - module->mod_start);
+        const uint8_t* start = (const uint8_t*)(uintptr_t)initramfs_module->mod_start;
+        size_t size = (size_t)(initramfs_module->mod_end - initramfs_module->mod_start);
         initramfs_init(start, size);
         console_printf("initramfs: %u bytes, %u entries\n", (unsigned)size, (unsigned)initramfs_entry_count());
+    }
+
+    const struct mb2_tag_module* usrfs_module = mb2_find_module(mb2_info, 1);
+    if (usrfs_module != NULL) {
+        const uint8_t* start = (const uint8_t*)(uintptr_t)usrfs_module->mod_start;
+        size_t size = (size_t)(usrfs_module->mod_end - usrfs_module->mod_start);
+        fs_init(start, size);
+        if (fs_usr_mount_ready()) {
+            console_printf("/usr: ext2 module mounted (%u bytes)\n", (unsigned)size);
+        } else {
+            console_write("/usr: ext2 module present but mount failed\n");
+        }
+    } else {
+        fs_init(NULL, 0);
+        console_write("/usr: no ext2 module provided\n");
     }
 
     kernel_exit_stack_top = (uint64_t)(uintptr_t)(&post_user_stack[sizeof(post_user_stack)]);

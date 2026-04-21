@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
 #define MB2_MAGIC 0x36D76289u
@@ -22,4 +23,4 @@ enum {
     MB2_TAG_MODULE = 3,
 };
 
-const struct mb2_tag_module* mb2_find_first_module(uint64_t mb2_info);
+const struct mb2_tag_module* mb2_find_module(uint64_t mb2_info, size_t index);

@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "initramfs.h"
+#include "fs.h"
 #include "syscall.h"
 
 #define MAX_PROCESSES 256
@@ -65,8 +65,8 @@ struct process_fd {
     uint32_t flags;
     uint64_t offset;
     int pipe_id;
-    struct initramfs_entry entry;
-    char path[128];
+    struct fs_entry entry;
+    char path[FS_MAX_PATH];
 };
 
 struct process_wait_state {

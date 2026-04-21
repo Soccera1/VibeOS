@@ -8,7 +8,7 @@ VibeOS is an amd64 monolithic-kernel OS prototype that boots via Multiboot2 and 
 - **Boot:** Multiboot2 compliant, supports BIOS+GPT and ISO boot via GRUB.
 - **Syscalls:** Extensive Linux-style syscall ABI via amd64 `syscall` instruction (60+ syscalls implemented).
 - **Process Management:** Support for `fork` (state snapshotting), `execve` (ELF64 loader), and `wait4`.
-- **VFS:** Read-only initramfs (`cpio newc`) with support for pipes, symlinks, and device nodes (`/dev/tty`, `/dev/null`).
+- **VFS:** Read-only initramfs (`cpio newc`) root with a read-only `ext2` `/usr` mount, plus support for pipes, symlinks, and device nodes (`/dev/tty`, `/dev/null`).
 - **I/O:** TTY support over VGA text mode and serial (`COM1`).
 - **Hardware:** XSAVE/AVX/SSE enablement, FSGSBASE support.
 - **Shells:**
@@ -36,6 +36,7 @@ make disk  # Build BIOS+GPT raw disk image (requires sudo for loop mounts)
 Artifacts:
 - `build/vibeos-kernel.bin`
 - `build/initramfs.cpio`
+- `build/usr.ext2`
 - `build/vibeos.iso`
 - `build/vibeos-gpt.img`
 
@@ -61,4 +62,4 @@ qemu-system-x86_64 \
 
 VibeOS builds BusyBox, Bash, and upstream `file(1)` as static, non-PIE musl binaries so they can run without a dynamic loader. Bash is the default interactive shell, BusyBox provides the base userspace and a fallback shell if Bash is unavailable, and `file` ships with its compiled `magic.mgc` database under `/usr/share/misc`.
 
-The initramfs generator automatically populates `/bin` with applet symlinks to the BusyBox binary.
+The initramfs now carries the root filesystem and an empty `/usr` mountpoint, while a separate `build/usr.ext2` image is loaded as a second Multiboot module and mounted read-only at `/usr`. The initramfs generator automatically populates `/bin` with applet symlinks to the BusyBox binary.
