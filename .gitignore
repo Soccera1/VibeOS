@@ -39,3 +39,17 @@ external/busybox-src/.zig-global-cache/
 external/busybox-src/.zig-local-cache/
 external/bash-src/.zig-global-cache/
 external/bash-src/.zig-local-cache/
+
+# Other external build outputs
+external/bash-src/.build
+external/bash-src/.made
+external/bash-src/bash
+external/bash-src/build-musl/
+external/ncurses-src/build-musl/
+external/nano-src/build-musl/
+
+# Autoconf/configure churn in in-tree external builds
+external/bash-src/config.log
+external/bash-src/config.status
+external/nano-src/config.log
+external/nano-src/config.status

@@ -15,9 +15,14 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 mkdir -p "$(dirname "$OUT_LIB")"
 
 NCURSES_BUILD="$(cd "$SRC_DIR" && pwd)/build-musl"
+NCURSES_TERMINFO_INSTALL="$NCURSES_BUILD/share/terminfo"
 
 if [[ ! -f "$NCURSES_BUILD/lib/libncurses.a" ]]; then
   mkdir -p "$NCURSES_BUILD"
+
+  export ZIG_GLOBAL_CACHE_DIR="$REPO_ROOT/build/zig-global-cache"
+  export ZIG_LOCAL_CACHE_DIR="$REPO_ROOT/build/zig-local-cache"
+  mkdir -p "$ZIG_GLOBAL_CACHE_DIR" "$ZIG_LOCAL_CACHE_DIR"
 
   CC_WRAPPER="$NCURSES_BUILD/zigcc-wrapper.sh"
   cat > "$CC_WRAPPER" <<'WRAPPER_EOF'
@@ -55,8 +60,11 @@ WRAPPER_EOF
 
   pushd "$SRC_DIR" >/dev/null
 
+  env -u TERMINFO -u TERMINFO_DIRS \
   ./configure \
     --prefix="$NCURSES_BUILD" \
+    --with-default-terminfo-dir=/usr/share/terminfo \
+    --with-terminfo-dirs=/usr/share/terminfo:/lib/terminfo:/usr/local/share/terminfo \
     --with-default-terminfo-paths=/usr/share/terminfo:/lib/terminfo:/usr/local/share/terminfo \
     --disable-shared \
     --without-shared \
@@ -68,6 +76,7 @@ WRAPPER_EOF
     --without-tests \
     --without-debug \
     --without-profile \
+    --disable-home-terminfo \
     --enable-const \
     --enable-widec \
     --disable-ext-colors \
@@ -102,7 +111,7 @@ WRAPPER_EOF
     exit 1
   }
 
-  make install 2>&1 | tee -a "$NCURSES_BUILD/build.log" || {
+  make install ticdir="$NCURSES_TERMINFO_INSTALL" 2>&1 | tee -a "$NCURSES_BUILD/build.log" || {
     echo "Make install failed." >&2
     exit 1
   }

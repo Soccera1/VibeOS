@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 3 ]]; then
-  echo "usage: $0 <output.img> <kernel.bin> <initramfs.cpio>" >&2
+if [[ $# -ne 4 ]]; then
+  echo "usage: $0 <output.img> <kernel.bin> <initramfs.cpio> <usr.ext2>" >&2
   exit 1
 fi
 
 OUT_IMG="$1"
 KERNEL_BIN="$2"
 INITRAMFS="$3"
+USR_EXT2="$4"
 
 if [[ $EUID -eq 0 ]]; then
   SUDO=""
@@ -49,6 +50,7 @@ $SUDO mount "${LOOPDEV}p2" "$MNT"
 $SUDO mkdir -p "$MNT/boot/grub"
 $SUDO cp "$KERNEL_BIN" "$MNT/boot/vibeos-kernel.bin"
 $SUDO cp "$INITRAMFS" "$MNT/boot/initramfs.cpio"
+$SUDO cp "$USR_EXT2" "$MNT/boot/usr.ext2"
 
 cat <<'CFG' | $SUDO tee "$MNT/boot/grub/grub.cfg" >/dev/null
 set timeout=0
@@ -57,6 +59,7 @@ set default=0
 menuentry "VibeOS" {
     multiboot2 /boot/vibeos-kernel.bin
     module2 /boot/initramfs.cpio
+    module2 /boot/usr.ext2
     boot
 }
 CFG

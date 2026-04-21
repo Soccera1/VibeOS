@@ -6,7 +6,7 @@
 #include "string.h"
 
 #define MAX_INITRAMFS_ENTRIES 1024
-#define INITRAMFS_COPY_BASE 0x12000000ull
+#define INITRAMFS_COPY_BASE 0x30000000ull
 #define INITRAMFS_COPY_MAX  (16u * 1024u * 1024u)
 
 struct cpio_newc {

@@ -3,6 +3,7 @@ SHELL := /bin/bash
 BUILD_DIR := build
 KERNEL_BIN := $(BUILD_DIR)/vibeos-kernel.bin
 INITRAMFS := $(BUILD_DIR)/initramfs.cpio
+USR_EXT2 := $(BUILD_DIR)/usr.ext2
 ISO_IMAGE := $(BUILD_DIR)/vibeos.iso
 DISK_IMAGE := $(BUILD_DIR)/vibeos-gpt.img
 
@@ -33,11 +34,13 @@ USER_BASH := $(BUILD_DIR)/userspace/bash
 USER_HELP := $(BUILD_DIR)/userspace/help
 USER_FILE := $(BUILD_DIR)/userspace/file
 USER_FILE_MAGIC := $(BUILD_DIR)/userspace/file-magic.mgc
+USER_NANO := $(BUILD_DIR)/userspace/nano
 BASH_SRC := external/bash-src
 NCURSES_SRC := external/ncurses-src
 NCURSES_BUILD := $(NCURSES_SRC)/build-musl
 SL_SRC := external/sl-src
 FILE_SRC := external/file-src
+NANO_SRC := external/nano-src
 USER_SL := $(BUILD_DIR)/userspace/sl
 HELP_SRC := userspace/help.c
 
@@ -51,6 +54,7 @@ check-toolchain:
 	@command -v $(NASM) >/dev/null
 	@command -v grub-mkrescue >/dev/null
 	@command -v grub-install >/dev/null
+	@command -v mkfs.ext2 >/dev/null
 	@command -v qemu-system-x86_64 >/dev/null
 
 $(BUILD_DIR):
@@ -88,15 +92,21 @@ $(USER_FILE): | $(BUILD_DIR)
 $(USER_FILE_MAGIC): $(USER_FILE)
 	@test -f "$@"
 
-$(INITRAMFS): tools/make_initramfs.sh $(USER_BUSYBOX) $(USER_BASH) $(USER_SL) $(USER_HELP) $(USER_FILE) $(USER_FILE_MAGIC)
-	./tools/make_initramfs.sh $@ $(USER_BUSYBOX) $(USER_BASH) $(USER_SL) $(USER_HELP) $(USER_FILE) $(USER_FILE_MAGIC)
+$(USER_NANO): $(NCURSES_BUILD)/lib/libncursesw.a | $(BUILD_DIR)
+	./tools/build_nano.sh $@ "$(NANO_SRC)"
 
-iso: check-toolchain $(KERNEL_BIN) $(INITRAMFS)
-	./tools/make_iso.sh $(ISO_IMAGE) $(KERNEL_BIN) $(INITRAMFS)
+$(INITRAMFS): tools/make_initramfs.sh $(USER_BUSYBOX) $(USER_BASH) $(USER_HELP)
+	./tools/make_initramfs.sh $@ $(USER_BUSYBOX) $(USER_BASH) $(USER_SL) $(USER_HELP) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO)
+
+$(USR_EXT2): tools/make_usr_ext2.sh $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO)
+	./tools/make_usr_ext2.sh $@ $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO)
+
+iso: check-toolchain $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT2)
+	./tools/make_iso.sh $(ISO_IMAGE) $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT2)
 
 # BIOS + GPT raw disk image. Needs loop devices and mount permissions.
-disk: check-toolchain $(KERNEL_BIN) $(INITRAMFS)
-	./tools/make_gpt_disk.sh $(DISK_IMAGE) $(KERNEL_BIN) $(INITRAMFS)
+disk: check-toolchain $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT2)
+	./tools/make_gpt_disk.sh $(DISK_IMAGE) $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT2)
 
 run: disk
 	qemu-system-x86_64 \

@@ -6,8 +6,8 @@
 
 #include "common.h"
 #include "console.h"
+#include "fs.h"
 #include "input.h"
-#include "initramfs.h"
 #include "io.h"
 #include "kmalloc.h"
 #include "process.h"
@@ -384,8 +384,8 @@ struct fd_state {
     uint32_t flags;
     size_t offset;
     int pipe_id;
-    struct initramfs_entry entry;
-    char path[128];
+    struct fs_entry entry;
+    char path[FS_MAX_PATH];
 };
 
 struct pipe_state {
@@ -553,6 +553,51 @@ static int handle_pending_keyboard_signal(struct syscall_frame* frame) {
     }
 
     return err(EINTR);
+}
+
+static int tty_signal_for_char(int c) {
+    if ((g_tty_termios.c_lflag & ISIG) == 0u) {
+        return 0;
+    }
+    if (c == (int)g_tty_termios.c_cc[VINTR]) {
+        return (int)SIGINT;
+    }
+    if (c == (int)g_tty_termios.c_cc[VQUIT]) {
+        return (int)SIGQUIT;
+    }
+    if (c == (int)g_tty_termios.c_cc[VSUSP]) {
+        return (int)SIGTSTP;
+    }
+    return 0;
+}
+
+static int tty_deliver_signal(int sig, struct syscall_frame* frame) {
+    struct process* current = current_process();
+    if (current != NULL && frame != NULL) {
+        int sr = save_live_process(current, frame);
+        if (sr != 0) {
+            return sr;
+        }
+    }
+
+    int r = signal_process_group(g_terminal_fg_pgrp, sig);
+    if (r != 0) {
+        return err(EINTR);
+    }
+
+    current = current_process();
+    if (current != NULL && (current->state == PROCESS_STOPPED || current->state == PROCESS_ZOMBIE)) {
+        return (int)schedule_away(frame);
+    }
+
+    return err(EINTR);
+}
+
+static int tty_normalize_char(int c) {
+    if (c == '\r' && (g_tty_termios.c_iflag & ICRNL) != 0u) {
+        return '\n';
+    }
+    return c;
 }
 
 static uint64_t timeout_to_tsc_cycles(int64_t sec, int64_t nsec) {
@@ -954,8 +999,8 @@ static int resolve_symlinks(const char* abs_in, char* abs_out, size_t out_len, b
             return 0;
         }
 
-        struct initramfs_entry e;
-        if (initramfs_find(current, &e) != 0) {
+        struct fs_entry e;
+        if (fs_lookup(current, &e) != 0) {
             strncpy(abs_out, current, out_len);
             abs_out[out_len - 1] = '\0';
             return 0;
@@ -969,11 +1014,10 @@ static int resolve_symlinks(const char* abs_in, char* abs_out, size_t out_len, b
         }
 
         char target_raw[128];
-        size_t n = e.size;
-        if (n >= sizeof(target_raw)) {
-            n = sizeof(target_raw) - 1;
+        int n = fs_readlink(&e, target_raw, sizeof(target_raw) - 1u);
+        if (n < 0) {
+            return n;
         }
-        memcpy(target_raw, e.data, n);
         target_raw[n] = '\0';
 
         char next[256];
@@ -1249,27 +1293,11 @@ static int make_absolute_path(int dirfd, const char* path, char* out, size_t out
 }
 
 static bool path_has_child(const char* dir) {
-    size_t dir_len = strlen(dir);
-    for (size_t i = 0; i < initramfs_entry_count(); ++i) {
-        const struct initramfs_entry* e = initramfs_entry_at(i);
-        if (e == NULL) {
-            continue;
-        }
-        if (strcmp(dir, "/") == 0) {
-            if (strcmp(e->path, "/") != 0) {
-                return true;
-            }
-            continue;
-        }
-        if (strncmp(e->path, dir, dir_len) == 0 && e->path[dir_len] == '/' && e->path[dir_len + 1] != '\0') {
-            return true;
-        }
-    }
-    return false;
+    return fs_path_has_child(dir);
 }
 
-static int path_mode_size(const char* path, uint32_t* mode_out, size_t* size_out, struct initramfs_entry* entry_out) {
-    struct initramfs_entry e;
+static int path_mode_size(const char* path, uint32_t* mode_out, size_t* size_out, struct fs_entry* entry_out) {
+    struct fs_entry e;
 
     if (is_tty_path(path)) {
         if (mode_out != NULL) {
@@ -1319,7 +1347,7 @@ static int path_mode_size(const char* path, uint32_t* mode_out, size_t* size_out
         return 0;
     }
 
-    if (initramfs_find(path, &e) == 0) {
+    if (fs_lookup(path, &e) == 0) {
         if (mode_out != NULL) {
             *mode_out = e.mode;
         }
@@ -1371,39 +1399,6 @@ static int alloc_fd_from(int min_fd) {
     return err(ENOMEM);
 }
 
-static bool path_immediate_child(const char* dir, const char* full, char* child_out, size_t child_out_len) {
-    if (strcmp(full, "/") == 0) {
-        return false;
-    }
-
-    const char* rest = NULL;
-    size_t dir_len = strlen(dir);
-    if (strcmp(dir, "/") == 0) {
-        if (full[0] != '/' || full[1] == '\0') {
-            return false;
-        }
-        rest = full + 1;
-    } else {
-        if (strncmp(full, dir, dir_len) != 0 || full[dir_len] != '/') {
-            return false;
-        }
-        rest = full + dir_len + 1;
-    }
-
-    if (*rest == '\0') {
-        return false;
-    }
-
-    size_t i = 0;
-    while (rest[i] != '\0' && rest[i] != '/' && i + 1 < child_out_len) {
-        child_out[i] = rest[i];
-        ++i;
-    }
-    child_out[i] = '\0';
-
-    return i > 0;
-}
-
 static int child_index_of(char names[MAX_CHILDREN][64], size_t count, const char* name) {
     for (size_t i = 0; i < count; ++i) {
         if (strcmp(names[i], name) == 0) {
@@ -1411,23 +1406,6 @@ static int child_index_of(char names[MAX_CHILDREN][64], size_t count, const char
         }
     }
     return -1;
-}
-
-static uint8_t mode_to_dtype(uint32_t mode) {
-    switch (mode & S_IFMT) {
-        case S_IFREG:
-            return DT_REG;
-        case S_IFDIR:
-            return DT_DIR;
-        case S_IFCHR:
-            return DT_CHR;
-        case S_IFIFO:
-            return DT_FIFO;
-        case S_IFLNK:
-            return DT_LNK;
-        default:
-            return DT_UNKNOWN;
-    }
 }
 
 static size_t collect_children(const char* dir, char names[MAX_CHILDREN][64], uint8_t types[MAX_CHILDREN]) {
@@ -1441,40 +1419,7 @@ static size_t collect_children(const char* dir, char names[MAX_CHILDREN][64], ui
         ++count;
     }
 
-    for (size_t i = 0; i < initramfs_entry_count(); ++i) {
-        const struct initramfs_entry* e = initramfs_entry_at(i);
-        if (e == NULL) {
-            continue;
-        }
-
-        char child[64];
-        if (!path_immediate_child(dir, e->path, child, sizeof(child))) {
-            continue;
-        }
-
-        if (child_index_of(names, count, child) >= 0) {
-            continue;
-        }
-
-        if (count >= MAX_CHILDREN) {
-            break;
-        }
-
-        strncpy(names[count], child, 64);
-        names[count][63] = '\0';
-
-        char child_full[128];
-        if (join_path(dir, child, child_full, sizeof(child_full)) != 0) {
-            continue;
-        }
-
-        uint32_t mode = 0;
-        if (path_mode_size(child_full, &mode, NULL, NULL) != 0) {
-            mode = S_IFREG | 0644u;
-        }
-        types[count] = mode_to_dtype(mode);
-        ++count;
-    }
+    count += fs_collect_children(dir, names + count, types + count, MAX_CHILDREN - count);
 
     if (strcmp(dir, "/dev") == 0) {
         const char* dev_nodes[] = {"tty", "console", "null"};
@@ -1565,7 +1510,7 @@ static int sys_openat(int dirfd, const char* path_user, uint32_t flags) {
         return fd;
     }
 
-    struct initramfs_entry e;
+    struct fs_entry e;
     uint32_t mode = 0;
     size_t size = 0;
     r = path_mode_size(path, &mode, &size, &e);
@@ -1685,8 +1630,14 @@ static int sys_read(int fd, void* buf, size_t count, struct syscall_frame* frame
                 }
                 break;
             }
-            if (c == '\r') {
-                c = '\n';
+            c = tty_normalize_char(c);
+            int tty_sig = tty_is_foreground_group() ? tty_signal_for_char(c) : 0;
+            if (tty_sig != 0) {
+                int sr = tty_deliver_signal(tty_sig, frame);
+                if (written == 0) {
+                    return sr;
+                }
+                break;
             }
             out[written++] = (char)c;
         }
@@ -1756,18 +1707,17 @@ static int sys_read(int fd, void* buf, size_t count, struct syscall_frame* frame
         return err(EISDIR);
     }
 
-    const uint8_t* data = g_fds[fd].entry.data;
     size_t size = g_fds[fd].entry.size;
     size_t off = g_fds[fd].offset;
     if (off >= size) {
         return 0;
     }
 
-    size_t remain = size - off;
-    size_t n = (count < remain) ? count : remain;
-    memcpy(buf, data + off, n);
-    g_fds[fd].offset += n;
-    return (int)n;
+    int n = fs_read(&g_fds[fd].entry, off, buf, count);
+    if (n > 0) {
+        g_fds[fd].offset += (size_t)n;
+    }
+    return n;
 }
 
 static int sys_write(int fd, const void* buf, size_t count, struct syscall_frame* frame) {
@@ -1923,17 +1873,13 @@ static int sys_pread64(int fd, void* buf, size_t count, int64_t offset) {
         return err(EISDIR);
     }
 
-    const uint8_t* data = g_fds[fd].entry.data;
     size_t size = g_fds[fd].entry.size;
     size_t off = (size_t)offset;
     if (off >= size) {
         return 0;
     }
 
-    size_t remain = size - off;
-    size_t n = (count < remain) ? count : remain;
-    memcpy(buf, data + off, n);
-    return (int)n;
+    return fs_read(&g_fds[fd].entry, off, buf, count);
 }
 
 static int sys_getdents64(int fd, void* dirp, size_t count) {
@@ -2010,14 +1956,22 @@ static int64_t sys_sendfile(int out_fd, int in_fd, int64_t* offset, size_t count
     size_t avail = size - (size_t)off;
     size_t total = (count < avail) ? count : avail;
     size_t written = 0;
-    const uint8_t* base = g_fds[in_fd].entry.data + (size_t)off;
+    uint8_t buffer[4096];
 
     while (written < total) {
         size_t chunk = total - written;
-        if (chunk > 4096u) {
-            chunk = 4096u;
+        if (chunk > sizeof(buffer)) {
+            chunk = sizeof(buffer);
         }
-        int w = sys_write(out_fd, base + written, chunk, NULL);
+
+        int rr = fs_read(&g_fds[in_fd].entry, (size_t)off + written, buffer, chunk);
+        if (rr < 0) {
+            return (written > 0) ? (int64_t)written : (int64_t)rr;
+        }
+        if (rr == 0) {
+            break;
+        }
+        int w = sys_write(out_fd, buffer, (size_t)rr, NULL);
         if (w < 0) {
             return (written > 0) ? (int64_t)written : (int64_t)w;
         }
@@ -2610,8 +2564,12 @@ static int try_complete_tty_read(struct process* proc) {
         if (c < 0) {
             break;
         }
-        if (c == '\r') {
-            c = '\n';
+        c = tty_normalize_char(c);
+        int tty_sig = tty_signal_for_char(c);
+        if (tty_sig != 0) {
+            (void)signal_process_group(g_terminal_fg_pgrp, tty_sig);
+            unblock_process(proc, err(EINTR));
+            return 0;
         }
         out[written++] = (char)c;
     }
@@ -2993,17 +2951,12 @@ static int sys_readlinkat(int dirfd, const char* path_user, char* out, size_t bu
         return (int)n;
     }
 
-    struct initramfs_entry e;
-    if (initramfs_find(path, &e) != 0 || (e.mode & S_IFMT) != S_IFLNK) {
+    struct fs_entry e;
+    if (fs_lookup(path, &e) != 0 || (e.mode & S_IFMT) != S_IFLNK) {
         return err(ENOENT);
     }
 
-    size_t n = e.size;
-    if (n > bufsz) {
-        n = bufsz;
-    }
-    memcpy(out, e.data, n);
-    return (int)n;
+    return fs_readlink(&e, out, bufsz);
 }
 
 static int sys_fstat(int fd, struct linux_stat* st) {
@@ -3419,12 +3372,15 @@ static int64_t sys_mmap(uint64_t addr, size_t len, uint64_t prot, uint64_t flags
             return err(EBADF);
         }
 
-        const struct initramfs_entry* entry = &g_fds[fd].entry;
+        const struct fs_entry* entry = &g_fds[fd].entry;
         size_t file_off = (size_t)offset;
         if (file_off < entry->size) {
             size_t remain = entry->size - file_off;
             size_t copy_len = (len < remain) ? len : remain;
-            memcpy((void*)(uintptr_t)base, entry->data + file_off, copy_len);
+            int rr = fs_read(entry, file_off, (void*)(uintptr_t)base, copy_len);
+            if (rr < 0) {
+                return rr;
+            }
         }
     }
 
@@ -3661,9 +3617,19 @@ static int sys_execve(struct syscall_frame* frame, const char* path_user, uint64
         return rr;
     }
 
-    struct initramfs_entry image_entry;
-    if (initramfs_find(resolved_path, &image_entry) != 0 || (image_entry.mode & S_IFMT) != S_IFREG) {
+    struct fs_entry image_entry;
+    if (fs_lookup(resolved_path, &image_entry) != 0 || (image_entry.mode & S_IFMT) != S_IFREG) {
         return err(ENOENT);
+    }
+
+    uint8_t* image = kmalloc(image_entry.size);
+    if (image == NULL) {
+        return err(ENOMEM);
+    }
+    int read_result = fs_read(&image_entry, 0, image, image_entry.size);
+    if (read_result < 0 || (size_t)read_result != image_entry.size) {
+        kfree(image);
+        return (read_result < 0) ? read_result : err(EINVAL);
     }
 
     size_t argc = 0;
@@ -3695,10 +3661,12 @@ static int sys_execve(struct syscall_frame* frame, const char* path_user, uint64
     uint64_t phnum = 0;
     uint64_t image_start = 0;
     uint64_t image_end = 0;
-    int lr = load_exec_image(image_entry.data, image_entry.size, &entry, &phdr, &phent, &phnum, &image_start, &image_end);
+    int lr = load_exec_image(image, image_entry.size, &entry, &phdr, &phent, &phnum, &image_start, &image_end);
     if (lr != 0) {
+        kfree(image);
         return lr;
     }
+    kfree(image);
 
     g_brk_current = USER_BRK_BASE;
     g_mmap_next = USER_MMAP_BASE;

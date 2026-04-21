@@ -22,13 +22,35 @@ static const char keymap_shift[128] = {
 static int shift_pressed;
 static int ctrl_pressed;
 static bool extended_scancode;
-static int pending_signal;
 
-static void keyboard_queue_signal(int signal) {
-    if (signal <= 0 || pending_signal != KEYBOARD_COMBO_SIGNAL_NONE) {
-        return;
+static int ctrl_modified_char(char c) {
+    if (c >= 'a' && c <= 'z') {
+        return (c - 'a') + 1;
     }
-    pending_signal = signal;
+    if (c >= 'A' && c <= 'Z') {
+        return (c - 'A') + 1;
+    }
+
+    switch (c) {
+        case ' ':
+        case '@':
+            return 0;
+        case '[':
+            return 27;
+        case '\\':
+            return 28;
+        case ']':
+            return 29;
+        case '^':
+            return 30;
+        case '_':
+        case '/':
+            return 31;
+        case '?':
+            return 127;
+        default:
+            return (int)c;
+    }
 }
 
 int keyboard_poll_char(void) {
@@ -67,28 +89,17 @@ int keyboard_poll_char(void) {
         return -1;
     }
 
-    if (!extended && ctrl_pressed) {
-        if (sc == 0x2E) {
-            keyboard_queue_signal(KEYBOARD_COMBO_SIGNAL_SIGINT);
-            return -1;
-        }
-        if (sc == 0x2C) {
-            keyboard_queue_signal(KEYBOARD_COMBO_SIGNAL_SIGTSTP);
-            return -1;
-        }
-    }
-
     if (sc >= 128) {
         return -1;
     }
 
     char c = shift_pressed ? keymap_shift[sc] : keymap[sc];
-    if (c == '\r') {
-        c = '\r';
-    }
-
     if (c == 0) {
         return -1;
+    }
+
+    if (!extended && ctrl_pressed) {
+        return ctrl_modified_char(c);
     }
 
     return (int)c;
@@ -96,10 +107,6 @@ int keyboard_poll_char(void) {
 
 int keyboard_read_char_blocking(void) {
     for (;;) {
-        if (pending_signal != KEYBOARD_COMBO_SIGNAL_NONE) {
-            return -1;
-        }
-
         int c = keyboard_poll_char();
         if (c >= 0) {
             return c;
@@ -113,11 +120,9 @@ int keyboard_input_ready(void) {
 }
 
 int keyboard_poll_signal(void) {
-    int signal = pending_signal;
-    pending_signal = KEYBOARD_COMBO_SIGNAL_NONE;
-    return signal;
+    return KEYBOARD_COMBO_SIGNAL_NONE;
 }
 
 int keyboard_peek_signal(void) {
-    return pending_signal;
+    return KEYBOARD_COMBO_SIGNAL_NONE;
 }

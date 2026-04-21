@@ -734,16 +734,19 @@ void console_putc(char c) {
     }
 
     if (c == '\016') {
+        serial_putc(c);
         shift_out_active = true;
         return;
     }
 
     if (c == '\017') {
+        serial_putc(c);
         shift_out_active = false;
         return;
     }
 
     if (handle_ansi_char(c)) {
+        serial_putc(c);
         return;
     }
 
@@ -761,9 +764,9 @@ void console_putc(char c) {
     }
 
     if (c == '\n') {
+        cursor_col = 0;
         serial_putc('\r');
         serial_putc('\n');
-        cursor_col = 0;
         linefeed();
         update_hw_cursor();
         return;

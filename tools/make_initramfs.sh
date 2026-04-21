@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -lt 2 ]]; then
-  echo "usage: $0 <output.cpio> <busybox-bin> [bash-bin] [sl-bin] [help-bin] [file-bin] [file-magic]" >&2
+  echo "usage: $0 <output.cpio> <busybox-bin> [bash-bin] [sl-bin] [help-bin] [file-bin] [file-magic] [nano-bin]" >&2
   exit 1
 fi
 
@@ -15,16 +15,17 @@ SL_BIN="${4:-}"
 HELP_BIN="${5:-}"
 FILE_BIN="${6:-}"
 FILE_MAGIC="${7:-}"
+NANO_BIN="${8:-}"
 
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 
 ROOT="$WORKDIR/root"
-mkdir -p "$ROOT"/{bin,dev,etc,proc,sys,tmp,usr/bin,var,home}
+mkdir -p "$ROOT"/{bin,dev,etc,proc,sys,tmp,usr,var,home}
 
 if [[ -d rootfs ]]; then
   pushd rootfs >/dev/null
-  find . -mindepth 1 ! -path './bin/busybox' -print0 | cpio --null -pdm "$ROOT" >/dev/null 2>&1 || true
+  find . -mindepth 1 ! -path './bin/busybox' ! -path './usr' ! -path './usr/*' -print0 | cpio --null -pdm "$ROOT" >/dev/null 2>&1 || true
   popd >/dev/null
 fi
 
@@ -41,45 +42,15 @@ fi
 
 if [[ -n "$BASH_BIN" && -x "$BASH_BIN" ]]; then
   cp "$BASH_BIN" "$ROOT/bin/bash"
-  mkdir -p "$ROOT/usr/bin"
-  ln -sf /bin/bash "$ROOT/usr/bin/bash"
-fi
-
-if [[ -n "$SL_BIN" && -x "$SL_BIN" ]]; then
-  mkdir -p "$ROOT/usr/bin"
-  cp "$SL_BIN" "$ROOT/usr/bin/sl"
 fi
 
 if [[ -n "$HELP_BIN" && -x "$HELP_BIN" ]]; then
   cp "$HELP_BIN" "$ROOT/bin/help"
 fi
 
-if [[ -n "$FILE_BIN" && -x "$FILE_BIN" ]]; then
-  mkdir -p "$ROOT/usr/bin"
-  cp "$FILE_BIN" "$ROOT/usr/bin/file"
-fi
-
-if [[ -n "$FILE_MAGIC" && -f "$FILE_MAGIC" ]]; then
-  mkdir -p "$ROOT/usr/share/misc"
-  cp "$FILE_MAGIC" "$ROOT/usr/share/misc/magic.mgc"
-fi
-
-if [[ -f external/ncurses-src/build-musl/share/terminfo/l/linux ]]; then
-  mkdir -p "$ROOT/usr/share/terminfo/l"
-  cp external/ncurses-src/build-musl/share/terminfo/l/linux "$ROOT/usr/share/terminfo/l/linux"
-fi
-
-if [[ -f external/ncurses-src/build-musl/share/terminfo/d/dumb ]]; then
-  mkdir -p "$ROOT/usr/share/terminfo/d"
-  cp external/ncurses-src/build-musl/share/terminfo/d/dumb "$ROOT/usr/share/terminfo/d/dumb"
-fi
-
 chmod +x "$ROOT/bin/busybox"
 if [[ -f "$ROOT/bin/bash" ]]; then
   chmod +x "$ROOT/bin/bash"
-fi
-if [[ -f "$ROOT/usr/bin/file" ]]; then
-  chmod +x "$ROOT/usr/bin/file"
 fi
 
 is_blocked_applet() {
@@ -97,6 +68,7 @@ if APPLETS="$("$ROOT/bin/busybox" --list-full 2>/dev/null)"; then
     base="${app##*/}"
     is_blocked_applet "$base" && continue
     [[ "$rel" == "/bin/busybox" ]] && continue
+    [[ "$rel" == "/usr/"* ]] && continue
     mkdir -p "$ROOT$(dirname "$rel")"
     ln -sf /bin/busybox "$ROOT$rel"
   done <<< "$APPLETS"
