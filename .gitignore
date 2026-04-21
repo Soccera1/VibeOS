@@ -37,3 +37,5 @@ external/busybox-src/busybox_unstripped.out
 # Zig caches under BusyBox source
 external/busybox-src/.zig-global-cache/
 external/busybox-src/.zig-local-cache/
+external/bash-src/.zig-global-cache/
+external/bash-src/.zig-local-cache/

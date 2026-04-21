@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -lt 2 ]]; then
-  echo "usage: $0 <output.cpio> <busybox-bin> [sl-bin]" >&2
+  echo "usage: $0 <output.cpio> <busybox-bin> [bash-bin] [sl-bin]" >&2
   exit 1
 fi
 
@@ -10,7 +10,8 @@ OUT_CPIO_INPUT="$1"
 OUT_CPIO_DIR="$(cd "$(dirname "$OUT_CPIO_INPUT")" && pwd)"
 OUT_CPIO="$OUT_CPIO_DIR/$(basename "$OUT_CPIO_INPUT")"
 BUSYBOX_BIN="$2"
-SL_BIN="${3:-}"
+BASH_BIN="${3:-}"
+SL_BIN="${4:-}"
 
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
@@ -35,6 +36,12 @@ else
   exit 1
 fi
 
+if [[ -n "$BASH_BIN" && -x "$BASH_BIN" ]]; then
+  cp "$BASH_BIN" "$ROOT/bin/bash"
+  mkdir -p "$ROOT/usr/bin"
+  ln -sf /bin/bash "$ROOT/usr/bin/bash"
+fi
+
 if [[ -n "$SL_BIN" && -x "$SL_BIN" ]]; then
   mkdir -p "$ROOT/usr/bin"
   cp "$SL_BIN" "$ROOT/usr/bin/sl"
@@ -51,6 +58,9 @@ if [[ -f external/ncurses-src/build-musl/share/terminfo/d/dumb ]]; then
 fi
 
 chmod +x "$ROOT/bin/busybox"
+if [[ -f "$ROOT/bin/bash" ]]; then
+  chmod +x "$ROOT/bin/bash"
+fi
 
 is_blocked_applet() {
   case "$1" in

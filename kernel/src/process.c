@@ -4,8 +4,8 @@
 
 #include "kmalloc.h"
 
-#define USER_BRK_BASE 0x14000000ull
-#define USER_MMAP_BASE 0x18000000ull
+#define USER_BRK_BASE 0x09000000ull
+#define USER_MMAP_BASE 0x0C000000ull
 
 static struct process g_processes[MAX_PROCESSES];
 static struct process* g_current_process = NULL;

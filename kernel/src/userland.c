@@ -11,7 +11,7 @@
 #define ET_EXEC 2u
 #define PT_LOAD 1u
 
-#define USER_LIMIT 0x3F000000ull
+#define USER_LIMIT 0x0F000000ull
 #define USER_STACK_TOP 0x08000000ull
 
 struct elf64_ehdr {

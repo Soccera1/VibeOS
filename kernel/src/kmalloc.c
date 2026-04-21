@@ -8,9 +8,8 @@
 #include "string.h"
 
 extern char __kernel_end[];
-extern char __kernel_start[];
 
-#define HEAP_START ((uintptr_t)__kernel_end)
+#define HEAP_START 0x10000000ull
 #define HEAP_SIZE (256u * 1024u * 1024u)
 #define HEAP_END (HEAP_START + HEAP_SIZE)
 #define MIN_BLOCK_SIZE (sizeof(struct block_header) + 16)
@@ -104,6 +103,12 @@ static void split_block(struct block_header* block, size_t total_size) {
 void kmalloc_init(void) {
     if (g_initialized) {
         return;
+    }
+
+    if ((uintptr_t)__kernel_end >= HEAP_START) {
+        console_write("kmalloc: heap overlaps kernel image\n");
+        for (;;) {
+        }
     }
 
     g_heap_break = HEAP_START;
