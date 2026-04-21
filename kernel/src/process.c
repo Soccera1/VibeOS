@@ -3,7 +3,6 @@
 #include <string.h>
 
 #include "kmalloc.h"
-#include "syscall.h"
 
 #define USER_BRK_BASE 0x14000000ull
 #define USER_MMAP_BASE 0x18000000ull
@@ -11,7 +10,6 @@
 static struct process g_processes[MAX_PROCESSES];
 static struct process* g_current_process = NULL;
 static int g_next_pid = 1;
-static struct process* g_zombie_list = NULL;
 
 void process_init(void) {
     memset(g_processes, 0, sizeof(g_processes));
@@ -22,17 +20,21 @@ void process_init(void) {
 
     g_processes[0].pid = 1;
     g_processes[0].ppid = 0;
+    g_processes[0].pgid = 1;
+    g_processes[0].sid = 1;
     g_processes[0].state = PROCESS_RUNNING;
     g_processes[0].is_child = false;
+    g_processes[0].brk_current = USER_BRK_BASE;
+    g_processes[0].mmap_next = USER_MMAP_BASE;
+    g_processes[0].umask = 022u;
     strcpy(g_processes[0].cwd, "/");
-    for (int i = 0; i < 64; ++i) {
+    for (int i = 0; i < PROCESS_MAX_FDS; ++i) {
         g_processes[0].fds[i].kind = 0;
         g_processes[0].fds[i].pipe_id = -1;
     }
 
     g_current_process = &g_processes[0];
     g_next_pid = 2;
-    g_zombie_list = NULL;
 }
 
 struct process* process_current(void) {
@@ -59,7 +61,10 @@ struct process* process_alloc(void) {
             proc->pid = g_next_pid++;
             proc->state = PROCESS_RUNNABLE;
             proc->is_child = false;
-            for (int j = 0; j < 64; ++j) {
+            proc->brk_current = USER_BRK_BASE;
+            proc->mmap_next = USER_MMAP_BASE;
+            proc->umask = 022u;
+            for (int j = 0; j < PROCESS_MAX_FDS; ++j) {
                 proc->fds[j].pipe_id = -1;
             }
             return proc;
@@ -79,45 +84,20 @@ void process_free(struct process* proc) {
     proc->state = PROCESS_FREE;
 }
 
+struct process* process_at(int index) {
+    if (index < 0 || index >= MAX_PROCESSES) {
+        return NULL;
+    }
+    return &g_processes[index];
+}
+
 int process_alloc_snapshot(struct process* proc) {
     if (proc == NULL) {
         return -1;
     }
 
     process_free_snapshot(proc);
-
-    proc->snap.image = kmalloc(FORK_IMAGE_SNAPSHOT_MAX);
-    if (proc->snap.image == NULL) {
-        return -1;
-    }
-
-    proc->snap.stack = kmalloc(FORK_STACK_SNAPSHOT_MAX);
-    if (proc->snap.stack == NULL) {
-        kfree(proc->snap.image);
-        proc->snap.image = NULL;
-        return -1;
-    }
-
-    proc->snap.brk = kmalloc(FORK_BRK_SNAPSHOT_MAX);
-    if (proc->snap.brk == NULL) {
-        kfree(proc->snap.image);
-        kfree(proc->snap.stack);
-        proc->snap.image = NULL;
-        proc->snap.stack = NULL;
-        return -1;
-    }
-
-    proc->snap.mmap = kmalloc(FORK_MMAP_SNAPSHOT_MAX);
-    if (proc->snap.mmap == NULL) {
-        kfree(proc->snap.image);
-        kfree(proc->snap.stack);
-        kfree(proc->snap.brk);
-        proc->snap.image = NULL;
-        proc->snap.stack = NULL;
-        proc->snap.brk = NULL;
-        return -1;
-    }
-
+    memset(&proc->snap, 0, sizeof(proc->snap));
     proc->snap.valid = true;
     return 0;
 }
@@ -131,18 +111,22 @@ void process_free_snapshot(struct process* proc) {
         kfree(proc->snap.image);
         proc->snap.image = NULL;
     }
+    proc->snap.image_cap = 0;
     if (proc->snap.stack != NULL) {
         kfree(proc->snap.stack);
         proc->snap.stack = NULL;
     }
+    proc->snap.stack_cap = 0;
     if (proc->snap.brk != NULL) {
         kfree(proc->snap.brk);
         proc->snap.brk = NULL;
     }
+    proc->snap.brk_cap = 0;
     if (proc->snap.mmap != NULL) {
         kfree(proc->snap.mmap);
         proc->snap.mmap = NULL;
     }
+    proc->snap.mmap_cap = 0;
 
     proc->snap.valid = false;
 }

@@ -23,6 +23,8 @@ SECTIONS {
     .bss ALIGN(4K) : {
         *(COMMON)
         *(.bss*)
+        *(.sbss*)
+        *(.lbss*)
     }
 
     __kernel_end = .;
