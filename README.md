@@ -12,7 +12,9 @@ VibeOS is an amd64 monolithic-kernel OS prototype that boots via Multiboot2 and 
 - **I/O:** TTY support over VGA text mode and serial (`COM1`).
 - **Hardware:** XSAVE/AVX/SSE enablement, FSGSBASE support.
 - **Shells:**
-  - **BusyBox:** Primary userspace environment.
+  - **Bash:** Default interactive shell.
+  - **BusyBox:** Userspace base system and fallback shell.
+  - **file(1):** Static upstream `file` command with a bundled `magic.mgc` database.
   - **Kernel Shell:** Built-in fallback shell (`vibeos#`) with `ls`, `cat`, `clear`, and `help`.
 
 ## Build
@@ -22,7 +24,7 @@ VibeOS is an amd64 monolithic-kernel OS prototype that boots via Multiboot2 and 
 - `gcc`, `ld`, `nasm` (for the kernel)
 - `grub-mkrescue`, `grub-install` (for bootable images)
 - `xorriso`, `mtools`, `libisoboot` (usually dependencies of `grub-mkrescue`)
-- `zig` (optional, used to build BusyBox with `zig cc`)
+- `zig` (required for musl userspace builds via `zig cc`)
 
 ### Build Targets
 
@@ -57,6 +59,6 @@ qemu-system-x86_64 \
 
 ## Userspace Implementation
 
-VibeOS prefers building BusyBox from source located in `external/busybox-src`. If `zig` is present on the system, `tools/build_busybox.sh` uses `zig cc -target x86_64-linux-musl` to ensure a static, non-PIE ELF64 (`ET_EXEC`) binary is produced, which simplifies the kernel's loader.
+VibeOS builds BusyBox, Bash, and upstream `file(1)` as static, non-PIE musl binaries so they can run without a dynamic loader. Bash is the default interactive shell, BusyBox provides the base userspace and a fallback shell if Bash is unavailable, and `file` ships with its compiled `magic.mgc` database under `/usr/share/misc`.
 
 The initramfs generator automatically populates `/bin` with applet symlinks to the BusyBox binary.

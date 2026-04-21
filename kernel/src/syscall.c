@@ -75,7 +75,10 @@
 #define USER_MMAP_BASE 0x0C000000ull
 #define USER_MMAP_LIMIT 0x0F000000ull
 
+#define MAP_SHARED 0x01u
+#define MAP_PRIVATE 0x02u
 #define MAP_FIXED 0x10u
+#define MAP_ANONYMOUS 0x20u
 #define MAP_FIXED_NOREPLACE 0x100000u
 
 #define ENOSYS 38
@@ -3377,29 +3380,53 @@ static int sys_getpgid(int pid) {
     return target->pgid;
 }
 
-static int64_t sys_mmap(uint64_t addr, size_t len, uint64_t flags) {
+static int64_t sys_mmap(uint64_t addr, size_t len, uint64_t prot, uint64_t flags, int fd, uint64_t offset) {
+    (void)prot;
     if (len == 0) {
         return err(EINVAL);
     }
 
     const uint64_t align = 0x1000ull;
     uint64_t span = ((uint64_t)len + align - 1u) & ~(align - 1u);
+    bool anonymous = (flags & MAP_ANONYMOUS) != 0u;
 
+    if ((offset & (align - 1u)) != 0u) {
+        return err(EINVAL);
+    }
+
+    if (!anonymous && (flags & (MAP_SHARED | MAP_PRIVATE)) == 0u) {
+        return err(EINVAL);
+    }
+
+    uint64_t base = 0;
     if (addr != 0 && (flags & (MAP_FIXED | MAP_FIXED_NOREPLACE)) != 0u) {
-        uint64_t base = addr & ~(align - 1u);
+        base = addr & ~(align - 1u);
         if (base < 0x1000ull || base + span >= USER_MMAP_LIMIT) {
             return err(ENOMEM);
         }
-        memset((void*)(uintptr_t)base, 0, (size_t)span);
-        return (int64_t)base;
+    } else {
+        base = (g_mmap_next + align - 1u) & ~(align - 1u);
+        if (base + span >= USER_MMAP_LIMIT) {
+            return err(ENOMEM);
+        }
+        g_mmap_next = base + span;
     }
 
-    uint64_t base = (g_mmap_next + align - 1u) & ~(align - 1u);
-    if (base + span >= USER_MMAP_LIMIT) {
-        return err(ENOMEM);
-    }
-    g_mmap_next = base + span;
     memset((void*)(uintptr_t)base, 0, (size_t)span);
+
+    if (!anonymous) {
+        if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind != FD_FILE) {
+            return err(EBADF);
+        }
+
+        const struct initramfs_entry* entry = &g_fds[fd].entry;
+        size_t file_off = (size_t)offset;
+        if (file_off < entry->size) {
+            size_t remain = entry->size - file_off;
+            size_t copy_len = (len < remain) ? len : remain;
+            memcpy((void*)(uintptr_t)base, entry->data + file_off, copy_len);
+        }
+    }
 
     return (int64_t)base;
 }
@@ -3657,6 +3684,11 @@ static int sys_execve(struct syscall_frame* frame, const char* path_user, uint64
         argc = 1;
     }
 
+    struct process* current = current_process();
+    if (current != NULL) {
+        clear_live_process_memory(current);
+    }
+
     uint64_t entry = 0;
     uint64_t phdr = 0;
     uint64_t phent = 0;
@@ -3674,7 +3706,6 @@ static int sys_execve(struct syscall_frame* frame, const char* path_user, uint64
     write_fs_base_current(0);
     userland_set_image_span(image_start, image_end);
 
-    struct process* current = current_process();
     if (current != NULL) {
         current->tid_address = 0;
         current->fs_base = 0;
@@ -4245,7 +4276,7 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
         case 8:
             return (uint64_t)sys_lseek((int)a0, (int64_t)a1, (int)a2);
         case 9:
-            return (uint64_t)sys_mmap(a0, (size_t)a1, a3);
+            return (uint64_t)sys_mmap(a0, (size_t)a1, a2, a3, (int)a4, a5);
         case 10:
             return 0;
         case 11:

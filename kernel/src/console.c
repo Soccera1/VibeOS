@@ -729,6 +729,10 @@ void console_clear(void) {
 }
 
 void console_putc(char c) {
+    if (c == '\a') {
+        return;
+    }
+
     if (c == '\016') {
         shift_out_active = true;
         return;

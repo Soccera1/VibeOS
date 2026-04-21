@@ -1,0 +1,79 @@
+is_csv.lo: /home/lily/code/vibeos/external/file-src/src/is_csv.c \
+  /home/lily/code/vibeos/external/file-src/src/file.h ../config.h \
+  /usr/lib64/zig/0.14.1/lib/include/stdint.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/stdint.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/x86_64-linux-musl/bits/alltypes.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/x86_64-linux-musl/bits/stdint.h \
+  /usr/lib64/zig/0.14.1/lib/include/inttypes.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/inttypes.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/features.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/stdio.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/errno.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/bits/errno.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/fcntl.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/bits/fcntl.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/regex.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/time.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/sys/types.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/endian.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/sys/select.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/sys/param.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/sys/resource.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/sys/time.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/bits/resource.h \
+  /usr/lib64/zig/0.14.1/lib/include/limits.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/limits.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/x86_64-linux-musl/bits/limits.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/sys/stat.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/x86_64-linux-musl/bits/stat.h \
+  /usr/lib64/zig/0.14.1/lib/include/stdarg.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/stdarg.h \
+  /usr/lib64/zig/0.14.1/lib/include/__stdarg_header_macro.h \
+  /usr/lib64/zig/0.14.1/lib/include/__stdarg___gnuc_va_list.h \
+  /usr/lib64/zig/0.14.1/lib/include/__stdarg_va_list.h \
+  /usr/lib64/zig/0.14.1/lib/include/__stdarg_va_arg.h \
+  /usr/lib64/zig/0.14.1/lib/include/__stdarg___va_copy.h \
+  /usr/lib64/zig/0.14.1/lib/include/__stdarg_va_copy.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/locale.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/string.h \
+  /usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/strings.h magic.h
+/home/lily/code/vibeos/external/file-src/src/file.h:
+../config.h:
+/usr/lib64/zig/0.14.1/lib/include/stdint.h:
+/usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/stdint.h:
+/usr/lib64/zig/0.14.1/lib/libc/include/x86_64-linux-musl/bits/alltypes.h:
+/usr/lib64/zig/0.14.1/lib/libc/include/x86_64-linux-musl/bits/stdint.h:
+/usr/lib64/zig/0.14.1/lib/include/inttypes.h:
+/usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/inttypes.h:
+/usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/features.h:
+/usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/stdio.h:
+/usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/errno.h:
+/usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/bits/errno.h:
+/usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/fcntl.h:
+/usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/bits/fcntl.h:
+/usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/regex.h:
+/usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/time.h:
+/usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/sys/types.h:
+/usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/endian.h:
+/usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/sys/select.h:
+/usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/sys/param.h:
+/usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/sys/resource.h:
+/usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/sys/time.h:
+/usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/bits/resource.h:
+/usr/lib64/zig/0.14.1/lib/include/limits.h:
+/usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/limits.h:
+/usr/lib64/zig/0.14.1/lib/libc/include/x86_64-linux-musl/bits/limits.h:
+/usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/sys/stat.h:
+/usr/lib64/zig/0.14.1/lib/libc/include/x86_64-linux-musl/bits/stat.h:
+/usr/lib64/zig/0.14.1/lib/include/stdarg.h:
+/usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/stdarg.h:
+/usr/lib64/zig/0.14.1/lib/include/__stdarg_header_macro.h:
+/usr/lib64/zig/0.14.1/lib/include/__stdarg___gnuc_va_list.h:
+/usr/lib64/zig/0.14.1/lib/include/__stdarg_va_list.h:
+/usr/lib64/zig/0.14.1/lib/include/__stdarg_va_arg.h:
+/usr/lib64/zig/0.14.1/lib/include/__stdarg___va_copy.h:
+/usr/lib64/zig/0.14.1/lib/include/__stdarg_va_copy.h:
+/usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/locale.h:
+/usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/string.h:
+/usr/lib64/zig/0.14.1/lib/libc/include/generic-musl/strings.h:
+magic.h:

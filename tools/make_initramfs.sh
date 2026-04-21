@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -lt 2 ]]; then
-  echo "usage: $0 <output.cpio> <busybox-bin> [bash-bin] [sl-bin]" >&2
+  echo "usage: $0 <output.cpio> <busybox-bin> [bash-bin] [sl-bin] [help-bin] [file-bin] [file-magic]" >&2
   exit 1
 fi
 
@@ -12,6 +12,9 @@ OUT_CPIO="$OUT_CPIO_DIR/$(basename "$OUT_CPIO_INPUT")"
 BUSYBOX_BIN="$2"
 BASH_BIN="${3:-}"
 SL_BIN="${4:-}"
+HELP_BIN="${5:-}"
+FILE_BIN="${6:-}"
+FILE_MAGIC="${7:-}"
 
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
@@ -47,6 +50,20 @@ if [[ -n "$SL_BIN" && -x "$SL_BIN" ]]; then
   cp "$SL_BIN" "$ROOT/usr/bin/sl"
 fi
 
+if [[ -n "$HELP_BIN" && -x "$HELP_BIN" ]]; then
+  cp "$HELP_BIN" "$ROOT/bin/help"
+fi
+
+if [[ -n "$FILE_BIN" && -x "$FILE_BIN" ]]; then
+  mkdir -p "$ROOT/usr/bin"
+  cp "$FILE_BIN" "$ROOT/usr/bin/file"
+fi
+
+if [[ -n "$FILE_MAGIC" && -f "$FILE_MAGIC" ]]; then
+  mkdir -p "$ROOT/usr/share/misc"
+  cp "$FILE_MAGIC" "$ROOT/usr/share/misc/magic.mgc"
+fi
+
 if [[ -f external/ncurses-src/build-musl/share/terminfo/l/linux ]]; then
   mkdir -p "$ROOT/usr/share/terminfo/l"
   cp external/ncurses-src/build-musl/share/terminfo/l/linux "$ROOT/usr/share/terminfo/l/linux"
@@ -60,6 +77,9 @@ fi
 chmod +x "$ROOT/bin/busybox"
 if [[ -f "$ROOT/bin/bash" ]]; then
   chmod +x "$ROOT/bin/bash"
+fi
+if [[ -f "$ROOT/usr/bin/file" ]]; then
+  chmod +x "$ROOT/usr/bin/file"
 fi
 
 is_blocked_applet() {
@@ -98,8 +118,17 @@ VibeOS monolithic kernel prototype
 Type: help
 MOTD
 
+if [[ -x "$ROOT/bin/help" ]]; then
+cat > "$ROOT/.bashrc" <<'BASHRC'
+alias help='/bin/help'
+BASHRC
+fi
+
 cat > "$ROOT/init" <<'INIT'
 #!/bin/busybox
+if [ -x /bin/bash ]; then
+  exec /bin/bash -i
+fi
 exec /bin/busybox sh -i
 INIT
 chmod +x "$ROOT/init"
