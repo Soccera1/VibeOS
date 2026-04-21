@@ -6,6 +6,7 @@
 
 #include "fs.h"
 #include "syscall.h"
+#include "vm.h"
 
 #define MAX_PROCESSES 256
 #define MAX_SIGNALS 64
@@ -15,11 +16,6 @@
 
 #define SIGNAL_HANDLER_DFL ((void*)0)
 #define SIGNAL_HANDLER_IGN ((void*)1)
-
-#define FORK_IMAGE_SNAPSHOT_MAX (16u * 1024u * 1024u)
-#define FORK_STACK_SNAPSHOT_MAX (8u * 1024u * 1024u)
-#define FORK_BRK_SNAPSHOT_MAX (8u * 1024u * 1024u)
-#define FORK_MMAP_SNAPSHOT_MAX (16u * 1024u * 1024u)
 
 enum process_state {
     PROCESS_FREE = 0,
@@ -40,29 +36,10 @@ enum process_wait_reason {
     PROCESS_WAIT_NANOSLEEP,
 };
 
-struct process_snapshot {
-    bool valid;
-    uint8_t* image;
-    size_t image_len;
-    size_t image_cap;
-    uint64_t image_base;
-    uint8_t* stack;
-    size_t stack_len;
-    size_t stack_cap;
-    uint64_t stack_base;
-    uint8_t* brk;
-    size_t brk_len;
-    size_t brk_cap;
-    uint64_t brk_current;
-    uint8_t* mmap;
-    size_t mmap_len;
-    size_t mmap_cap;
-    uint64_t mmap_next;
-};
-
 struct process_fd {
     int kind;
     uint32_t flags;
+    uint32_t fd_flags;
     uint64_t offset;
     int pipe_id;
     struct fs_entry entry;
@@ -106,7 +83,7 @@ struct process {
     bool has_wait_event;
     bool is_child;
 
-    struct process_snapshot snap;
+    struct vm_space vm;
     uint64_t image_start;
     uint64_t image_end;
     struct process_fd fds[PROCESS_MAX_FDS];
@@ -136,9 +113,6 @@ struct process* process_find(int pid);
 struct process* process_at(int index);
 struct process* process_alloc(void);
 void process_free(struct process* proc);
-
-int process_alloc_snapshot(struct process* proc);
-void process_free_snapshot(struct process* proc);
 
 int process_send_signal(int pid, int sig);
 void process_queue_signal(struct process* proc, int sig);

@@ -2,15 +2,17 @@
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then
-  echo "usage: $0 <output.ext2> [sl-bin] [file-bin] [file-magic] [nano-bin]" >&2
+  echo "usage: $0 <output.ext2> [bash-bin] [help-bin] [sl-bin] [file-bin] [file-magic] [nano-bin]" >&2
   exit 1
 fi
 
 OUT_IMG="$1"
-SL_BIN="${2:-}"
-FILE_BIN="${3:-}"
-FILE_MAGIC="${4:-}"
-NANO_BIN="${5:-}"
+BASH_BIN="${2:-}"
+HELP_BIN="${3:-}"
+SL_BIN="${4:-}"
+FILE_BIN="${5:-}"
+FILE_MAGIC="${6:-}"
+NANO_BIN="${7:-}"
 
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
@@ -21,6 +23,16 @@ mkdir -p "$ROOT"/{bin,share/misc,share/terminfo}
 if [[ -d rootfs/usr ]]; then
   mkdir -p "$ROOT"
   cp -a rootfs/usr/. "$ROOT"/
+fi
+
+if [[ -n "$BASH_BIN" && -x "$BASH_BIN" ]]; then
+  cp "$BASH_BIN" "$ROOT/bin/bash"
+  chmod +x "$ROOT/bin/bash"
+fi
+
+if [[ -n "$HELP_BIN" && -x "$HELP_BIN" ]]; then
+  cp "$HELP_BIN" "$ROOT/bin/help"
+  chmod +x "$ROOT/bin/help"
 fi
 
 if [[ -n "$SL_BIN" && -x "$SL_BIN" ]]; then

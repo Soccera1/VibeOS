@@ -15,6 +15,7 @@
 #include "string.h"
 #include "syscall.h"
 #include "userland.h"
+#include "vm.h"
 
 uint64_t kernel_exit_stack_top;
 
@@ -289,6 +290,7 @@ void kernel_main(uint64_t mb2_info) {
     kernel_exit_stack_top = (uint64_t)(uintptr_t)(&post_user_stack[sizeof(post_user_stack)]);
 
     kmalloc_init();
+    vm_init();
 
     gdt_init();
     gdt_set_kernel_stack(kernel_exit_stack_top);

@@ -60,6 +60,6 @@ qemu-system-x86_64 \
 
 ## Userspace Implementation
 
-VibeOS builds BusyBox, Bash, and upstream `file(1)` as static, non-PIE musl binaries so they can run without a dynamic loader. Bash is the default interactive shell, BusyBox provides the base userspace and a fallback shell if Bash is unavailable, and `file` ships with its compiled `magic.mgc` database under `/usr/share/misc`.
+VibeOS builds BusyBox, Bash, and upstream `file(1)` as static, non-PIE musl binaries so they can run without a dynamic loader. BusyBox provides the base initramfs userspace and fallback shell, while optional standalone programs such as Bash, `file`, `nano`, `sl`, and the curated `help` command live under `/usr/bin`. `file` ships with its compiled `magic.mgc` database under `/usr/share/misc`.
 
-The initramfs now carries the root filesystem and an empty `/usr` mountpoint, while a separate `build/usr.ext2` image is loaded as a second Multiboot module and mounted read-only at `/usr`. The initramfs generator automatically populates `/bin` with applet symlinks to the BusyBox binary.
+The initramfs now carries the root filesystem and an empty `/usr` mountpoint, while a separate `build/usr.ext2` image is loaded as a second Multiboot module and mounted read-only at `/usr`. The initramfs generator automatically populates `/bin` with applet symlinks to the BusyBox binary, keeping `/bin` focused on the essential early userspace command set.

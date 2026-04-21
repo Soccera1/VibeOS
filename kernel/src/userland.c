@@ -7,14 +7,13 @@
 #include "fs.h"
 #include "initramfs.h"
 #include "kmalloc.h"
+#include "process.h"
 #include "string.h"
+#include "vm.h"
 
 #define ELF_MAGIC 0x464C457Fu
 #define ET_EXEC 2u
 #define PT_LOAD 1u
-
-#define USER_LIMIT 0x0F000000ull
-#define USER_STACK_TOP 0x08000000ull
 
 struct elf64_ehdr {
     uint8_t e_ident[16];
@@ -56,26 +55,26 @@ struct user_exec_info {
 static uint64_t g_user_image_start;
 static uint64_t g_user_image_end;
 
-static uint64_t push_bytes(uint64_t sp, const void* data, size_t len) {
+static uint64_t push_bytes(uint64_t sp, const void* data, size_t len, struct vm_space* space) {
     sp -= len;
-    memcpy((void*)(uintptr_t)sp, data, len);
+    (void)vm_space_write(space, sp, data, len);
     return sp;
 }
 
-static uint64_t push_u64(uint64_t sp, uint64_t value) {
+static uint64_t push_u64(uint64_t sp, uint64_t value, struct vm_space* space) {
     sp -= sizeof(uint64_t);
-    *(uint64_t*)(uintptr_t)sp = value;
+    (void)vm_space_write(space, sp, &value, sizeof(value));
     return sp;
 }
 
-static uint64_t push_auxv(uint64_t sp, uint64_t type, uint64_t value) {
-    sp = push_u64(sp, value);
-    sp = push_u64(sp, type);
+static uint64_t push_auxv(uint64_t sp, uint64_t type, uint64_t value, struct vm_space* space) {
+    sp = push_u64(sp, value, space);
+    sp = push_u64(sp, type, space);
     return sp;
 }
 
 static uint64_t build_user_stack(const struct user_exec_info* exec, const char* execfn,
-                                 const char* const* argv, size_t argc) {
+                                 const char* const* argv, size_t argc, struct vm_space* space) {
     const char* envp[] = {
         "TERM=vt100",
         "HOME=/",
@@ -88,26 +87,28 @@ static uint64_t build_user_stack(const struct user_exec_info* exec, const char* 
     uint64_t argv_ptrs[8];
     uint64_t env_ptrs[ARRAY_LEN(envp)];
 
-    uint64_t sp = USER_STACK_TOP;
+    uint64_t sp = VM_USER_STACK_TOP;
 
     uint8_t at_random[16] = {
         0x12, 0x6E, 0xA7, 0x39, 0x55, 0xC8, 0x03, 0xF1, 0x88, 0x22, 0x74, 0xB5, 0xE1, 0x9C, 0x41, 0x0D,
     };
 
+    (void)vm_space_map_zero(space, VM_USER_STACK_BASE, VM_USER_STACK_SIZE);
+
     size_t execfn_len = strlen(execfn) + 1u;
-    sp = push_bytes(sp, execfn, execfn_len);
+    sp = push_bytes(sp, execfn, execfn_len, space);
     uint64_t execfn_ptr = sp;
 
     size_t platform_len = strlen(platform) + 1u;
-    sp = push_bytes(sp, platform, platform_len);
+    sp = push_bytes(sp, platform, platform_len, space);
     uint64_t platform_ptr = sp;
 
-    sp = push_bytes(sp, at_random, sizeof(at_random));
+    sp = push_bytes(sp, at_random, sizeof(at_random), space);
     uint64_t at_random_ptr = sp;
 
     for (int i = (int)ARRAY_LEN(envp) - 1; i >= 0; --i) {
         size_t len = strlen(envp[i]) + 1u;
-        sp = push_bytes(sp, envp[i], len);
+        sp = push_bytes(sp, envp[i], len, space);
         env_ptrs[i] = sp;
     }
 
@@ -117,50 +118,50 @@ static uint64_t build_user_stack(const struct user_exec_info* exec, const char* 
 
     for (int i = (int)argc - 1; i >= 0; --i) {
         size_t len = strlen(argv[i]) + 1u;
-        sp = push_bytes(sp, argv[i], len);
+        sp = push_bytes(sp, argv[i], len, space);
         argv_ptrs[i] = sp;
     }
 
     sp &= ~0x0Full;
 
-    sp = push_auxv(sp, 0, 0);                          // AT_NULL
-    sp = push_auxv(sp, 31, execfn_ptr);                // AT_EXECFN
-    sp = push_auxv(sp, 51, 2048);                      // AT_MINSIGSTKSZ
-    sp = push_auxv(sp, 15, platform_ptr);              // AT_PLATFORM
-    sp = push_auxv(sp, 25, at_random_ptr);             // AT_RANDOM
-    sp = push_auxv(sp, 16, 0);                         // AT_HWCAP
-    sp = push_auxv(sp, 26, 0);                         // AT_HWCAP2
-    sp = push_auxv(sp, 33, 0);                         // AT_SYSINFO_EHDR
-    sp = push_auxv(sp, 23, 0);                         // AT_SECURE
-    sp = push_auxv(sp, 17, 100);                       // AT_CLKTCK
-    sp = push_auxv(sp, 8, 0);                          // AT_FLAGS
-    sp = push_auxv(sp, 7, 0);                          // AT_BASE
-    sp = push_auxv(sp, 14, 0);                         // AT_EGID
-    sp = push_auxv(sp, 13, 0);                         // AT_GID
-    sp = push_auxv(sp, 12, 0);                         // AT_EUID
-    sp = push_auxv(sp, 11, 0);                         // AT_UID
-    sp = push_auxv(sp, 9, exec->entry);                // AT_ENTRY
-    sp = push_auxv(sp, 6, 4096);                       // AT_PAGESZ
-    sp = push_auxv(sp, 5, exec->phnum);                // AT_PHNUM
-    sp = push_auxv(sp, 4, exec->phent);                // AT_PHENT
-    sp = push_auxv(sp, 3, exec->phdr);                 // AT_PHDR
+    sp = push_auxv(sp, 0, 0, space);                          // AT_NULL
+    sp = push_auxv(sp, 31, execfn_ptr, space);                // AT_EXECFN
+    sp = push_auxv(sp, 51, 2048, space);                      // AT_MINSIGSTKSZ
+    sp = push_auxv(sp, 15, platform_ptr, space);              // AT_PLATFORM
+    sp = push_auxv(sp, 25, at_random_ptr, space);             // AT_RANDOM
+    sp = push_auxv(sp, 16, 0, space);                         // AT_HWCAP
+    sp = push_auxv(sp, 26, 0, space);                         // AT_HWCAP2
+    sp = push_auxv(sp, 33, 0, space);                         // AT_SYSINFO_EHDR
+    sp = push_auxv(sp, 23, 0, space);                         // AT_SECURE
+    sp = push_auxv(sp, 17, 100, space);                       // AT_CLKTCK
+    sp = push_auxv(sp, 8, 0, space);                          // AT_FLAGS
+    sp = push_auxv(sp, 7, 0, space);                          // AT_BASE
+    sp = push_auxv(sp, 14, 0, space);                         // AT_EGID
+    sp = push_auxv(sp, 13, 0, space);                         // AT_GID
+    sp = push_auxv(sp, 12, 0, space);                         // AT_EUID
+    sp = push_auxv(sp, 11, 0, space);                         // AT_UID
+    sp = push_auxv(sp, 9, exec->entry, space);                // AT_ENTRY
+    sp = push_auxv(sp, 6, 4096, space);                       // AT_PAGESZ
+    sp = push_auxv(sp, 5, exec->phnum, space);                // AT_PHNUM
+    sp = push_auxv(sp, 4, exec->phent, space);                // AT_PHENT
+    sp = push_auxv(sp, 3, exec->phdr, space);                 // AT_PHDR
 
-    sp = push_u64(sp, 0);             // envp terminator
+    sp = push_u64(sp, 0, space);             // envp terminator
     for (int i = (int)ARRAY_LEN(envp) - 1; i >= 0; --i) {
-        sp = push_u64(sp, env_ptrs[i]);
+        sp = push_u64(sp, env_ptrs[i], space);
     }
 
-    sp = push_u64(sp, 0);             // argv terminator
+    sp = push_u64(sp, 0, space);             // argv terminator
     for (int i = (int)argc - 1; i >= 0; --i) {
-        sp = push_u64(sp, argv_ptrs[i]);
+        sp = push_u64(sp, argv_ptrs[i], space);
     }
 
-    sp = push_u64(sp, argc);
+    sp = push_u64(sp, argc, space);
 
     return sp;
 }
 
-static int load_elf64_exec(const uint8_t* image, size_t image_size, struct user_exec_info* exec) {
+static int load_elf64_exec(const uint8_t* image, size_t image_size, struct user_exec_info* exec, struct vm_space* space) {
     if (image_size < sizeof(struct elf64_ehdr)) {
         return -1;
     }
@@ -193,15 +194,17 @@ static int load_elf64_exec(const uint8_t* image, size_t image_size, struct user_
         if (ph[i].p_offset + ph[i].p_filesz > image_size) {
             return -1;
         }
-        if (ph[i].p_vaddr + ph[i].p_memsz >= USER_LIMIT) {
+        if (ph[i].p_vaddr + ph[i].p_memsz >= VM_USER_ELF_LIMIT) {
             return -1;
         }
 
-        uint8_t* dest = (uint8_t*)(uintptr_t)ph[i].p_vaddr;
         const uint8_t* src = image + ph[i].p_offset;
-
-        memset(dest, 0, (size_t)ph[i].p_memsz);
-        memcpy(dest, src, (size_t)ph[i].p_filesz);
+        if (vm_space_map_zero(space, ph[i].p_vaddr, (size_t)ph[i].p_memsz) != 0) {
+            return -1;
+        }
+        if (vm_space_write(space, ph[i].p_vaddr, src, (size_t)ph[i].p_filesz) != 0) {
+            return -1;
+        }
 
         if (eh->e_phoff >= ph[i].p_offset && eh->e_phoff + (uint64_t)sizeof(struct elf64_phdr) <= ph[i].p_offset + ph[i].p_filesz) {
             phdr_vaddr = ph[i].p_vaddr + (eh->e_phoff - ph[i].p_offset);
@@ -269,16 +272,25 @@ static int userland_run_program(const char* path, const char* const* argv, size_
         return -1;
     }
 
+    struct process* current = process_current();
+    if (current == NULL) {
+        kfree(image);
+        return -1;
+    }
+
+    vm_space_reset_user(&current->vm);
+
     struct user_exec_info exec;
-    if (load_elf64_exec(image, program.size, &exec) != 0) {
+    if (load_elf64_exec(image, program.size, &exec, &current->vm) != 0) {
         kfree(image);
         console_write(load_failed_message);
         return -1;
     }
     kfree(image);
 
-    uint64_t user_stack = build_user_stack(&exec, path, argv, argc);
+    uint64_t user_stack = build_user_stack(&exec, path, argv, argc, &current->vm);
     console_write(launch_message);
+    vm_space_activate(&current->vm);
     enter_user_mode(exec.entry, user_stack);
     return 0;
 }
@@ -287,9 +299,9 @@ int userland_run_default_shell(void) {
     static const char* const bash_argv[] = {"bash", "-i"};
     static const char* const busybox_argv[] = {"busybox", "sh", "-i"};
 
-    if (userland_run_program("/bin/bash", bash_argv, ARRAY_LEN(bash_argv),
-                             "Launching /bin/bash -i\n",
-                             "/bin/bash not found in initramfs\n",
+    if (userland_run_program("/usr/bin/bash", bash_argv, ARRAY_LEN(bash_argv),
+                             "Launching /usr/bin/bash -i\n",
+                             "/usr/bin/bash not found\n",
                              "bash ELF load failed (need static non-PIE ELF64)\n") == 0) {
         return 0;
     }

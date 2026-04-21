@@ -251,6 +251,15 @@ void* kmalloc_aligned(size_t size, size_t alignment) {
     return (void*)aligned;
 }
 
+void kfree_aligned(void* ptr) {
+    if (ptr == NULL) {
+        return;
+    }
+
+    void* raw = ((void**)ptr)[-1];
+    kfree(raw);
+}
+
 bool kmalloc_owns(const void* ptr) {
     if (ptr == NULL) {
         return false;

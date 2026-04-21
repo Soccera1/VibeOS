@@ -95,11 +95,11 @@ $(USER_FILE_MAGIC): $(USER_FILE)
 $(USER_NANO): $(NCURSES_BUILD)/lib/libncursesw.a | $(BUILD_DIR)
 	./tools/build_nano.sh $@ "$(NANO_SRC)"
 
-$(INITRAMFS): tools/make_initramfs.sh $(USER_BUSYBOX) $(USER_BASH) $(USER_HELP)
-	./tools/make_initramfs.sh $@ $(USER_BUSYBOX) $(USER_BASH) $(USER_SL) $(USER_HELP) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO)
+$(INITRAMFS): tools/make_initramfs.sh $(USER_BUSYBOX) $(USER_HELP)
+	./tools/make_initramfs.sh $@ $(USER_BUSYBOX) $(USER_HELP)
 
-$(USR_EXT2): tools/make_usr_ext2.sh $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO)
-	./tools/make_usr_ext2.sh $@ $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO)
+$(USR_EXT2): tools/make_usr_ext2.sh $(USER_BASH) $(USER_HELP) $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO)
+	./tools/make_usr_ext2.sh $@ $(USER_BASH) $(USER_HELP) $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO)
 
 iso: check-toolchain $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT2)
 	./tools/make_iso.sh $(ISO_IMAGE) $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT2)
