@@ -72,8 +72,8 @@ static uint64_t push_auxv(uint64_t sp, uint64_t type, uint64_t value) {
     return sp;
 }
 
-static uint64_t build_user_stack(const struct user_exec_info* exec) {
-    const char* argv[] = {"busybox", "sh", "-i"};
+static uint64_t build_user_stack(const struct user_exec_info* exec, const char* execfn,
+                                 const char* const* argv, size_t argc) {
     const char* envp[] = {
         "TERM=linux",
         "HOME=/",
@@ -81,10 +81,9 @@ static uint64_t build_user_stack(const struct user_exec_info* exec) {
         "SH_STANDALONE=1",
         "GLIBC_TUNABLES=glibc.pthread.rseq=0",
     };
-    const char* execfn = "/bin/busybox";
     const char* platform = "x86_64";
 
-    uint64_t argv_ptrs[ARRAY_LEN(argv)];
+    uint64_t argv_ptrs[8];
     uint64_t env_ptrs[ARRAY_LEN(envp)];
 
     uint64_t sp = USER_STACK_TOP;
@@ -110,7 +109,11 @@ static uint64_t build_user_stack(const struct user_exec_info* exec) {
         env_ptrs[i] = sp;
     }
 
-    for (int i = (int)ARRAY_LEN(argv) - 1; i >= 0; --i) {
+    if (argc > ARRAY_LEN(argv_ptrs)) {
+        argc = ARRAY_LEN(argv_ptrs);
+    }
+
+    for (int i = (int)argc - 1; i >= 0; --i) {
         size_t len = strlen(argv[i]) + 1u;
         sp = push_bytes(sp, argv[i], len);
         argv_ptrs[i] = sp;
@@ -146,11 +149,11 @@ static uint64_t build_user_stack(const struct user_exec_info* exec) {
     }
 
     sp = push_u64(sp, 0);             // argv terminator
-    for (int i = (int)ARRAY_LEN(argv) - 1; i >= 0; --i) {
+    for (int i = (int)argc - 1; i >= 0; --i) {
         sp = push_u64(sp, argv_ptrs[i]);
     }
 
-    sp = push_u64(sp, ARRAY_LEN(argv));
+    sp = push_u64(sp, argc);
 
     return sp;
 }
@@ -227,26 +230,57 @@ static int load_elf64_exec(const uint8_t* image, size_t image_size, struct user_
     return 0;
 }
 
+static int userland_run_program(const char* path, const char* const* argv, size_t argc,
+                                const char* launch_message, const char* missing_message,
+                                const char* load_failed_message);
+
 int userland_run_busybox(void) {
+    static const char* const busybox_argv[] = {"busybox", "sh", "-i"};
+    return userland_run_program("/bin/busybox", busybox_argv, ARRAY_LEN(busybox_argv),
+                                "Launching /bin/busybox sh -i\n",
+                                "/bin/busybox not found in initramfs\n",
+                                "busybox ELF load failed (need static non-PIE ELF64)\n");
+}
+
+static int userland_run_program(const char* path, const char* const* argv, size_t argc,
+                                const char* launch_message, const char* missing_message,
+                                const char* load_failed_message) {
     g_user_image_start = 0;
     g_user_image_end = 0;
 
-    struct initramfs_entry busybox;
-    if (initramfs_find("/bin/busybox", &busybox) != 0) {
-        console_write("/bin/busybox not found in initramfs\n");
+    struct initramfs_entry program;
+    if (initramfs_find(path, &program) != 0) {
+        console_write(missing_message);
         return -1;
     }
 
     struct user_exec_info exec;
-    if (load_elf64_exec(busybox.data, busybox.size, &exec) != 0) {
-        console_write("busybox ELF load failed (need static non-PIE ELF64)\n");
+    if (load_elf64_exec(program.data, program.size, &exec) != 0) {
+        console_write(load_failed_message);
         return -1;
     }
 
-    uint64_t user_stack = build_user_stack(&exec);
-    console_write("Launching /bin/busybox sh -i\n");
+    uint64_t user_stack = build_user_stack(&exec, path, argv, argc);
+    console_write(launch_message);
     enter_user_mode(exec.entry, user_stack);
     return 0;
+}
+
+int userland_run_default_shell(void) {
+    static const char* const bash_argv[] = {"bash", "-i"};
+    static const char* const busybox_argv[] = {"busybox", "sh", "-i"};
+
+    if (userland_run_program("/bin/bash", bash_argv, ARRAY_LEN(bash_argv),
+                             "Launching /bin/bash -i\n",
+                             "/bin/bash not found in initramfs\n",
+                             "bash ELF load failed (need static non-PIE ELF64)\n") == 0) {
+        return 0;
+    }
+
+    return userland_run_program("/bin/busybox", busybox_argv, ARRAY_LEN(busybox_argv),
+                                "Falling back to /bin/busybox sh -i\n",
+                                "/bin/busybox not found in initramfs\n",
+                                "busybox ELF load failed (need static non-PIE ELF64)\n");
 }
 
 void userland_get_image_span(uint64_t* start_out, uint64_t* end_out) {

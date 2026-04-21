@@ -226,6 +226,25 @@ static void shell_cat(const char* path) {
     }
 }
 
+static void shell_help(void) {
+    console_write(
+        "VibeOS kernel fallback shell\n"
+        "\n"
+        "This shell is only available when the normal userspace shell did not start.\n"
+        "Use it to inspect the initramfs or retry BusyBox.\n"
+        "\n"
+        "Useful commands:\n"
+        "  ls /        list top-level initramfs entries\n"
+        "  ls /bin     see available programs\n"
+        "  cat /etc/motd  read a text file from the initramfs\n"
+        "  busybox     try launching /bin/busybox sh -i\n"
+        "  clear       clear the screen\n"
+        "\n"
+        "Notes:\n"
+        "  ls only accepts absolute paths.\n"
+        "  cat expects a full file path.\n");
+}
+
 static void kernel_shell(void) {
     char line[256];
     char cmd[64];
@@ -240,7 +259,7 @@ static void kernel_shell(void) {
             continue;
         }
         if (strcmp(cmd, "help") == 0) {
-            console_write("help, clear, ls [path], cat <path>, busybox\n");
+            shell_help();
             continue;
         }
         if (strcmp(cmd, "clear") == 0) {
@@ -303,7 +322,7 @@ void kernel_main(uint64_t mb2_info) {
     enable_user_xsave();
     syscall_init();
 
-    if (userland_run_busybox() != 0) {
+    if (userland_run_default_shell() != 0) {
         console_write("Falling back to kernel shell\n");
         kernel_shell();
     }

@@ -30,11 +30,16 @@ KERNEL_OBJS := $(patsubst %.asm,$(BUILD_DIR)/%.o,$(KERNEL_ASM)) \
 
 USER_BUSYBOX := $(BUILD_DIR)/userspace/busybox
 USER_BASH := $(BUILD_DIR)/userspace/bash
+USER_HELP := $(BUILD_DIR)/userspace/help
+USER_FILE := $(BUILD_DIR)/userspace/file
+USER_FILE_MAGIC := $(BUILD_DIR)/userspace/file-magic.mgc
 BASH_SRC := external/bash-src
 NCURSES_SRC := external/ncurses-src
 NCURSES_BUILD := $(NCURSES_SRC)/build-musl
 SL_SRC := external/sl-src
+FILE_SRC := external/file-src
 USER_SL := $(BUILD_DIR)/userspace/sl
+HELP_SRC := userspace/help.c
 
 .PHONY: all clean run iso disk check-toolchain
 
@@ -74,8 +79,17 @@ $(NCURSES_BUILD)/lib/libncursesw.a: | $(BUILD_DIR)
 $(USER_SL): $(NCURSES_BUILD)/lib/libncursesw.a | $(BUILD_DIR)
 	./tools/build_sl.sh $@ "$(SL_SRC)" "$(NCURSES_BUILD)"
 
-$(INITRAMFS): $(USER_BUSYBOX) $(USER_BASH) $(USER_SL)
-	./tools/make_initramfs.sh $@ $(USER_BUSYBOX) $(USER_BASH) $(USER_SL)
+$(USER_HELP): $(HELP_SRC) | $(BUILD_DIR)
+	./tools/build_help.sh $@ "$(HELP_SRC)"
+
+$(USER_FILE): | $(BUILD_DIR)
+	./tools/build_file.sh $@ "$(USER_FILE_MAGIC)" "$(FILE_SRC)"
+
+$(USER_FILE_MAGIC): $(USER_FILE)
+	@test -f "$@"
+
+$(INITRAMFS): tools/make_initramfs.sh $(USER_BUSYBOX) $(USER_BASH) $(USER_SL) $(USER_HELP) $(USER_FILE) $(USER_FILE_MAGIC)
+	./tools/make_initramfs.sh $@ $(USER_BUSYBOX) $(USER_BASH) $(USER_SL) $(USER_HELP) $(USER_FILE) $(USER_FILE_MAGIC)
 
 iso: check-toolchain $(KERNEL_BIN) $(INITRAMFS)
 	./tools/make_iso.sh $(ISO_IMAGE) $(KERNEL_BIN) $(INITRAMFS)
