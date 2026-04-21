@@ -15,6 +15,15 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 mkdir -p "$(dirname "$OUT_BIN")"
 
 BASH_BUILD="$(cd "$SRC_DIR" && pwd)/build-musl"
+BASH_BIN_SRC="$(cd "$SRC_DIR" && pwd)/bash"
+
+prepare_zig_cache() {
+  local abs_src
+  abs_src="$(cd "$SRC_DIR" && pwd)"
+  export ZIG_GLOBAL_CACHE_DIR="$abs_src/.zig-global-cache"
+  export ZIG_LOCAL_CACHE_DIR="$abs_src/.zig-local-cache"
+  mkdir -p "$ZIG_GLOBAL_CACHE_DIR" "$ZIG_LOCAL_CACHE_DIR"
+}
 
 prepare_zig_wrapper() {
   local abs_src
@@ -70,8 +79,12 @@ EOF
 
 build_bash() {
   mkdir -p "$BASH_BUILD"
+  prepare_zig_cache
+  local ncurses_lib="$REPO_ROOT/external/ncurses-src/build-musl/lib"
+  local ncurses_inc="$REPO_ROOT/external/ncurses-src/build-musl/include"
+  local ncurses_inc_w="$REPO_ROOT/external/ncurses-src/build-musl/include/ncursesw"
 
-  if [[ ! -f "$BASH_BUILD/config.log" ]]; then
+  if [[ ! -f "$SRC_DIR/Makefile" || ! -f "$SRC_DIR/config.h" ]] || grep -q '^#define USING_BASH_MALLOC 1' "$SRC_DIR/config.h"; then
     CC_WRAPPER="$BASH_BUILD/zigcc-wrapper.sh"
     cat > "$CC_WRAPPER" <<'WRAPPER_EOF'
 #!/usr/bin/env bash
@@ -106,16 +119,14 @@ exec zig cc -target x86_64-linux-musl "${filtered[@]}"
 WRAPPER_EOF
     chmod +x "$CC_WRAPPER"
 
-    local ncurses_lib="$REPO_ROOT/external/ncurses-src/build-musl/lib"
-    local ncurses_inc="$REPO_ROOT/external/ncurses-src/build-musl/include"
-    local ncurses_inc_w="$REPO_ROOT/external/ncurses-src/build-musl/include/ncursesw"
     local extra_cflags="-mno-avx -mno-avx2 -mno-avx512f -fno-tree-vectorize -I$ncurses_inc -I$ncurses_inc_w -UHAVE_TERMCAP_H -DHAVE_NCURSES_TERMCAP_H=1"
 
     pushd "$SRC_DIR" >/dev/null
-    rm -rf Makefile config.h builtins/Makefile lib/readline/Makefile lib/glob/Makefile lib/intl/Makefile lib/malloc/Makefile lib/sh/Makefile lib/termcap/Makefile lib/tilde/Makefile
+    rm -rf Makefile config.h bash builtins/Makefile lib/readline/Makefile lib/glob/Makefile lib/intl/Makefile lib/malloc/Makefile lib/sh/Makefile lib/termcap/Makefile lib/tilde/Makefile
     ./configure \
       --prefix="$BASH_BUILD" \
       --enable-static-link \
+      --without-bash-malloc \
       --with-curses \
       --host=x86_64-linux-musl \
       CC="$CC_WRAPPER" \
@@ -131,27 +142,18 @@ WRAPPER_EOF
         exit 1
       }
     
-    sed -i "s|READLINE_LIB = -lreadline|READLINE_LIB = $SRC_DIR/lib/readline/libreadline.a|" Makefile
-    sed -i "s|HISTORY_LIB = -lhistory|HISTORY_LIB = $SRC_DIR/lib/readline/libhistory.a|" Makefile
-    sed -i "s|BUILTINS_LIB = -lbuiltins|BUILTINS_LIB = $SRC_DIR/builtins/libbuiltins.a|" Makefile
-    
     popd >/dev/null
   fi
 
-  if [[ ! -f "$BASH_BUILD/bash" ]]; then
-    local abs_src
-    abs_src="$(cd "$SRC_DIR" && pwd)"
+  pushd "$SRC_DIR" >/dev/null
+  sed -i 's|^READLINE_LIB = .*|READLINE_LIB = -lreadline|' Makefile
+  sed -i 's|^HISTORY_LIB = .*|HISTORY_LIB = -lhistory|' Makefile
+  sed -i 's|^BUILTINS_LIB = .*|BUILTINS_LIB = -lbuiltins|' Makefile
+  sed -i "s|^TERMCAP_LIB = .*|TERMCAP_LIB = -L$ncurses_lib -lncursesw -L$ncurses_lib -ltinfow|" Makefile
+  popd >/dev/null
 
-    export ZIG_GLOBAL_CACHE_DIR="$abs_src/.zig-global-cache"
-    export ZIG_LOCAL_CACHE_DIR="$abs_src/.zig-local-cache"
-    rm -rf "$ZIG_GLOBAL_CACHE_DIR" "$ZIG_LOCAL_CACHE_DIR"
-    mkdir -p "$ZIG_GLOBAL_CACHE_DIR" "$ZIG_LOCAL_CACHE_DIR"
-
+  if [[ ! -f "$BASH_BIN_SRC" ]]; then
     local cc_cmd="$BASH_BUILD/zigcc-wrapper.sh"
-    local ncurses_lib="$REPO_ROOT/external/ncurses-src/build-musl/lib"
-    local ncurses_inc="$REPO_ROOT/external/ncurses-src/build-musl/include"
-    local ncurses_inc_w="$REPO_ROOT/external/ncurses-src/build-musl/include/ncursesw"
-    local readline_lib="$SRC_DIR/lib/readline/libreadline.a"
 
     pushd "$SRC_DIR" >/dev/null
     make -j1 \
@@ -160,8 +162,6 @@ WRAPPER_EOF
       RANLIB="zig ranlib" \
       CFLAGS="-Os -mno-avx -mno-avx2 -mno-avx512f -fno-tree-vectorize -I$ncurses_inc -I$ncurses_inc_w -UHAVE_TERMCAP_H -DHAVE_NCURSES_TERMCAP_H=1" \
       LDFLAGS="-static" \
-      LIBS="-L$ncurses_lib -lncursesw -L$ncurses_lib -ltinfow" \
-      READLINE_LIB="$readline_lib" \
       2>&1 | tee "$BASH_BUILD/build.log" || {
         echo "Make failed. Check $BASH_BUILD/build.log" >&2
         exit 1
@@ -169,7 +169,7 @@ WRAPPER_EOF
     popd >/dev/null
   fi
 
-  cp "$BASH_BUILD/bash" "$OUT_BIN"
+  cp "$BASH_BIN_SRC" "$OUT_BIN"
   chmod +x "$OUT_BIN"
   echo "Built bash: $OUT_BIN"
 }

@@ -6,6 +6,8 @@
 #include "string.h"
 
 #define MAX_INITRAMFS_ENTRIES 1024
+#define INITRAMFS_COPY_BASE 0x12000000ull
+#define INITRAMFS_COPY_MAX  (16u * 1024u * 1024u)
 
 struct cpio_newc {
     char c_magic[6];
@@ -26,6 +28,7 @@ struct cpio_newc {
 
 static struct initramfs_entry g_entries[MAX_INITRAMFS_ENTRIES];
 static size_t g_entry_count;
+static uint8_t* g_initramfs_copy;
 
 static uint32_t parse_hex(const char* s, size_t n) {
     uint32_t v = 0;
@@ -80,9 +83,16 @@ static void normalize_path(const char* in, char* out, size_t out_len) {
 
 void initramfs_init(const uint8_t* start, size_t size) {
     g_entry_count = 0;
+    g_initramfs_copy = 0;
 
     if (start == 0 || size < sizeof(struct cpio_newc)) {
         return;
+    }
+
+    if (size <= INITRAMFS_COPY_MAX) {
+        g_initramfs_copy = (uint8_t*)(uintptr_t)INITRAMFS_COPY_BASE;
+        memcpy(g_initramfs_copy, start, size);
+        start = g_initramfs_copy;
     }
 
     const uint8_t* ptr = start;

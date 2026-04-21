@@ -71,9 +71,9 @@
 #define MAX_FDS 64
 #define MAX_CHILDREN 256
 #define USER_STACK_TOP 0x08000000ull
-#define USER_BRK_BASE 0x14000000ull
-#define USER_MMAP_BASE 0x18000000ull
-#define USER_MMAP_LIMIT 0x1F000000ull
+#define USER_BRK_BASE 0x09000000ull
+#define USER_MMAP_BASE 0x0C000000ull
+#define USER_MMAP_LIMIT 0x0F000000ull
 
 #define MAP_FIXED 0x10u
 #define MAP_FIXED_NOREPLACE 0x100000u
@@ -263,6 +263,13 @@ struct linux_pselect_sigmask {
 struct linux_rlimit {
     uint64_t rlim_cur;
     uint64_t rlim_max;
+};
+
+struct linux_sigaction {
+    void* handler;
+    uint64_t flags;
+    void* restorer;
+    uint64_t mask;
 };
 
 struct linux_pollfd {
@@ -760,7 +767,10 @@ static int save_live_process(struct process* proc, struct syscall_frame* frame) 
 
     uint64_t* raw = (uint64_t*)(void*)frame;
     uint64_t user_rsp = raw[IRET_SLOT_RSP];
-    proc->snap.stack_base = user_rsp & ~0x0Full;
+    uint64_t stack_base = user_rsp & ~0x0Full;
+    if (proc->snap.stack_base == 0 || stack_base < proc->snap.stack_base) {
+        proc->snap.stack_base = stack_base;
+    }
     proc->snap.stack_len = 0;
     if (proc->snap.stack_base < USER_STACK_TOP) {
         proc->snap.stack_len = (size_t)(USER_STACK_TOP - proc->snap.stack_base);
@@ -3660,7 +3670,17 @@ static int sys_execve(struct syscall_frame* frame, const char* path_user, uint64
 
     g_brk_current = USER_BRK_BASE;
     g_mmap_next = USER_MMAP_BASE;
+    g_tid_address = 0;
+    write_fs_base_current(0);
     userland_set_image_span(image_start, image_end);
+
+    struct process* current = current_process();
+    if (current != NULL) {
+        current->tid_address = 0;
+        current->fs_base = 0;
+        current->snap.stack_base = 0;
+        current->snap.stack_len = 0;
+    }
 
     uint64_t user_stack = 0;
     int sr = build_exec_stack(abs_path, g_exec_argv_scratch, argc, g_exec_env_scratch, envc, entry, phdr, phent, phnum, &user_stack);
@@ -3721,8 +3741,11 @@ static int sys_wait4(int pid, int* status, int options, struct syscall_frame* fr
     return err(EAGAIN);
 }
 
-static int sys_rt_sigaction(int sig, const void* act, void* oldact) {
+static int sys_rt_sigaction(int sig, const void* act, void* oldact, size_t sigsetsize) {
     if (sig < 1 || sig >= (int)NSIG) {
+        return err(EINVAL);
+    }
+    if (sigsetsize != sizeof(uint64_t)) {
         return err(EINVAL);
     }
     if (act == NULL && oldact == NULL) {
@@ -3732,23 +3755,28 @@ static int sys_rt_sigaction(int sig, const void* act, void* oldact) {
     struct sigaction_data* current = &g_sig_actions[sig];
 
     if (oldact != NULL) {
-        struct sigaction_data* old = (struct sigaction_data*)oldact;
+        struct linux_sigaction* old = (struct linux_sigaction*)oldact;
         old->handler = current->handler;
         old->flags = current->flags;
+        old->restorer = current->restorer;
         old->mask = current->mask;
     }
 
     if (act != NULL) {
-        const struct sigaction_data* newact = (const struct sigaction_data*)act;
+        const struct linux_sigaction* newact = (const struct linux_sigaction*)act;
         current->handler = newact->handler;
-        current->flags = newact->flags & (SA_NOCLDSTOP | SA_NOCLDWAIT | SA_NODEFER | SA_RESETHAND | SA_RESTART);
+        current->flags = newact->flags;
+        current->restorer = newact->restorer;
         current->mask = newact->mask;
     }
 
     return 0;
 }
 
-static int sys_rt_sigprocmask(int how, const uint64_t* set, uint64_t* oldset) {
+static int sys_rt_sigprocmask(int how, const uint64_t* set, uint64_t* oldset, size_t sigsetsize) {
+    if (sigsetsize != sizeof(uint64_t)) {
+        return err(EINVAL);
+    }
     if (oldset != NULL) {
         *oldset = g_sig_mask;
     }
@@ -4225,9 +4253,9 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
         case 12:
             return (uint64_t)sys_brk(a0);
         case 13:
-            return (uint64_t)sys_rt_sigaction((int)a0, (const void*)(uintptr_t)a1, (void*)(uintptr_t)a2);
+            return (uint64_t)sys_rt_sigaction((int)a0, (const void*)(uintptr_t)a1, (void*)(uintptr_t)a2, (size_t)a3);
         case 14:
-            return (uint64_t)sys_rt_sigprocmask((int)a0, (const uint64_t*)(uintptr_t)a1, (uint64_t*)(uintptr_t)a2);
+            return (uint64_t)sys_rt_sigprocmask((int)a0, (const uint64_t*)(uintptr_t)a1, (uint64_t*)(uintptr_t)a2, (size_t)a3);
         case 16:
             return (uint64_t)sys_ioctl((int)a0, a1, (void*)(uintptr_t)a2);
         case 17:

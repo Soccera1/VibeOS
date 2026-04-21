@@ -89,6 +89,7 @@ struct process_wait_state {
 struct sigaction_data {
     void* handler;
     uint64_t flags;
+    void* restorer;
     uint64_t mask;
 };
 
