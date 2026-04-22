@@ -98,6 +98,7 @@
 #define EAGAIN 11
 #define EBADF 9
 #define EFAULT 14
+#define ENOEXEC 8
 #define EINVAL 22
 #define ENODEV 19
 #define ENOTTY 25
@@ -107,6 +108,7 @@
 #define ESPIPE 29
 #define ENOMEM 12
 #define EEXIST 17
+#define ELOOP 40
 #define EROFS 30
 #define ESRCH 3
 #define EPERM 1
@@ -222,10 +224,16 @@
  */
 #define EXEC_STR_MAX 4096
 #define EXEC_MAX_SYMLINKS 8
+#define EXEC_MAX_SHEBANGS 8
 
 #define ELF_MAGIC 0x464C457Fu
 #define ET_EXEC 2u
+#define ET_DYN 3u
 #define PT_LOAD 1u
+#define PT_INTERP 3u
+#define EXEC_ET_DYN_BASE 0x01000000ull
+#define EXEC_INTERP_BASE 0x03000000ull
+#define EXEC_INTERP_GAP 0x00100000ull
 
 struct linux_iovec {
     uint64_t base;
@@ -443,6 +451,18 @@ struct elf64_phdr {
     uint64_t p_align;
 } __attribute__((packed));
 
+struct exec_image_info {
+    uint64_t entry;
+    uint64_t phdr;
+    uint64_t phent;
+    uint64_t phnum;
+    uint64_t image_start;
+    uint64_t image_end;
+    uint64_t load_bias;
+    bool has_interp;
+    char interp_path[FS_MAX_PATH];
+};
+
 enum fd_kind {
     FD_FREE = 0,
     FD_TTY,
@@ -528,7 +548,7 @@ static int try_complete_select(struct process* proc);
 static int try_complete_nanosleep(struct process* proc);
 static uint64_t schedule_away(struct syscall_frame* frame);
 static int signal_process_group(int pgid, int sig);
-static int map_exec_segment(struct process* proc, uint64_t vaddr, size_t memsz, const void* src, size_t filesz);
+static int map_exec_segment(struct vm_space* space, uint64_t vaddr, size_t memsz, const void* src, size_t filesz);
 static void close_cloexec_fds(void);
 static int sys_close(int fd);
 
@@ -3831,21 +3851,21 @@ static int sys_arch_prctl(uint64_t code, uint64_t addr) {
     return err(EINVAL);
 }
 
-static uint64_t exec_stack_push_bytes(uint64_t sp, const void* data, size_t len, struct process* proc) {
+static uint64_t exec_stack_push_bytes(uint64_t sp, const void* data, size_t len, struct vm_space* space) {
     sp -= len;
-    (void)vm_space_write(&proc->vm, sp, data, len);
+    (void)vm_space_write(space, sp, data, len);
     return sp;
 }
 
-static uint64_t exec_stack_push_u64(uint64_t sp, uint64_t value, struct process* proc) {
+static uint64_t exec_stack_push_u64(uint64_t sp, uint64_t value, struct vm_space* space) {
     sp -= sizeof(uint64_t);
-    (void)vm_space_write(&proc->vm, sp, &value, sizeof(value));
+    (void)vm_space_write(space, sp, &value, sizeof(value));
     return sp;
 }
 
-static uint64_t exec_stack_push_auxv(uint64_t sp, uint64_t type, uint64_t value, struct process* proc) {
-    sp = exec_stack_push_u64(sp, value, proc);
-    sp = exec_stack_push_u64(sp, type, proc);
+static uint64_t exec_stack_push_auxv(uint64_t sp, uint64_t type, uint64_t value, struct vm_space* space) {
+    sp = exec_stack_push_u64(sp, value, space);
+    sp = exec_stack_push_u64(sp, type, space);
     return sp;
 }
 
@@ -3879,28 +3899,179 @@ static int copy_user_str_array(uint64_t user_ptr, char out[][EXEC_STR_MAX], size
     return err(ENOMEM);
 }
 
-static int map_exec_segment(struct process* proc, uint64_t vaddr, size_t memsz, const void* src, size_t filesz) {
-    if (proc == NULL) {
+static bool shebang_is_space(char c) {
+    return c == ' ' || c == '\t';
+}
+
+static int read_exec_file(const char* path, struct fs_entry* entry_out, uint8_t** image_out, size_t* image_size_out) {
+    if (path == NULL || entry_out == NULL || image_out == NULL || image_size_out == NULL) {
         return err(EINVAL);
     }
-    if (vm_space_map_zero(&proc->vm, vaddr, memsz) != 0) {
+
+    struct fs_entry entry;
+    if (fs_lookup(path, &entry) != 0 || (entry.mode & S_IFMT) != S_IFREG) {
+        return err(ENOENT);
+    }
+
+    uint8_t* image = kmalloc(entry.size);
+    if (image == NULL) {
         return err(ENOMEM);
     }
-    if (filesz != 0 && vm_space_write(&proc->vm, vaddr, src, filesz) != 0) {
+
+    int read_result = fs_read(&entry, 0, image, entry.size);
+    if (read_result < 0 || (size_t)read_result != entry.size) {
+        kfree(image);
+        return (read_result < 0) ? read_result : err(EINVAL);
+    }
+
+    *entry_out = entry;
+    *image_out = image;
+    *image_size_out = entry.size;
+    return 0;
+}
+
+/*
+ * Return 1 when a shebang was parsed, 0 for a normal binary payload,
+ * or a negative errno when the shebang line itself is malformed.
+ */
+static int parse_shebang_line(const uint8_t* image, size_t image_size, char* interpreter, size_t interpreter_len,
+                              char* optional_arg, size_t optional_arg_len, bool* has_optional_arg) {
+    if (interpreter == NULL || interpreter_len == 0 || optional_arg == NULL || optional_arg_len == 0 || has_optional_arg == NULL) {
+        return err(EINVAL);
+    }
+
+    interpreter[0] = '\0';
+    optional_arg[0] = '\0';
+    *has_optional_arg = false;
+
+    if (image == NULL || image_size < 2 || image[0] != '#' || image[1] != '!') {
+        return 0;
+    }
+
+    size_t pos = 2;
+    while (pos < image_size && shebang_is_space((char)image[pos])) {
+        ++pos;
+    }
+    if (pos >= image_size || image[pos] == '\n' || image[pos] == '\r') {
+        return err(ENOEXEC);
+    }
+
+    size_t interp_start = pos;
+    while (pos < image_size && image[pos] != '\n' && image[pos] != '\r' && !shebang_is_space((char)image[pos])) {
+        ++pos;
+    }
+    if (pos == interp_start) {
+        return err(ENOEXEC);
+    }
+
+    size_t interp_len = pos - interp_start;
+    if (interp_len >= interpreter_len) {
+        return err(ENOMEM);
+    }
+    memcpy(interpreter, image + interp_start, interp_len);
+    interpreter[interp_len] = '\0';
+
+    while (pos < image_size && shebang_is_space((char)image[pos])) {
+        ++pos;
+    }
+
+    size_t arg_start = pos;
+    while (pos < image_size && image[pos] != '\n' && image[pos] != '\r') {
+        ++pos;
+    }
+    while (pos > arg_start && shebang_is_space((char)image[pos - 1])) {
+        --pos;
+    }
+
+    if (pos > arg_start) {
+        size_t arg_len = pos - arg_start;
+        if (arg_len >= optional_arg_len) {
+            return err(ENOMEM);
+        }
+        memcpy(optional_arg, image + arg_start, arg_len);
+        optional_arg[arg_len] = '\0';
+        *has_optional_arg = true;
+    }
+
+    return 1;
+}
+
+static int rewrite_exec_argv_for_shebang(const char* interpreter_path, const char* optional_arg, bool has_optional_arg,
+                                         const char* script_path, size_t* argc_inout) {
+    if (interpreter_path == NULL || script_path == NULL || argc_inout == NULL) {
+        return err(EINVAL);
+    }
+
+    size_t argc = *argc_inout;
+    size_t extra = has_optional_arg ? 2u : 1u;
+    if (argc + extra > EXEC_MAX_ARGS) {
+        return err(ENOMEM);
+    }
+
+    size_t tail_src = (argc > 0) ? 1u : 0u;
+    size_t tail_count = (argc > 0) ? (argc - 1u) : 0u;
+    size_t tail_dst = has_optional_arg ? 3u : 2u;
+    for (size_t i = tail_count; i > 0; --i) {
+        memcpy(g_exec_argv_scratch[tail_dst + i - 1u], g_exec_argv_scratch[tail_src + i - 1u], EXEC_STR_MAX);
+    }
+
+    strncpy(g_exec_argv_scratch[0], interpreter_path, EXEC_STR_MAX);
+    g_exec_argv_scratch[0][EXEC_STR_MAX - 1] = '\0';
+    if (has_optional_arg) {
+        strncpy(g_exec_argv_scratch[1], optional_arg, EXEC_STR_MAX);
+        g_exec_argv_scratch[1][EXEC_STR_MAX - 1] = '\0';
+    }
+
+    size_t script_index = has_optional_arg ? 2u : 1u;
+    strncpy(g_exec_argv_scratch[script_index], script_path, EXEC_STR_MAX);
+    g_exec_argv_scratch[script_index][EXEC_STR_MAX - 1] = '\0';
+
+    *argc_inout = argc + extra;
+    return 0;
+}
+
+static uint64_t page_align_down(uint64_t value) {
+    return value & VM_PAGE_MASK;
+}
+
+static uint64_t page_align_up(uint64_t value) {
+    return (value + VM_PAGE_SIZE - 1ull) & VM_PAGE_MASK;
+}
+
+static uint64_t choose_interp_base(uint64_t main_image_end) {
+    uint64_t base = page_align_up(main_image_end + EXEC_INTERP_GAP);
+    if (base < EXEC_INTERP_BASE) {
+        base = EXEC_INTERP_BASE;
+    }
+    return base;
+}
+
+static int map_exec_segment(struct vm_space* space, uint64_t vaddr, size_t memsz, const void* src, size_t filesz) {
+    if (space == NULL) {
+        return err(EINVAL);
+    }
+    if (vm_space_map_zero(space, vaddr, memsz) != 0) {
+        return err(ENOMEM);
+    }
+    if (filesz != 0 && vm_space_write(space, vaddr, src, filesz) != 0) {
         return err(ENOMEM);
     }
     return 0;
 }
 
-static int load_exec_image(struct process* proc, const uint8_t* image, size_t image_size, uint64_t* entry_out, uint64_t* phdr_out,
-                           uint64_t* phent_out,
-                           uint64_t* phnum_out, uint64_t* image_start_out, uint64_t* image_end_out) {
-    if (proc == NULL || image_size < sizeof(struct elf64_ehdr)) {
+static int load_exec_image(struct vm_space* space, const uint8_t* image, size_t image_size, uint64_t et_dyn_base,
+                           struct exec_image_info* out) {
+    if (space == NULL || out == NULL || image_size < sizeof(struct elf64_ehdr)) {
         return err(EINVAL);
     }
 
+    memset(out, 0, sizeof(*out));
+
     const struct elf64_ehdr* eh = (const struct elf64_ehdr*)image;
-    if (*(const uint32_t*)&eh->e_ident[0] != ELF_MAGIC || eh->e_type != ET_EXEC || eh->e_phentsize != sizeof(struct elf64_phdr)) {
+    if (*(const uint32_t*)&eh->e_ident[0] != ELF_MAGIC || eh->e_phentsize != sizeof(struct elf64_phdr)) {
+        return err(EINVAL);
+    }
+    if (eh->e_type != ET_EXEC && eh->e_type != ET_DYN) {
         return err(EINVAL);
     }
     if (eh->e_phoff + (uint64_t)eh->e_phnum * sizeof(struct elf64_phdr) > image_size) {
@@ -3908,9 +4079,65 @@ static int load_exec_image(struct process* proc, const uint8_t* image, size_t im
     }
 
     const struct elf64_phdr* ph = (const struct elf64_phdr*)(image + eh->e_phoff);
+    uint64_t phdr_table_size = (uint64_t)eh->e_phnum * eh->e_phentsize;
     uint64_t phdr_vaddr = 0;
     uint64_t image_start = UINT64_MAX;
     uint64_t image_end = 0;
+    uint64_t min_load_vaddr = UINT64_MAX;
+    uint64_t max_load_vaddr = 0;
+
+    for (uint16_t i = 0; i < eh->e_phnum; ++i) {
+        if (ph[i].p_type == PT_INTERP) {
+            if (out->has_interp || ph[i].p_filesz == 0 || ph[i].p_filesz > FS_MAX_PATH ||
+                ph[i].p_offset + ph[i].p_filesz > image_size) {
+                return err(EINVAL);
+            }
+
+            const char* src = (const char*)(image + ph[i].p_offset);
+            bool terminated = false;
+            for (size_t j = 0; j < (size_t)ph[i].p_filesz; ++j) {
+                out->interp_path[j] = src[j];
+                if (src[j] == '\0') {
+                    terminated = true;
+                    break;
+                }
+            }
+            if (!terminated) {
+                return err(EINVAL);
+            }
+            out->has_interp = true;
+            continue;
+        }
+
+        if (ph[i].p_type != PT_LOAD) {
+            continue;
+        }
+        if (ph[i].p_offset + ph[i].p_filesz > image_size) {
+            return err(EINVAL);
+        }
+
+        uint64_t seg_start = page_align_down(ph[i].p_vaddr);
+        uint64_t seg_end = page_align_up(ph[i].p_vaddr + ph[i].p_memsz);
+        if (seg_start < min_load_vaddr) {
+            min_load_vaddr = seg_start;
+        }
+        if (seg_end > max_load_vaddr) {
+            max_load_vaddr = seg_end;
+        }
+    }
+
+    if (min_load_vaddr == UINT64_MAX || max_load_vaddr <= min_load_vaddr) {
+        return err(EINVAL);
+    }
+
+    uint64_t load_bias = 0;
+    if (eh->e_type == ET_DYN) {
+        uint64_t load_base = (et_dyn_base != 0) ? page_align_down(et_dyn_base) : EXEC_ET_DYN_BASE;
+        if (load_base < min_load_vaddr) {
+            return err(EINVAL);
+        }
+        load_bias = load_base - min_load_vaddr;
+    }
 
     for (uint16_t i = 0; i < eh->e_phnum; ++i) {
         if (ph[i].p_type != PT_LOAD) {
@@ -3919,24 +4146,25 @@ static int load_exec_image(struct process* proc, const uint8_t* image, size_t im
         if (ph[i].p_offset + ph[i].p_filesz > image_size) {
             return err(EINVAL);
         }
-        if (ph[i].p_vaddr + ph[i].p_memsz >= VM_USER_ELF_LIMIT) {
+        uint64_t seg_vaddr = ph[i].p_vaddr + load_bias;
+        if (seg_vaddr + ph[i].p_memsz >= VM_USER_ELF_LIMIT) {
             return err(ENOMEM);
         }
 
         const uint8_t* src = image + ph[i].p_offset;
-        int mr = map_exec_segment(proc, ph[i].p_vaddr, (size_t)ph[i].p_memsz, src, (size_t)ph[i].p_filesz);
+        int mr = map_exec_segment(space, seg_vaddr, (size_t)ph[i].p_memsz, src, (size_t)ph[i].p_filesz);
         if (mr != 0) {
             return mr;
         }
 
-        if (eh->e_phoff >= ph[i].p_offset && eh->e_phoff + (uint64_t)sizeof(struct elf64_phdr) <= ph[i].p_offset + ph[i].p_filesz) {
-            phdr_vaddr = ph[i].p_vaddr + (eh->e_phoff - ph[i].p_offset);
+        if (eh->e_phoff >= ph[i].p_offset && eh->e_phoff + phdr_table_size <= ph[i].p_offset + ph[i].p_filesz) {
+            phdr_vaddr = seg_vaddr + (eh->e_phoff - ph[i].p_offset);
         }
 
-        if (ph[i].p_vaddr < image_start) {
-            image_start = ph[i].p_vaddr;
+        if (seg_vaddr < image_start) {
+            image_start = seg_vaddr;
         }
-        uint64_t seg_end = ph[i].p_vaddr + ph[i].p_memsz;
+        uint64_t seg_end = seg_vaddr + ph[i].p_memsz;
         if (seg_end > image_end) {
             image_end = seg_end;
         }
@@ -3946,79 +4174,80 @@ static int load_exec_image(struct process* proc, const uint8_t* image, size_t im
         return err(EINVAL);
     }
 
-    *entry_out = eh->e_entry;
-    *phdr_out = phdr_vaddr;
-    *phent_out = eh->e_phentsize;
-    *phnum_out = eh->e_phnum;
-    *image_start_out = image_start & ~0xFFFull;
-    *image_end_out = (image_end + 0xFFFull) & ~0xFFFull;
+    out->entry = eh->e_entry + load_bias;
+    out->phdr = phdr_vaddr;
+    out->phent = eh->e_phentsize;
+    out->phnum = eh->e_phnum;
+    out->image_start = page_align_down(image_start);
+    out->image_end = page_align_up(image_end);
+    out->load_bias = load_bias;
     return 0;
 }
 
 static int build_exec_stack(const char* execfn, char argv[EXEC_MAX_ARGS][EXEC_STR_MAX], size_t argc,
-                            char envp[EXEC_MAX_ENVS][EXEC_STR_MAX], size_t envc, uint64_t entry, uint64_t phdr, uint64_t phent,
-                            uint64_t phnum, uint64_t* stack_out, struct process* proc) {
+                            char envp[EXEC_MAX_ENVS][EXEC_STR_MAX], size_t envc, uint64_t entry, uint64_t base, uint64_t phdr,
+                            uint64_t phent, uint64_t phnum, uint64_t* stack_out, struct vm_space* space) {
     const char* platform = "x86_64";
     uint8_t at_random[16] = {
         0x12, 0x6E, 0xA7, 0x39, 0x55, 0xC8, 0x03, 0xF1, 0x88, 0x22, 0x74, 0xB5, 0xE1, 0x9C, 0x41, 0x0D,
     };
 
-    if (proc == NULL || vm_space_map_zero(&proc->vm, VM_USER_STACK_BASE, VM_USER_STACK_SIZE) != 0) {
+    if (space == NULL || vm_space_map_zero(space, VM_USER_STACK_BASE, VM_USER_STACK_SIZE) != 0) {
         return err(ENOMEM);
     }
 
     uint64_t sp = VM_USER_STACK_TOP;
-    sp = exec_stack_push_bytes(sp, execfn, strlen(execfn) + 1u, proc);
+    sp = exec_stack_push_bytes(sp, execfn, strlen(execfn) + 1u, space);
     uint64_t execfn_ptr = sp;
 
-    sp = exec_stack_push_bytes(sp, platform, strlen(platform) + 1u, proc);
+    sp = exec_stack_push_bytes(sp, platform, strlen(platform) + 1u, space);
     uint64_t platform_ptr = sp;
 
-    sp = exec_stack_push_bytes(sp, at_random, sizeof(at_random), proc);
+    sp = exec_stack_push_bytes(sp, at_random, sizeof(at_random), space);
     uint64_t at_random_ptr = sp;
 
     for (int i = (int)envc - 1; i >= 0; --i) {
-        sp = exec_stack_push_bytes(sp, envp[i], strlen(envp[i]) + 1u, proc);
+        sp = exec_stack_push_bytes(sp, envp[i], strlen(envp[i]) + 1u, space);
         g_exec_env_ptrs[i] = sp;
     }
     for (int i = (int)argc - 1; i >= 0; --i) {
-        sp = exec_stack_push_bytes(sp, argv[i], strlen(argv[i]) + 1u, proc);
+        sp = exec_stack_push_bytes(sp, argv[i], strlen(argv[i]) + 1u, space);
         g_exec_argv_ptrs[i] = sp;
     }
 
     sp &= ~0x0Full;
-    sp = exec_stack_push_auxv(sp, 0, 0, proc);
-    sp = exec_stack_push_auxv(sp, 31, execfn_ptr, proc);
-    sp = exec_stack_push_auxv(sp, 51, 2048, proc);
-    sp = exec_stack_push_auxv(sp, 15, platform_ptr, proc);
-    sp = exec_stack_push_auxv(sp, 25, at_random_ptr, proc);
-    sp = exec_stack_push_auxv(sp, 16, 0, proc);
-    sp = exec_stack_push_auxv(sp, 26, 0, proc);
-    sp = exec_stack_push_auxv(sp, 33, 0, proc);
-    sp = exec_stack_push_auxv(sp, 23, 0, proc);
-    sp = exec_stack_push_auxv(sp, 17, 100, proc);
-    sp = exec_stack_push_auxv(sp, 8, 0, proc);
-    sp = exec_stack_push_auxv(sp, 7, 0, proc);
-    sp = exec_stack_push_auxv(sp, 14, 0, proc);
-    sp = exec_stack_push_auxv(sp, 13, 0, proc);
-    sp = exec_stack_push_auxv(sp, 12, 0, proc);
-    sp = exec_stack_push_auxv(sp, 11, 0, proc);
-    sp = exec_stack_push_auxv(sp, 9, entry, proc);
-    sp = exec_stack_push_auxv(sp, 6, 4096, proc);
-    sp = exec_stack_push_auxv(sp, 5, phnum, proc);
-    sp = exec_stack_push_auxv(sp, 4, phent, proc);
-    sp = exec_stack_push_auxv(sp, 3, phdr, proc);
+    sp = exec_stack_push_auxv(sp, 0, 0, space);
+    sp = exec_stack_push_auxv(sp, 31, execfn_ptr, space);
+    sp = exec_stack_push_auxv(sp, 51, 2048, space);
+    sp = exec_stack_push_auxv(sp, 15, platform_ptr, space);
+    sp = exec_stack_push_auxv(sp, 25, at_random_ptr, space);
+    sp = exec_stack_push_auxv(sp, 16, 0, space);
+    sp = exec_stack_push_auxv(sp, 26, 0, space);
+    sp = exec_stack_push_auxv(sp, 33, 0, space);
+    sp = exec_stack_push_auxv(sp, 23, 0, space);
+    sp = exec_stack_push_auxv(sp, 17, 100, space);
+    sp = exec_stack_push_auxv(sp, 8, 0, space);
+    sp = exec_stack_push_auxv(sp, 7, base, space);
+    sp = exec_stack_push_auxv(sp, 14, 0, space);
+    sp = exec_stack_push_auxv(sp, 13, 0, space);
+    sp = exec_stack_push_auxv(sp, 12, 0, space);
+    sp = exec_stack_push_auxv(sp, 11, 0, space);
+    sp = exec_stack_push_auxv(sp, 9, entry, space);
+    sp = exec_stack_push_auxv(sp, 6, 4096, space);
+    sp = exec_stack_push_auxv(sp, 5, phnum, space);
+    sp = exec_stack_push_auxv(sp, 4, phent, space);
+    sp = exec_stack_push_auxv(sp, 3, phdr, space);
 
-    sp = exec_stack_push_u64(sp, 0, proc);
+    sp = exec_stack_push_u64(sp, 0, space);
     for (int i = (int)envc - 1; i >= 0; --i) {
-        sp = exec_stack_push_u64(sp, g_exec_env_ptrs[i], proc);
+        sp = exec_stack_push_u64(sp, g_exec_env_ptrs[i], space);
     }
 
-    sp = exec_stack_push_u64(sp, 0, proc);
+    sp = exec_stack_push_u64(sp, 0, space);
     for (int i = (int)argc - 1; i >= 0; --i) {
-        sp = exec_stack_push_u64(sp, g_exec_argv_ptrs[i], proc);
+        sp = exec_stack_push_u64(sp, g_exec_argv_ptrs[i], space);
     }
-    sp = exec_stack_push_u64(sp, argc, proc);
+    sp = exec_stack_push_u64(sp, argc, space);
 
     *stack_out = sp;
     return 0;
@@ -4035,27 +4264,6 @@ static int sys_execve(struct syscall_frame* frame, const char* path_user, uint64
     int ar = make_absolute_path(AT_FDCWD, path_input, abs_path, sizeof(abs_path));
     if (ar != 0) {
         return ar;
-    }
-
-    char resolved_path[128];
-    int rr = resolve_symlinks(abs_path, resolved_path, sizeof(resolved_path), true);
-    if (rr != 0) {
-        return rr;
-    }
-
-    struct fs_entry image_entry;
-    if (fs_lookup(resolved_path, &image_entry) != 0 || (image_entry.mode & S_IFMT) != S_IFREG) {
-        return err(ENOENT);
-    }
-
-    uint8_t* image = kmalloc(image_entry.size);
-    if (image == NULL) {
-        return err(ENOMEM);
-    }
-    int read_result = fs_read(&image_entry, 0, image, image_entry.size);
-    if (read_result < 0 || (size_t)read_result != image_entry.size) {
-        kfree(image);
-        return (read_result < 0) ? read_result : err(EINVAL);
     }
 
     size_t argc = 0;
@@ -4076,26 +4284,139 @@ static int sys_execve(struct syscall_frame* frame, const char* path_user, uint64
         argc = 1;
     }
 
+    char current_exec_path[128];
+    strncpy(current_exec_path, abs_path, sizeof(current_exec_path));
+    current_exec_path[sizeof(current_exec_path) - 1] = '\0';
+
+    struct fs_entry image_entry;
+    uint8_t* image = NULL;
+    size_t image_size = 0;
+    for (size_t depth = 0; depth <= EXEC_MAX_SHEBANGS; ++depth) {
+        char resolved_path[128];
+        int rr = resolve_symlinks(current_exec_path, resolved_path, sizeof(resolved_path), true);
+        if (rr != 0) {
+            return rr;
+        }
+
+        int fr = read_exec_file(resolved_path, &image_entry, &image, &image_size);
+        if (fr != 0) {
+            return fr;
+        }
+
+        char shebang_interpreter[128];
+        char shebang_arg[EXEC_STR_MAX];
+        bool has_shebang_arg = false;
+        int sr = parse_shebang_line(image, image_size, shebang_interpreter, sizeof(shebang_interpreter), shebang_arg, sizeof(shebang_arg),
+                                    &has_shebang_arg);
+        if (sr < 0) {
+            kfree(image);
+            return sr;
+        }
+        if (sr == 0) {
+            break;
+        }
+
+        if (depth == EXEC_MAX_SHEBANGS) {
+            kfree(image);
+            return err(ELOOP);
+        }
+
+        char interpreter_path[128];
+        int ir = make_absolute_path(AT_FDCWD, shebang_interpreter, interpreter_path, sizeof(interpreter_path));
+        if (ir != 0) {
+            kfree(image);
+            return ir;
+        }
+
+        int rrw = rewrite_exec_argv_for_shebang(interpreter_path, shebang_arg, has_shebang_arg, current_exec_path, &argc);
+        kfree(image);
+        image = NULL;
+        if (rrw != 0) {
+            return rrw;
+        }
+
+        strncpy(current_exec_path, interpreter_path, sizeof(current_exec_path));
+        current_exec_path[sizeof(current_exec_path) - 1] = '\0';
+    }
+
     struct process* current = current_process();
     if (current == NULL) {
         kfree(image);
         return err(ENOMEM);
     }
 
-    vm_space_reset_user(&current->vm);
+    struct vm_space next_vm;
+    if (vm_space_init(&next_vm) != 0) {
+        kfree(image);
+        return err(ENOMEM);
+    }
 
-    uint64_t entry = 0;
-    uint64_t phdr = 0;
-    uint64_t phent = 0;
-    uint64_t phnum = 0;
-    uint64_t image_start = 0;
-    uint64_t image_end = 0;
-    int lr = load_exec_image(current, image, image_entry.size, &entry, &phdr, &phent, &phnum, &image_start, &image_end);
+    struct exec_image_info program_image;
+    int lr = load_exec_image(&next_vm, image, image_size, 0, &program_image);
     if (lr != 0) {
+        vm_space_destroy(&next_vm);
         kfree(image);
         return lr;
     }
+
+    struct exec_image_info interp_image;
+    memset(&interp_image, 0, sizeof(interp_image));
+
+    if (program_image.has_interp) {
+        char resolved_interp[FS_MAX_PATH];
+        int ir = resolve_symlinks(program_image.interp_path, resolved_interp, sizeof(resolved_interp), true);
+        if (ir != 0) {
+            vm_space_destroy(&next_vm);
+            kfree(image);
+            return ir;
+        }
+
+        struct fs_entry interp_entry;
+        uint8_t* interp = NULL;
+        size_t interp_size = 0;
+        int fr = read_exec_file(resolved_interp, &interp_entry, &interp, &interp_size);
+        if (fr != 0) {
+            vm_space_destroy(&next_vm);
+            kfree(image);
+            return fr;
+        }
+
+        int ilr = load_exec_image(&next_vm, interp, interp_size, choose_interp_base(program_image.image_end), &interp_image);
+        kfree(interp);
+        if (ilr != 0) {
+            vm_space_destroy(&next_vm);
+            kfree(image);
+            return ilr;
+        }
+    }
     kfree(image);
+
+    uint64_t image_start = program_image.image_start;
+    uint64_t image_end = program_image.image_end;
+    uint64_t entry = program_image.entry;
+    uint64_t at_base = 0;
+    if (interp_image.entry != 0) {
+        if (interp_image.image_start < image_start) {
+            image_start = interp_image.image_start;
+        }
+        if (interp_image.image_end > image_end) {
+            image_end = interp_image.image_end;
+        }
+        entry = interp_image.entry;
+        at_base = interp_image.load_bias;
+    }
+
+    uint64_t user_stack = 0;
+    int sr = build_exec_stack(abs_path, g_exec_argv_scratch, argc, g_exec_env_scratch, envc, program_image.entry, at_base,
+                              program_image.phdr, program_image.phent, program_image.phnum, &user_stack, &next_vm);
+    if (sr != 0) {
+        vm_space_destroy(&next_vm);
+        return sr;
+    }
+
+    vm_space_destroy(&current->vm);
+    current->vm = next_vm;
+    vm_space_activate(&current->vm);
 
     g_brk_current = VM_USER_BRK_BASE;
     g_mmap_next = VM_USER_MMAP_BASE;
@@ -4109,13 +4430,6 @@ static int sys_execve(struct syscall_frame* frame, const char* path_user, uint64
     current->image_end = image_end;
     current->brk_current = g_brk_current;
     current->mmap_next = g_mmap_next;
-
-    uint64_t user_stack = 0;
-    int sr = build_exec_stack(abs_path, g_exec_argv_scratch, argc, g_exec_env_scratch, envc, entry, phdr, phent, phnum, &user_stack,
-                              current);
-    if (sr != 0) {
-        return sr;
-    }
 
     close_cloexec_fds();
     sync_current_process_runtime();

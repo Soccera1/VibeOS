@@ -13,7 +13,12 @@
 
 #define ELF_MAGIC 0x464C457Fu
 #define ET_EXEC 2u
+#define ET_DYN 3u
 #define PT_LOAD 1u
+#define PT_INTERP 3u
+#define USER_ET_DYN_BASE 0x01000000ull
+#define USER_INTERP_BASE 0x03000000ull
+#define USER_INTERP_GAP 0x00100000ull
 
 struct elf64_ehdr {
     uint8_t e_ident[16];
@@ -47,9 +52,16 @@ extern void enter_user_mode(uint64_t entry, uint64_t stack_top);
 
 struct user_exec_info {
     uint64_t entry;
+    uint64_t start;
+    uint64_t base;
     uint64_t phdr;
     uint64_t phent;
     uint64_t phnum;
+    uint64_t image_start;
+    uint64_t image_end;
+    uint64_t load_bias;
+    bool has_interp;
+    char interp_path[FS_MAX_PATH];
 };
 
 static uint64_t g_user_image_start;
@@ -71,6 +83,22 @@ static uint64_t push_auxv(uint64_t sp, uint64_t type, uint64_t value, struct vm_
     sp = push_u64(sp, value, space);
     sp = push_u64(sp, type, space);
     return sp;
+}
+
+static uint64_t page_align_down(uint64_t value) {
+    return value & VM_PAGE_MASK;
+}
+
+static uint64_t page_align_up(uint64_t value) {
+    return (value + VM_PAGE_SIZE - 1ull) & VM_PAGE_MASK;
+}
+
+static uint64_t choose_interp_base(uint64_t main_image_end) {
+    uint64_t base = page_align_up(main_image_end + USER_INTERP_GAP);
+    if (base < USER_INTERP_BASE) {
+        base = USER_INTERP_BASE;
+    }
+    return base;
 }
 
 static uint64_t build_user_stack(const struct user_exec_info* exec, const char* execfn,
@@ -135,7 +163,7 @@ static uint64_t build_user_stack(const struct user_exec_info* exec, const char* 
     sp = push_auxv(sp, 23, 0, space);                         // AT_SECURE
     sp = push_auxv(sp, 17, 100, space);                       // AT_CLKTCK
     sp = push_auxv(sp, 8, 0, space);                          // AT_FLAGS
-    sp = push_auxv(sp, 7, 0, space);                          // AT_BASE
+    sp = push_auxv(sp, 7, exec->base, space);                 // AT_BASE
     sp = push_auxv(sp, 14, 0, space);                         // AT_EGID
     sp = push_auxv(sp, 13, 0, space);                         // AT_GID
     sp = push_auxv(sp, 12, 0, space);                         // AT_EUID
@@ -161,16 +189,19 @@ static uint64_t build_user_stack(const struct user_exec_info* exec, const char* 
     return sp;
 }
 
-static int load_elf64_exec(const uint8_t* image, size_t image_size, struct user_exec_info* exec, struct vm_space* space) {
+static int load_elf64_exec(const uint8_t* image, size_t image_size, uint64_t et_dyn_base, struct user_exec_info* exec,
+                           struct vm_space* space) {
     if (image_size < sizeof(struct elf64_ehdr)) {
         return -1;
     }
+
+    memset(exec, 0, sizeof(*exec));
 
     const struct elf64_ehdr* eh = (const struct elf64_ehdr*)image;
     if (*(const uint32_t*)&eh->e_ident[0] != ELF_MAGIC) {
         return -1;
     }
-    if (eh->e_type != ET_EXEC) {
+    if (eh->e_type != ET_EXEC && eh->e_type != ET_DYN) {
         return -1;
     }
     if (eh->e_phentsize != sizeof(struct elf64_phdr)) {
@@ -182,9 +213,65 @@ static int load_elf64_exec(const uint8_t* image, size_t image_size, struct user_
     }
 
     const struct elf64_phdr* ph = (const struct elf64_phdr*)(image + eh->e_phoff);
+    uint64_t phdr_table_size = (uint64_t)eh->e_phnum * eh->e_phentsize;
     uint64_t phdr_vaddr = 0;
     uint64_t image_start = UINT64_MAX;
     uint64_t image_end = 0;
+    uint64_t min_load_vaddr = UINT64_MAX;
+    uint64_t max_load_vaddr = 0;
+
+    for (uint16_t i = 0; i < eh->e_phnum; ++i) {
+        if (ph[i].p_type == PT_INTERP) {
+            if (exec->has_interp || ph[i].p_filesz == 0 || ph[i].p_filesz > FS_MAX_PATH ||
+                ph[i].p_offset + ph[i].p_filesz > image_size) {
+                return -1;
+            }
+
+            const char* src = (const char*)(image + ph[i].p_offset);
+            bool terminated = false;
+            for (size_t j = 0; j < (size_t)ph[i].p_filesz; ++j) {
+                exec->interp_path[j] = src[j];
+                if (src[j] == '\0') {
+                    terminated = true;
+                    break;
+                }
+            }
+            if (!terminated) {
+                return -1;
+            }
+            exec->has_interp = true;
+            continue;
+        }
+
+        if (ph[i].p_type != PT_LOAD) {
+            continue;
+        }
+        if (ph[i].p_offset + ph[i].p_filesz > image_size) {
+            return -1;
+        }
+
+        uint64_t seg_start = page_align_down(ph[i].p_vaddr);
+        uint64_t seg_end = page_align_up(ph[i].p_vaddr + ph[i].p_memsz);
+        if (seg_start < min_load_vaddr) {
+            min_load_vaddr = seg_start;
+        }
+        if (seg_end > max_load_vaddr) {
+            max_load_vaddr = seg_end;
+        }
+    }
+
+    if (min_load_vaddr == UINT64_MAX || max_load_vaddr <= min_load_vaddr) {
+        return -1;
+    }
+
+    uint64_t load_bias = 0;
+    if (eh->e_type == ET_DYN) {
+        uint64_t load_base = (et_dyn_base != 0) ? page_align_down(et_dyn_base) : USER_ET_DYN_BASE;
+        if (load_base < min_load_vaddr) {
+            return -1;
+        }
+        load_bias = load_base - min_load_vaddr;
+    }
 
     for (uint16_t i = 0; i < eh->e_phnum; ++i) {
         if (ph[i].p_type != PT_LOAD) {
@@ -194,42 +281,47 @@ static int load_elf64_exec(const uint8_t* image, size_t image_size, struct user_
         if (ph[i].p_offset + ph[i].p_filesz > image_size) {
             return -1;
         }
-        if (ph[i].p_vaddr + ph[i].p_memsz >= VM_USER_ELF_LIMIT) {
+        uint64_t seg_vaddr = ph[i].p_vaddr + load_bias;
+        if (seg_vaddr + ph[i].p_memsz >= VM_USER_ELF_LIMIT) {
             return -1;
         }
 
         const uint8_t* src = image + ph[i].p_offset;
-        if (vm_space_map_zero(space, ph[i].p_vaddr, (size_t)ph[i].p_memsz) != 0) {
+        if (vm_space_map_zero(space, seg_vaddr, (size_t)ph[i].p_memsz) != 0) {
             return -1;
         }
-        if (vm_space_write(space, ph[i].p_vaddr, src, (size_t)ph[i].p_filesz) != 0) {
+        if (vm_space_write(space, seg_vaddr, src, (size_t)ph[i].p_filesz) != 0) {
             return -1;
         }
 
-        if (eh->e_phoff >= ph[i].p_offset && eh->e_phoff + (uint64_t)sizeof(struct elf64_phdr) <= ph[i].p_offset + ph[i].p_filesz) {
-            phdr_vaddr = ph[i].p_vaddr + (eh->e_phoff - ph[i].p_offset);
+        if (eh->e_phoff >= ph[i].p_offset && eh->e_phoff + phdr_table_size <= ph[i].p_offset + ph[i].p_filesz) {
+            phdr_vaddr = seg_vaddr + (eh->e_phoff - ph[i].p_offset);
         }
 
-        if (ph[i].p_vaddr < image_start) {
-            image_start = ph[i].p_vaddr;
+        if (seg_vaddr < image_start) {
+            image_start = seg_vaddr;
         }
-        uint64_t seg_end = ph[i].p_vaddr + ph[i].p_memsz;
+        uint64_t seg_end = seg_vaddr + ph[i].p_memsz;
         if (seg_end > image_end) {
             image_end = seg_end;
         }
     }
 
-    exec->entry = eh->e_entry;
-    exec->phdr = phdr_vaddr;
-    exec->phent = eh->e_phentsize;
-    exec->phnum = eh->e_phnum;
-
+    exec->entry = eh->e_entry + load_bias;
+    exec->start = exec->entry;
+    exec->base = 0;
     if (image_start == UINT64_MAX || image_end <= image_start) {
         return -1;
     }
 
-    image_start &= ~0xFFFull;
-    image_end = (image_end + 0xFFFull) & ~0xFFFull;
+    image_start = page_align_down(image_start);
+    image_end = page_align_up(image_end);
+    exec->phdr = phdr_vaddr;
+    exec->phent = eh->e_phentsize;
+    exec->phnum = eh->e_phnum;
+    exec->image_start = image_start;
+    exec->image_end = image_end;
+    exec->load_bias = load_bias;
     g_user_image_start = image_start;
     g_user_image_end = image_end;
     return 0;
@@ -244,7 +336,7 @@ int userland_run_busybox(void) {
     return userland_run_program("/bin/busybox", busybox_argv, ARRAY_LEN(busybox_argv),
                                 "Launching /bin/busybox sh -i\n",
                                 "/bin/busybox not found in initramfs\n",
-                                "busybox ELF load failed (need static non-PIE ELF64)\n");
+                                "busybox ELF load failed\n");
 }
 
 static int userland_run_program(const char* path, const char* const* argv, size_t argc,
@@ -278,20 +370,68 @@ static int userland_run_program(const char* path, const char* const* argv, size_
         return -1;
     }
 
-    vm_space_reset_user(&current->vm);
+    struct vm_space next_vm;
+    if (vm_space_init(&next_vm) != 0) {
+        kfree(image);
+        console_write("kernel out of memory while preparing userspace vm\n");
+        return -1;
+    }
 
     struct user_exec_info exec;
-    if (load_elf64_exec(image, program.size, &exec, &current->vm) != 0) {
+    if (load_elf64_exec(image, program.size, 0, &exec, &next_vm) != 0) {
+        vm_space_destroy(&next_vm);
         kfree(image);
         console_write(load_failed_message);
         return -1;
     }
+
+    struct user_exec_info interp_exec;
+    memset(&interp_exec, 0, sizeof(interp_exec));
+    if (exec.has_interp) {
+        struct fs_entry interp_entry;
+        if (fs_lookup(exec.interp_path, &interp_entry) != 0 || (interp_entry.mode & FS_S_IFMT) != FS_S_IFREG) {
+            vm_space_destroy(&next_vm);
+            kfree(image);
+            console_write(load_failed_message);
+            return -1;
+        }
+
+        uint8_t* interp = kmalloc(interp_entry.size);
+        if (interp == NULL) {
+            vm_space_destroy(&next_vm);
+            kfree(image);
+            console_write("kernel out of memory while loading userspace interpreter\n");
+            return -1;
+        }
+
+        int interp_rr = fs_read(&interp_entry, 0, interp, interp_entry.size);
+        if (interp_rr < 0 || (size_t)interp_rr != interp_entry.size ||
+            load_elf64_exec(interp, interp_entry.size, choose_interp_base(g_user_image_end), &interp_exec, &next_vm) != 0) {
+            vm_space_destroy(&next_vm);
+            kfree(interp);
+            kfree(image);
+            console_write(load_failed_message);
+            return -1;
+        }
+        kfree(interp);
+
+        exec.start = interp_exec.entry;
+        exec.base = interp_exec.load_bias;
+        if (interp_exec.image_start < g_user_image_start) {
+            g_user_image_start = interp_exec.image_start;
+        }
+        if (interp_exec.image_end > g_user_image_end) {
+            g_user_image_end = interp_exec.image_end;
+        }
+    }
     kfree(image);
 
-    uint64_t user_stack = build_user_stack(&exec, path, argv, argc, &current->vm);
+    uint64_t user_stack = build_user_stack(&exec, path, argv, argc, &next_vm);
+    vm_space_destroy(&current->vm);
+    current->vm = next_vm;
     console_write(launch_message);
     vm_space_activate(&current->vm);
-    enter_user_mode(exec.entry, user_stack);
+    enter_user_mode(exec.start, user_stack);
     return 0;
 }
 
@@ -302,14 +442,14 @@ int userland_run_default_shell(void) {
     if (userland_run_program("/usr/bin/bash", bash_argv, ARRAY_LEN(bash_argv),
                              "Launching /usr/bin/bash -i\n",
                              "/usr/bin/bash not found\n",
-                             "bash ELF load failed (need static non-PIE ELF64)\n") == 0) {
+                             "bash ELF load failed\n") == 0) {
         return 0;
     }
 
     return userland_run_program("/bin/busybox", busybox_argv, ARRAY_LEN(busybox_argv),
                                 "Falling back to /bin/busybox sh -i\n",
                                 "/bin/busybox not found in initramfs\n",
-                                "busybox ELF load failed (need static non-PIE ELF64)\n");
+                                "busybox ELF load failed\n");
 }
 
 void userland_get_image_span(uint64_t* start_out, uint64_t* end_out) {
