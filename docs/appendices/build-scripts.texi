@@ -1,0 +1,138 @@
+@node Build Script Reference
+@appendix Build Script Reference
+
+@cindex build scripts
+@cindex packaging scripts
+@cindex image builders
+
+@menu
+* Script Conventions::
+* Package Build Wrappers::
+* Image and Media Builders::
+* Shared Helper Script::
+@end menu
+
+@node Script Conventions
+@appendixsec Script Conventions
+
+The scripts in @file{tools/} share several conventions:
+
+@itemize @bullet
+@item They are written in Bash with @code{set -euo pipefail}.
+@item They validate argument counts explicitly.
+@item They tend to compute an absolute repository root based on their own
+location.
+@item They prefer musl builds through Zig wrappers for upstream packages.
+@item They validate final binaries with @code{readelf} when the result is meant
+to run inside VibeOS.
+@item They use @file{tools/strip_helpers.sh} so stripping can be disabled
+centrally.
+@end itemize
+
+This shared style is important because the scripts collectively define what kind
+of userspace VibeOS supports.
+
+@node Package Build Wrappers
+@appendixsec Package Build Wrappers
+
+@table @file
+@item tools/build_help.sh
+Builds the in-tree @code{help} program with @code{zig cc} targeting
+@code{x86_64-linux-musl}.  The resulting binary is static, non-PIE, validated
+with @code{readelf}, and then optionally stripped.
+
+@item tools/build_busybox.sh
+Builds or reuses BusyBox.  It can consume an upstream source tree, a prebuilt
+binary, or a repository-root source tarball.  The script applies VibeOS-specific
+configuration choices such as static linking, shell-standalone behavior, and
+the removal of Linux assumptions that do not make sense in the current kernel.
+
+@item tools/build_coreutils.sh
+Configures and builds GNU coreutils for static musl, stages the installed
+programs into a flat directory, and records the installed program names in a
+separate text file so later scripts can decide which ones belong in the
+initramfs and which belong under @file{/usr}.
+
+@item tools/build_bash.sh
+Builds Bash against the musl ncurses tree.  The script prepares a Zig compiler
+wrapper, configures Bash to use static linking and curses support, edits the
+generated makefiles where needed, and validates the final binary as an amd64
+static @code{ET_EXEC}.
+
+@item tools/build_ncurses.sh
+Builds a static wide-character ncurses plus a small terminfo tree.  The script
+disables shared libraries, X support, tests, and other features that are not
+needed for the current VibeOS runtime.
+
+@item tools/build_sl.sh
+Builds the upstream @code{sl} novelty program against the VibeOS ncurses build.
+It uses a wrapper that explicitly links against the wide-character ncurses and
+terminfo libraries.
+
+@item tools/build_file.sh
+Builds @code{file(1)} and the compiled @file{magic.mgc} database as static musl
+artifacts, disabling optional compression and seccomp dependencies that are not
+needed inside the current OS image.
+
+@item tools/build_nano.sh
+Builds nano against the VibeOS ncurses tree as a static non-PIE binary.  The
+script disables NLS and libmagic support to keep the build aligned with the
+current runtime assumptions.
+
+@item tools/build_libpipeline.sh
+Builds a static libpipeline sysroot used by man-db.
+
+@item tools/build_groff.sh
+Builds and stages groff into a tree rooted at @file{/usr}.  The output is later
+copied into the ext2 @file{/usr} image so @code{man} has its formatter stack.
+
+@item tools/build_man_pages.sh
+Installs the Linux man-pages tree under a staging directory and copies the
+result into the VibeOS @file{/usr/share/man} tree.
+
+@item tools/build_man_db.sh
+Builds man-db against the static libpipeline sysroot and the staged groff tree.
+The script also synthesizes a fake static gdbm header and archive so man-db can
+be built in the current musl-oriented environment without a complete gdbm port.
+@end table
+
+@node Image and Media Builders
+@appendixsec Image and Media Builders
+
+@table @file
+@item tools/make_initramfs.sh
+Constructs the root @code{cpio newc} archive.  It creates the root directory
+layout, copies BusyBox and essential coreutils into @file{/bin}, writes
+@file{/etc/motd}, writes @file{/.bashrc}, generates the @file{/init} launcher,
+and creates BusyBox applet symlinks while avoiding applets that should be
+provided by GNU coreutils instead.
+
+@item tools/make_usr_ext2.sh
+Constructs the read-only @file{/usr} ext2 image.  It copies optional program
+trees, stages non-essential coreutils, installs data files such as
+@file{magic.mgc}, copies selected terminfo entries, estimates the block count,
+and then runs @code{mkfs.ext2 -d} to create the filesystem image.
+
+@item tools/make_iso.sh
+Creates a temporary ISO tree, copies the kernel and both module images into
+@file{/boot}, writes a small GRUB configuration that uses @code{multiboot2} and
+two @code{module2} directives, and then runs @code{grub-mkrescue}.
+
+@item tools/make_gpt_disk.sh
+Creates a raw disk image, partitions it with GPT, creates a BIOS GRUB partition
+plus a main ext2 partition, mounts the filesystem, copies the kernel and module
+images into @file{/boot}, writes GRUB configuration, and installs BIOS GRUB
+into the resulting loop device.
+@end table
+
+@node Shared Helper Script
+@appendixsec Shared Helper Script
+
+@table @file
+@item tools/strip_helpers.sh
+Defines the shared stripping policy used across the build scripts.  It can
+resolve the active strip tool, determine whether stripping is enabled, strip a
+single ELF binary, or recursively strip staged executable trees.  The
+top-level debug targets work largely by overriding the variables consumed by
+this helper.
+@end table

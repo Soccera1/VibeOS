@@ -1,0 +1,212 @@
+@node Building VibeOS
+@chapter Building VibeOS
+
+@cindex building VibeOS
+@cindex image construction
+@cindex documentation target
+@findex check-toolchain
+@vindex BUILD_DIR
+
+@menu
+* Build Prerequisites::
+* Top-Level Targets::
+* Kernel Build Rules::
+* Userspace Build Policy::
+* Runtime Image Layout::
+* Running and Testing::
+* Building the Manual::
+@end menu
+
+@node Build Prerequisites
+@section Build Prerequisites
+
+The top-level @code{check-toolchain} target checks the tools that are required
+for a full OS build:
+
+@itemize @bullet
+@item @code{gcc},
+@item @code{ld},
+@item @code{nasm},
+@item @code{strip} or a compatible replacement when stripping is enabled,
+@item @code{grub-mkrescue},
+@item @code{grub-install},
+@item @code{mkfs.ext2}, and
+@item @code{qemu-system-x86_64}.
+@end itemize
+
+In practice, userspace builds also depend heavily on:
+
+@itemize @bullet
+@item @code{zig},
+@item typical Autoconf host tools,
+@item @code{readelf} for validation, and
+@item utilities used by GRUB and ext2 image generation.
+@end itemize
+
+The documentation target depends on the Texinfo tools:
+
+@itemize @bullet
+@item @code{texi2any} or @code{makeinfo}, and
+@item @code{texi2pdf}.
+@end itemize
+
+@node Top-Level Targets
+@section Top-Level Targets
+
+The main targets exposed by the root @file{Makefile} are:
+
+@table @code
+@item all
+Alias for @code{disk}.
+
+@item iso
+Build the kernel, initramfs, and @file{/usr} ext2 image, then package them into
+@file{build/vibeos.iso}.
+
+@item disk
+Build the same runtime artifacts and install them into a BIOS plus GPT raw disk
+image at @file{build/vibeos-gpt.img}.
+
+@item run
+Build the disk image and run it under QEMU.
+
+@item all-debug, iso-debug, disk-debug, run-debug
+Repeat the normal target graph with binary stripping disabled.
+
+@item docs
+Build the Texinfo manual into Info, single-file HTML, split HTML, and PDF
+under @file{docs/out/}.
+@end table
+
+The kernel and userspace build graph is still intentionally flat.  There is no
+secondary build orchestrator under the top-level makefile.
+
+@node Kernel Build Rules
+@section Kernel Build Rules
+
+The kernel build is conventional and freestanding:
+
+@itemize @bullet
+@item NASM assembles the boot files in @file{kernel/boot/}.
+@item GCC compiles the C files in @file{kernel/src/}.
+@item LD links everything with @file{kernel/linker.ld}.
+@end itemize
+
+The kernel compilation flags emphasize freestanding execution:
+
+@itemize @bullet
+@item @code{-ffreestanding},
+@item @code{-fno-stack-protector},
+@item @code{-fno-pie},
+@item @code{-fno-builtin},
+@item @code{-mno-red-zone},
+@item no MMX, SSE, or SSE2 use in kernel code generation, and
+@item a fixed page size in the linker flags.
+@end itemize
+
+The kernel image is stripped by default after linking.
+
+@node Userspace Build Policy
+@section Userspace Build Policy
+
+@cindex userspace build policy
+@cindex static musl
+@cindex non-PIE
+
+The userspace build wrappers follow a consistent policy:
+
+@enumerate
+@item Prefer @code{zig cc} or @code{zig c++} targeting
+@code{x86_64-linux-musl}.
+@item Pass static-linking flags.
+@item Disable PIE when the package would otherwise emit a PIE binary.
+@item Validate that the result is amd64, @code{ET_EXEC}, and has no requested
+interpreter.
+@item Stage the validated output into a tree that the image builders can copy.
+@end enumerate
+
+This policy is repeated in script after script because the current loader and
+runtime are optimized for static non-PIE executables.
+
+The wrappers also maintain package-local or repository-wide Zig caches so that
+subsequent builds are cheaper.
+
+@node Runtime Image Layout
+@section Runtime Image Layout
+
+The build produces three core runtime artifacts before any boot medium is
+generated:
+
+@table @file
+@item build/vibeos-kernel.bin
+The linked kernel.
+
+@item build/initramfs.cpio
+The root filesystem image loaded as Multiboot module 0.
+
+@item build/usr.ext2
+The ext2 image loaded as Multiboot module 1 and mounted at @file{/usr}.
+@end table
+
+The split between root and @file{/usr} is deliberate.
+
+The initramfs contains the minimum system needed to come up:
+
+@itemize @bullet
+@item @file{/init},
+@item @file{/bin/busybox},
+@item essential coreutils copied into @file{/bin},
+@item device and directory scaffolding such as @file{/dev}, @file{/proc},
+@file{/sys}, and @file{/tmp}, and
+@item an empty @file{/usr} mount point.
+@end itemize
+
+The ext2 image contains the larger optional userspace:
+
+@itemize @bullet
+@item Bash,
+@item the remaining coreutils,
+@item @code{help}, @code{sl}, @code{file}, and @code{nano},
+@item groff and man-db runtime files,
+@item Linux man-pages, and
+@item terminfo and other shared data.
+@end itemize
+
+@node Running and Testing
+@section Running and Testing
+
+The default run path is:
+
+@example
+make run
+@end example
+
+which expands to a QEMU invocation similar to:
+
+@example
+qemu-system-x86_64 \
+  -machine q35,accel=kvm:tcg \
+  -m 1G \
+  -drive format=raw,file=build/vibeos-gpt.img \
+  -serial stdio
+@end example
+
+The serial console is especially important because the kernel mirrors console
+output to COM1.
+
+@node Building the Manual
+@section Building the Manual
+
+The @code{docs} target does four separate conversions from
+@file{docs/vibeos.texi}:
+
+@enumerate
+@item single-file Info output to @file{docs/out/vibeos.info},
+@item single-file HTML output to @file{docs/out/vibeos.html},
+@item split HTML output under @file{docs/out/html/}, and
+@item PDF output to @file{docs/out/vibeos.pdf}.
+@end enumerate
+
+The PDF build uses a dedicated temporary build directory under
+@file{docs/out/.texi2pdf} so the repository root is not polluted with TeX
+auxiliary files.

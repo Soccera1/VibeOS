@@ -1,0 +1,108 @@
+@node Configuration Constants and Limits
+@appendix Configuration Constants and Limits
+
+@cindex constants
+@cindex limits
+@cindex address layout
+
+This appendix collects the major in-tree constants that define system shape.
+
+@menu
+* Boot and Link Constants::
+* Memory Layout Constants::
+* Process and Descriptor Limits::
+* Filesystem and Path Limits::
+* Pipe and Signal Limits::
+* Image-Build and Filesystem-Creation Constants::
+@end menu
+
+@node Boot and Link Constants
+@appendixsec Boot and Link Constants
+
+@multitable @columnfractions .35 .20 .45
+@headitem Constant @tab Value @tab Meaning
+@item Multiboot link address @tab @code{1 MiB} @tab Kernel image base from
+@file{kernel/linker.ld}
+@item Bootstrap stack size @tab @code{16 KiB} @tab Temporary stack in
+@file{kernel/boot/boot.asm}
+@item Bootstrap identity map @tab @code{4 GiB} @tab Early long-mode page-table
+coverage
+@end multitable
+
+@node Memory Layout Constants
+@appendixsec Memory Layout Constants
+
+@vindex VM_PAGE_SIZE
+@vindex VM_USER_LIMIT
+
+@multitable @columnfractions .35 .20 .45
+@headitem Constant @tab Value @tab Meaning
+@item @code{HEAP_START} @tab @code{0x10000000} @tab Kernel heap start
+@item @code{HEAP_SIZE} @tab @code{256 MiB} @tab Kernel heap size
+@item @code{VM_PAGE_SIZE} @tab @code{0x1000} @tab Page size
+@item @code{VM_USER_BASE} @tab @code{0x00400000} @tab Lowest user address
+@item @code{VM_USER_STACK_TOP} @tab @code{0x08000000} @tab Initial user stack top
+@item @code{VM_USER_STACK_SIZE} @tab @code{0x00200000} @tab Initial user stack size
+@item @code{VM_USER_BRK_BASE} @tab @code{0x09000000} @tab Initial @code{brk} base
+@item @code{VM_USER_MMAP_BASE} @tab @code{0x0c000000} @tab Initial @code{mmap} base
+@item @code{VM_USER_MMAP_LIMIT} @tab @code{0x0f000000} @tab Upper @code{mmap} limit
+@item @code{VM_USER_ELF_LIMIT} @tab @code{0x20000000} @tab ELF image limit
+@item @code{VM_USER_LIMIT} @tab @code{0x40000000} @tab Highest accepted user address
+@end multitable
+
+@node Process and Descriptor Limits
+@appendixsec Process and Descriptor Limits
+
+@multitable @columnfractions .35 .20 .45
+@headitem Constant @tab Value @tab Meaning
+@item @code{MAX_PROCESSES} @tab 256 @tab Process slots
+@item @code{PROCESS_MAX_FDS} @tab 64 @tab File descriptors per process
+@item @code{MAX_FDS} @tab 64 @tab Active descriptor slots in the syscall layer
+@item @code{MAX_CHILDREN} @tab 256 @tab Temporary directory-entry buffer limit
+@item @code{MAX_ZOMBIES} @tab 64 @tab Zombie bookkeeping slots
+@end multitable
+
+@node Filesystem and Path Limits
+@appendixsec Filesystem and Path Limits
+
+@multitable @columnfractions .35 .20 .45
+@headitem Constant @tab Value @tab Meaning
+@item @code{FS_MAX_PATH} @tab 128 @tab Stored filesystem path length
+@item @code{FS_MAX_NAME} @tab 64 @tab Stored directory-entry name length
+@item @code{MAX_INITRAMFS_ENTRIES} @tab 1024 @tab Indexed initramfs entries
+@item @code{INITRAMFS_COPY_MAX} @tab @code{16 MiB} @tab Largest initramfs copy
+made to the fixed memory buffer
+@end multitable
+
+@node Pipe and Signal Limits
+@appendixsec Pipe and Signal Limits
+
+@multitable @columnfractions .35 .20 .45
+@headitem Constant @tab Value @tab Meaning
+@item @code{MAX_SIGNALS} @tab 64 @tab Signal namespace size
+@item @code{MAX_PENDING_SIGNALS} @tab 32 @tab Pending signals per process
+@item @code{MAX_PIPES} @tab 64 @tab Pipe objects in the syscall layer
+@item @code{PIPE_CAPACITY} @tab 65536 @tab Bytes per pipe buffer
+@item @code{EXEC_MAX_ARGS} @tab 64 @tab Upper bound for copied argv strings
+@item @code{EXEC_MAX_ENVS} @tab 64 @tab Upper bound for copied environment
+strings
+@end multitable
+
+@node Image-Build and Filesystem-Creation Constants
+@appendixsec Image-Build and Filesystem-Creation Constants
+
+The image-building scripts also encode important assumptions:
+
+@multitable @columnfractions .35 .20 .45
+@headitem Constant @tab Value @tab Meaning
+@item Disk image size @tab @code{128 MiB} @tab Raw GPT disk size created by
+@file{tools/make_gpt_disk.sh}
+@item BIOS GRUB partition @tab @code{1 MiB-3 MiB} @tab Reserved boot area on
+the GPT disk
+@item Main disk partition start @tab @code{3 MiB} @tab Start of the VIBEOS ext2
+partition
+@item ext2 image block size @tab 4096 @tab Block size used by
+@file{tools/make_usr_ext2.sh}
+@item ext2 inode size @tab 256 @tab Inode size used while estimating the
+filesystem image
+@end multitable

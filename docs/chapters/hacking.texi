@@ -1,0 +1,116 @@
+@node Hacking on VibeOS
+@chapter Hacking on VibeOS
+
+@cindex hacking
+@cindex extending VibeOS
+@cindex adding programs
+@cindex adding syscalls
+
+@menu
+* Working with the Existing Build Policy::
+* Adding a New User Program::
+* Extending the Kernel ABI::
+* Changing the Filesystem Layout::
+* Documentation Workflow::
+@end menu
+
+@node Working with the Existing Build Policy
+@section Working with the Existing Build Policy
+
+The existing build policy is part of the OS design, not just incidental makefile
+machinery.
+
+When changing or adding code, assume the following unless there is a clear
+reason to do otherwise:
+
+@itemize @bullet
+@item static linking is preferred,
+@item musl is preferred,
+@item non-PIE amd64 executables are the safest runtime target,
+@item the root filesystem and @file{/usr} remain read-only, and
+@item scheduler behavior remains cooperative and syscall-driven.
+@end itemize
+
+If you violate one of these assumptions, document why and test the new path
+explicitly.
+
+@node Adding a New User Program
+@section Adding a New User Program
+
+The normal route for a new program is:
+
+@enumerate
+@item write or adapt a wrapper in @file{tools/},
+@item target @code{x86_64-linux-musl},
+@item enforce static, non-PIE output where possible,
+@item validate the binary with @code{readelf},
+@item decide whether it belongs in the initramfs or in @file{/usr}, and
+@item add the staging path to either @file{tools/make_initramfs.sh} or
+@file{tools/make_usr_ext2.sh}, or both.
+@end enumerate
+
+In-tree programs should live under @file{userspace/} and be built by a wrapper
+that follows the same validation conventions as the existing scripts.
+
+@node Extending the Kernel ABI
+@section Extending the Kernel ABI
+
+The kernel ABI is centered in @file{kernel/src/syscall.c}.
+
+To add a new syscall, the normal steps are:
+
+@enumerate
+@item add any needed constants or structures in the relevant headers,
+@item implement the helper logic in @file{kernel/src/syscall.c} or a supporting
+subsystem,
+@item add the syscall number dispatch case in @code{syscall_dispatch},
+@item synchronize any process runtime state that must survive scheduling, and
+@item document the new call in @ref{System Call Interface}.
+@end enumerate
+
+Because many waits and descriptor operations are scheduler-aware, new blocking
+syscalls usually need extra thought about save and restore behavior.
+
+@node Changing the Filesystem Layout
+@section Changing the Filesystem Layout
+
+The runtime namespace is jointly defined by:
+
+@itemize @bullet
+@item @file{tools/make_initramfs.sh},
+@item @file{tools/make_usr_ext2.sh},
+@item @file{kernel/src/fs.c},
+@item @file{kernel/src/ext2.c}, and
+@item the synthetic-path logic in @file{kernel/src/syscall.c}.
+@end itemize
+
+If you add a new synthetic directory or device path, remember that userland may
+need changes in:
+
+@itemize @bullet
+@item stat helpers,
+@item open logic,
+@item read or write logic,
+@item ioctl handling, and
+@item directory enumeration.
+@end itemize
+
+@node Documentation Workflow
+@section Documentation Workflow
+
+The manual is now split across many Texinfo source files so it can evolve with
+the system.
+
+The normal workflow is:
+
+@enumerate
+@item edit the relevant chapter or appendix under @file{docs/},
+@item run @code{make docs},
+@item inspect at least one generated format under @file{docs/out/}, and
+@item keep the source-file map and syscall chapter synchronized with code
+changes that affect them.
+@end enumerate
+
+This manual is intended to be authoritative for the in-tree OS.  If the code
+changes in a way that invalidates a chapter, the documentation should change in
+the same patch series.

@@ -6,6 +6,14 @@ INITRAMFS := $(BUILD_DIR)/initramfs.cpio
 USR_EXT2 := $(BUILD_DIR)/usr.ext2
 ISO_IMAGE := $(BUILD_DIR)/vibeos.iso
 DISK_IMAGE := $(BUILD_DIR)/vibeos-gpt.img
+DOCS_DIR := docs
+DOCS_SRC := $(DOCS_DIR)/vibeos.texi
+DOCS_OUT := $(DOCS_DIR)/out
+DOCS_INFO := $(DOCS_OUT)/vibeos.info
+DOCS_HTML := $(DOCS_OUT)/vibeos.html
+DOCS_HTML_SPLIT := $(DOCS_OUT)/html
+DOCS_PDF := $(DOCS_OUT)/vibeos.pdf
+DOCS_PDF_BUILD := $(DOCS_OUT)/.texi2pdf
 
 CC := gcc
 LD := ld
@@ -61,7 +69,7 @@ HELP_SRC := userspace/help.c
 export STRIP_BINARIES ?= 1
 export STRIP
 
-.PHONY: all clean run iso disk check-toolchain all-debug iso-debug disk-debug run-debug
+.PHONY: all clean run iso disk docs check-toolchain all-debug iso-debug disk-debug run-debug
 
 all: disk
 
@@ -89,6 +97,9 @@ check-toolchain:
 
 $(BUILD_DIR):
 	@mkdir -p $(BUILD_DIR)
+
+$(DOCS_OUT):
+	@mkdir -p $(DOCS_OUT)
 
 $(BUILD_DIR)/kernel/boot/%.o: kernel/boot/%.asm | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
@@ -164,5 +175,12 @@ run: disk
 		-drive format=raw,file=$(DISK_IMAGE) \
 		-serial stdio
 
+docs: $(DOCS_SRC) | $(DOCS_OUT)
+	rm -rf $(DOCS_HTML_SPLIT) $(DOCS_PDF_BUILD)
+	texi2any --no-split --output=$(DOCS_INFO) $(DOCS_SRC)
+	texi2any --html --no-split --output=$(DOCS_HTML) $(DOCS_SRC)
+	texi2any --html --split=node --output=$(DOCS_HTML_SPLIT) $(DOCS_SRC)
+	texi2pdf --quiet --build=clean --build-dir=$(DOCS_PDF_BUILD) --output=$(DOCS_PDF) $(DOCS_SRC)
+
 clean:
-	rm -rf $(BUILD_DIR) $(ZIG_GLOBAL_CACHE) $(ZIG_LOCAL_CACHE) $(COREUTILS_ZIG_GLOBAL_CACHE) $(COREUTILS_ZIG_LOCAL_CACHE)
+	rm -rf $(BUILD_DIR) $(DOCS_OUT) $(ZIG_GLOBAL_CACHE) $(ZIG_LOCAL_CACHE) $(COREUTILS_ZIG_GLOBAL_CACHE) $(COREUTILS_ZIG_LOCAL_CACHE)

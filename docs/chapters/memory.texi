@@ -1,0 +1,153 @@
+@node Memory Management
+@chapter Memory Management
+
+@cindex memory management
+@cindex kernel heap
+@cindex virtual memory
+@cindex user address space
+@findex kmalloc_init
+@findex vm_init
+@findex vm_space_clone
+@vindex HEAP_START
+@vindex HEAP_SIZE
+@vindex VM_USER_BASE
+@vindex VM_USER_STACK_TOP
+@vindex VM_USER_BRK_BASE
+@vindex VM_USER_MMAP_BASE
+
+@menu
+* Kernel Heap Allocator::
+* Kernel Paging Templates::
+* User Address-Space Layout::
+* VM Space Operations::
+* brk and mmap Behavior::
+@end menu
+
+@node Kernel Heap Allocator
+@section Kernel Heap Allocator
+
+The kernel heap is a fixed virtual range managed by @file{kernel/src/kmalloc.c}.
+
+Key constants are:
+
+@multitable @columnfractions .35 .20 .45
+@headitem Constant @tab Value @tab Meaning
+@item @code{HEAP_START} @tab @code{0x10000000} @tab Start of the kernel heap
+@item @code{HEAP_SIZE} @tab @code{256 MiB} @tab Total heap span
+@item @code{HEAP_END} @tab @code{0x20000000} @tab End of the heap
+@end multitable
+
+The allocator is a straightforward block allocator with:
+
+@itemize @bullet
+@item headers and footers,
+@item best-fit selection,
+@item block splitting,
+@item adjacent-block coalescing, and
+@item aligned allocation wrappers built on top of the main heap.
+@end itemize
+
+This is enough for page tables, copied images, process structures, and other
+kernel allocations.  It is not intended to be a sophisticated slab allocator.
+
+@node Kernel Paging Templates
+@section Kernel Paging Templates
+
+@findex vm_space_activate
+
+The VM subsystem builds a kernel paging template that identity maps the low
+4 GiB using 2 MiB pages.  Each process then receives:
+
+@itemize @bullet
+@item its own PML4,
+@item its own PDPT,
+@item its own page directory for the low part of the user space, and
+@item lazily allocated page tables for user pages.
+@end itemize
+
+The low kernel identity map remains present while user mappings are overlaid in
+the lower canonical address range.
+
+@node User Address-Space Layout
+@section User Address-Space Layout
+
+The user layout constants from @file{kernel/include/vm.h} define the contract
+used by the ELF loader, @code{brk}, @code{mmap}, and the initial stack builder.
+
+@multitable @columnfractions .35 .20 .45
+@headitem Constant @tab Value @tab Meaning
+@item @code{VM_USER_BASE} @tab @code{0x00400000} @tab Lowest valid user mapping
+@item @code{VM_USER_STACK_TOP} @tab @code{0x08000000} @tab Initial stack top
+@item @code{VM_USER_STACK_SIZE} @tab @code{0x00200000} @tab Initial stack span
+@item @code{VM_USER_BRK_BASE} @tab @code{0x09000000} @tab Initial program break
+@item @code{VM_USER_MMAP_BASE} @tab @code{0x0c000000} @tab Initial @code{mmap} search base
+@item @code{VM_USER_MMAP_LIMIT} @tab @code{0x0f000000} @tab @code{mmap} upper limit
+@item @code{VM_USER_ELF_LIMIT} @tab @code{0x20000000} @tab ELF image upper limit
+@item @code{VM_USER_LIMIT} @tab @code{0x40000000} @tab Highest accepted user address
+@end multitable
+
+The kernel therefore uses a deliberately compact 32-bit-like low-half address
+layout even though the architecture is amd64.
+
+@node VM Space Operations
+@section VM Space Operations
+
+@findex vm_space_map_zero
+@findex vm_space_write
+@findex vm_space_unmap
+
+The main operations supported by the VM layer are:
+
+@table @code
+@item vm_space_init
+Allocate and initialize a process VM space based on the kernel template.
+
+@item vm_space_destroy
+Free owned user pages and page-table state.
+
+@item vm_space_activate
+Install a VM space into @code{cr3}.
+
+@item vm_space_reset_user
+Discard all owned user mappings while keeping the VM structure itself alive.
+
+@item vm_space_clone
+Clone the currently mapped user pages into another VM space.
+
+@item vm_space_map_zero
+Map zero-filled user pages over a requested range.
+
+@item vm_space_map_physical
+Map a physical range into user space.
+
+@item vm_space_write
+Copy bytes from the kernel into user virtual memory.
+
+@item vm_space_zero
+Zero a user range.
+
+@item vm_space_unmap
+Remove user mappings and restore the identity-mapped placeholder entries.
+@end table
+
+The design is simple and explicit.  There is no paging daemon, copy-on-write,
+protection-bit enforcement for user pages, or swap.
+
+@node brk and mmap Behavior
+@section brk and mmap Behavior
+
+The syscall layer exposes @code{brk}, @code{mmap}, and @code{munmap}.
+
+The current behavior is intentionally modest:
+
+@itemize @bullet
+@item @code{brk} advances within the user @code{brk} region and allocates or
+leaves mapped pages as needed.
+@item @code{mmap} is geared toward anonymous mappings in the low user region.
+@item @code{munmap} removes those mappings.
+@item Protection bits are accepted but not used to enforce true page
+permissions.
+@end itemize
+
+This is sufficient for the current statically linked userland but is not yet a
+full Linux VM model.

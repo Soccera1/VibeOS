@@ -1,0 +1,128 @@
+@node Source Layout
+@chapter Source Layout
+
+@cindex source layout
+@cindex repository layout
+
+@menu
+* Top-Level Tree::
+* Kernel Tree::
+* Userspace Tree::
+* Tools Tree::
+* Third-Party Source Trees::
+@end menu
+
+@node Top-Level Tree
+@section Top-Level Tree
+
+The repository root is intentionally shallow:
+
+@table @file
+@item Makefile
+The single top-level build entry point.  It drives kernel compilation,
+userspace package building, image construction, QEMU launch, and documentation.
+
+@item README.md
+Short project overview and quick start.
+
+@item docs/
+Texinfo manual sources and generated outputs.
+
+@item kernel/
+Architecture-specific and machine-independent kernel code.
+
+@item userspace/
+In-tree userspace code owned by this repository.
+
+@item tools/
+Build wrappers, staging helpers, and image-generation scripts.
+
+@item external/
+Upstream source trees used to populate the userspace environment.
+
+@item build/
+Generated build artifacts.  This directory is disposable.
+@end table
+
+@node Kernel Tree
+@section Kernel Tree
+
+The kernel tree is split by purpose rather than by subsystem abstraction level:
+
+@table @file
+@item kernel/boot/
+Assembly files for the bootstrap path, interrupt and syscall entry, GDT and
+IDT loading, and transition to user mode.
+
+@item kernel/include/
+Kernel headers.  These define public interfaces between subsystems and expose
+the constants that shape address-space layout, process limits, filesystem
+semantics, and syscall frame layout.
+
+@item kernel/src/
+The main implementation of the kernel.
+
+@item kernel/linker.ld
+The linker script that fixes the kernel image at 1 MiB and defines the section
+layout consumed by the bootstrap code and the heap initializer.
+@end table
+
+@node Userspace Tree
+@section Userspace Tree
+
+The in-tree userspace tree is deliberately small.
+
+At the time of writing, it contains one program:
+
+@table @file
+@item userspace/help.c
+A static musl helper that prints a curated introduction to the VibeOS
+environment.  This is not upstream software; it is part of the OS tree.
+@end table
+
+The fact that the in-tree userspace tree is small does not mean the runtime is
+small.  Most user-visible commands are built from upstream sources through the
+integration scripts documented later in this manual.
+
+@node Tools Tree
+@section Tools Tree
+
+The @file{tools/} directory is where the repository turns policy into repeatable
+build behavior.
+
+Broadly speaking, the scripts fall into four classes:
+
+@itemize @bullet
+@item package build wrappers, such as @file{build_bash.sh} or
+@file{build_coreutils.sh};
+@item staging helpers, such as @file{make_initramfs.sh} and
+@file{make_usr_ext2.sh};
+@item boot media generators, such as @file{make_iso.sh} and
+@file{make_gpt_disk.sh}; and
+@item shared helpers such as @file{strip_helpers.sh}.
+@end itemize
+
+Each script is covered in more detail in @ref{Build Script Reference}.
+
+@node Third-Party Source Trees
+@section Third-Party Source Trees
+
+The @file{external/} directory contains upstream source trees for packages that
+VibeOS builds into its userspace images.
+
+Important examples include:
+
+@itemize @bullet
+@item BusyBox,
+@item Bash,
+@item GNU coreutils,
+@item ncurses,
+@item groff,
+@item man-db,
+@item Linux man-pages,
+@item nano, and
+@item file(1).
+@end itemize
+
+These trees are inputs to VibeOS, not part of the core kernel.  The OS-specific
+behavior lives in the wrapper scripts that configure and stage them.
