@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then
-  echo "usage: $0 <output.ext2> [bash-bin] [help-bin] [sl-bin] [file-bin] [file-magic] [nano-bin]" >&2
+  echo "usage: $0 <output.ext2> [bash-bin] [help-bin] [sl-bin] [file-bin] [file-magic] [nano-bin] [coreutils-dir] [coreutils-programs]" >&2
   exit 1
 fi
 
@@ -13,12 +13,42 @@ SL_BIN="${4:-}"
 FILE_BIN="${5:-}"
 FILE_MAGIC="${6:-}"
 NANO_BIN="${7:-}"
+COREUTILS_DIR="${8:-}"
+COREUTILS_PROGS="${9:-}"
 
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 
 ROOT="$WORKDIR/root"
 mkdir -p "$ROOT"/{bin,share/misc,share/terminfo}
+
+is_essential_coreutils_prog() {
+  case "$1" in
+    '['|basename|cat|chgrp|chmod|chown|cp|date|dd|df|dirname|echo|false|kill|ln|ls|mkdir|mkfifo|mknod|mv|pwd|readlink|rm|rmdir|sleep|stty|sync|test|touch|true|uname)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+install_coreutils_bins() {
+  [[ -d "$COREUTILS_DIR" && -f "$COREUTILS_PROGS" ]] || return 0
+
+  local src
+  while IFS= read -r prog; do
+    [[ -n "$prog" ]] || continue
+    is_essential_coreutils_prog "$prog" && continue
+    src="$COREUTILS_DIR/$prog"
+    if [[ ! -x "$src" ]]; then
+      echo "Missing coreutils binary: $src" >&2
+      exit 1
+    fi
+    cp "$src" "$ROOT/bin/$prog"
+    chmod +x "$ROOT/bin/$prog"
+  done < "$COREUTILS_PROGS"
+}
 
 if [[ -d rootfs/usr ]]; then
   mkdir -p "$ROOT"
@@ -54,6 +84,8 @@ if [[ -n "$NANO_BIN" && -x "$NANO_BIN" ]]; then
   cp "$NANO_BIN" "$ROOT/bin/nano"
   chmod +x "$ROOT/bin/nano"
 fi
+
+install_coreutils_bins
 
 copy_terminfo() {
   local entry="$1"

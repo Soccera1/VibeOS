@@ -14,8 +14,11 @@ USER_CC := gcc
 BUSYBOX_SRC := external/busybox-src
 BUSYBOX_STATIC := external/busybox-static
 BUSYBOX_ROOTFS := rootfs/bin/busybox
+COREUTILS_SRC := external/coreutils-src
 ZIG_GLOBAL_CACHE := $(BUSYBOX_SRC)/.zig-global-cache
 ZIG_LOCAL_CACHE := $(BUSYBOX_SRC)/.zig-local-cache
+COREUTILS_ZIG_GLOBAL_CACHE := $(COREUTILS_SRC)/.zig-global-cache
+COREUTILS_ZIG_LOCAL_CACHE := $(COREUTILS_SRC)/.zig-local-cache
 
 CFLAGS := -m64 -ffreestanding -fno-stack-protector -fno-pie -fno-pic -fno-omit-frame-pointer -fno-builtin \
 	-mno-red-zone -mno-mmx -mno-sse -mno-sse2 -mcmodel=large -Wall -Wextra -Werror -O2 -std=gnu11 -Ikernel/include
@@ -30,6 +33,8 @@ KERNEL_OBJS := $(patsubst %.asm,$(BUILD_DIR)/%.o,$(KERNEL_ASM)) \
 	$(patsubst %.c,$(BUILD_DIR)/%.o,$(KERNEL_C))
 
 USER_BUSYBOX := $(BUILD_DIR)/userspace/busybox
+USER_COREUTILS := $(BUILD_DIR)/userspace/coreutils
+USER_COREUTILS_PROGS := $(BUILD_DIR)/userspace/coreutils-programs.txt
 USER_BASH := $(BUILD_DIR)/userspace/bash
 USER_HELP := $(BUILD_DIR)/userspace/help
 USER_FILE := $(BUILD_DIR)/userspace/file
@@ -74,6 +79,12 @@ $(KERNEL_BIN): $(KERNEL_OBJS) kernel/linker.ld | $(BUILD_DIR)
 $(USER_BUSYBOX): | $(BUILD_DIR)
 	./tools/build_busybox.sh $@ "$(BUSYBOX_SRC)" "$(BUSYBOX_STATIC)" "$(BUSYBOX_ROOTFS)"
 
+$(USER_COREUTILS): | $(BUILD_DIR)
+	./tools/build_coreutils.sh $@ "$(USER_COREUTILS_PROGS)" "$(COREUTILS_SRC)"
+
+$(USER_COREUTILS_PROGS): $(USER_COREUTILS)
+	@test -f "$@"
+
 $(USER_BASH): $(NCURSES_BUILD)/lib/libncursesw.a | $(BUILD_DIR)
 	./tools/build_bash.sh $@ "$(BASH_SRC)"
 
@@ -95,11 +106,11 @@ $(USER_FILE_MAGIC): $(USER_FILE)
 $(USER_NANO): $(NCURSES_BUILD)/lib/libncursesw.a | $(BUILD_DIR)
 	./tools/build_nano.sh $@ "$(NANO_SRC)"
 
-$(INITRAMFS): tools/make_initramfs.sh $(USER_BUSYBOX) $(USER_HELP)
-	./tools/make_initramfs.sh $@ $(USER_BUSYBOX) $(USER_HELP)
+$(INITRAMFS): tools/make_initramfs.sh $(USER_BUSYBOX) $(USER_HELP) $(USER_COREUTILS) $(USER_COREUTILS_PROGS)
+	./tools/make_initramfs.sh $@ $(USER_BUSYBOX) $(USER_HELP) $(USER_COREUTILS) $(USER_COREUTILS_PROGS)
 
-$(USR_EXT2): tools/make_usr_ext2.sh $(USER_BASH) $(USER_HELP) $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO)
-	./tools/make_usr_ext2.sh $@ $(USER_BASH) $(USER_HELP) $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO)
+$(USR_EXT2): tools/make_usr_ext2.sh $(USER_BASH) $(USER_HELP) $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO) $(USER_COREUTILS) $(USER_COREUTILS_PROGS)
+	./tools/make_usr_ext2.sh $@ $(USER_BASH) $(USER_HELP) $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO) $(USER_COREUTILS) $(USER_COREUTILS_PROGS)
 
 iso: check-toolchain $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT2)
 	./tools/make_iso.sh $(ISO_IMAGE) $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT2)
@@ -116,4 +127,4 @@ run: disk
 		-serial stdio
 
 clean:
-	rm -rf $(BUILD_DIR) $(ZIG_GLOBAL_CACHE) $(ZIG_LOCAL_CACHE)
+	rm -rf $(BUILD_DIR) $(ZIG_GLOBAL_CACHE) $(ZIG_LOCAL_CACHE) $(COREUTILS_ZIG_GLOBAL_CACHE) $(COREUTILS_ZIG_LOCAL_CACHE)

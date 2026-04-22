@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -lt 2 ]]; then
-  echo "usage: $0 <output.cpio> <busybox-bin> [help-bin]" >&2
+  echo "usage: $0 <output.cpio> <busybox-bin> [help-bin] [coreutils-dir] [coreutils-programs]" >&2
   exit 1
 fi
 
@@ -11,12 +11,48 @@ OUT_CPIO_DIR="$(cd "$(dirname "$OUT_CPIO_INPUT")" && pwd)"
 OUT_CPIO="$OUT_CPIO_DIR/$(basename "$OUT_CPIO_INPUT")"
 BUSYBOX_BIN="$2"
 HELP_BIN="${3:-}"
+COREUTILS_DIR="${4:-}"
+COREUTILS_PROGS="${5:-}"
 
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 
 ROOT="$WORKDIR/root"
 mkdir -p "$ROOT"/{bin,dev,etc,proc,sys,tmp,usr,var,home}
+
+is_coreutils_prog() {
+  local prog="$1"
+  [[ -n "$COREUTILS_PROGS" && -f "$COREUTILS_PROGS" ]] || return 1
+  grep -Fxq "$prog" "$COREUTILS_PROGS"
+}
+
+is_essential_coreutils_prog() {
+  case "$1" in
+    '['|basename|cat|chgrp|chmod|chown|cp|date|dd|df|dirname|echo|false|kill|ln|ls|mkdir|mkfifo|mknod|mv|pwd|readlink|rm|rmdir|sleep|stty|sync|test|touch|true|uname)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+install_coreutils_bins() {
+  [[ -d "$COREUTILS_DIR" && -f "$COREUTILS_PROGS" ]] || return 0
+
+  local src
+  while IFS= read -r prog; do
+    [[ -n "$prog" ]] || continue
+    is_essential_coreutils_prog "$prog" || continue
+    src="$COREUTILS_DIR/$prog"
+    if [[ ! -x "$src" ]]; then
+      echo "Missing coreutils binary: $src" >&2
+      exit 1
+    fi
+    cp "$src" "$ROOT/bin/$prog"
+    chmod +x "$ROOT/bin/$prog"
+  done < "$COREUTILS_PROGS"
+}
 
 if [[ -d rootfs ]]; then
   pushd rootfs >/dev/null
@@ -43,13 +79,10 @@ fi
 
 chmod +x "$ROOT/bin/busybox"
 ln -sf /usr/bin/bash "$ROOT/bin/bash"
+install_coreutils_bins
 
 is_blocked_applet() {
-  case "$1" in
-    *)
-      return 1
-      ;;
-  esac
+  is_coreutils_prog "$1"
 }
 
 if APPLETS="$("$ROOT/bin/busybox" --list-full 2>/dev/null)"; then
@@ -81,8 +114,25 @@ VibeOS monolithic kernel prototype
 Type: help
 MOTD
 
-if [[ -n "$HELP_BIN" && -x "$HELP_BIN" ]]; then
 cat > "$ROOT/.bashrc" <<'BASHRC'
+if command -v dircolors >/dev/null 2>&1; then
+  eval "$(dircolors -b)"
+fi
+
+if ls --color=auto / >/dev/null 2>&1; then
+  alias ls='ls --color=auto'
+fi
+
+if grep --color=auto "" /dev/null >/dev/null 2>&1; then
+  alias grep='grep --color=auto'
+fi
+
+if command -v diff >/dev/null 2>&1 && diff --color=auto /dev/null /dev/null >/dev/null 2>&1; then
+  alias diff='diff --color=auto'
+fi
+BASHRC
+if [[ -n "$HELP_BIN" && -x "$HELP_BIN" ]]; then
+  cat >> "$ROOT/.bashrc" <<'BASHRC'
 alias help='/usr/bin/help'
 BASHRC
 fi

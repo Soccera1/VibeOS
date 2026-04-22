@@ -203,7 +203,11 @@
 
 #define EXEC_MAX_ARGS 64
 #define EXEC_MAX_ENVS 64
-#define EXEC_STR_MAX 256
+/*
+ * Bash exports a long LS_COLORS value by default, so a tiny per-string exec
+ * scratch buffer causes every external command to fail after shell startup.
+ */
+#define EXEC_STR_MAX 4096
 #define EXEC_MAX_SYMLINKS 8
 
 #define ELF_MAGIC 0x464C457Fu
