@@ -53,7 +53,7 @@ exec_prefix	= ${prefix}
 datarootdir	= ${prefix}/share
 
 bindir		= ${exec_prefix}/bin
-ticdir		= /home/lily/code/vibeos/external/ncurses-src/build-musl/share/terminfo
+ticdir		= /usr/share/terminfo
 includedir	= ${prefix}/include
 includesubdir	= /ncursesw
 libdir		= ${exec_prefix}/lib

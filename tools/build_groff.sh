@@ -11,6 +11,7 @@ SRC_DIR="$2"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/strip_helpers.sh"
 
 if [[ ! -d "$SRC_DIR" ]]; then
   echo "groff source directory not found: $SRC_DIR" >&2
@@ -178,6 +179,7 @@ stage_groff() {
 
   mkdir -p "$OUT_DIR"
   cp -a "$STAGE_DIR/usr/." "$OUT_DIR"/
+  maybe_strip_tree_binaries "$OUT_DIR"
 }
 
 configure_groff

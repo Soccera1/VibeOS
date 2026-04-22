@@ -11,6 +11,7 @@ SRC_DIR="$2"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/strip_helpers.sh"
 
 mkdir -p "$(dirname "$OUT_BIN")"
 
@@ -171,6 +172,7 @@ WRAPPER_EOF
 
   cp "$BASH_BIN_SRC" "$OUT_BIN"
   chmod +x "$OUT_BIN"
+  maybe_strip_binary "$OUT_BIN"
   echo "Built bash: $OUT_BIN"
 }
 

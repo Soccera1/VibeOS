@@ -64,7 +64,7 @@ includesubdir	= /ncursesw
 INCLUDEDIR	= $(DESTDIR)$(includedir)$(includesubdir)
 
 tabsetdir	= $(datadir)/tabset
-ticdir		= /home/lily/code/vibeos/external/ncurses-src/build-musl/share/terminfo
+ticdir		= /usr/share/terminfo
 ticfile		= $(ticdir).db
 source		= ${top_srcdir}/misc/terminfo.src
 

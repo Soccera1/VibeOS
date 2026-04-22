@@ -280,10 +280,10 @@ ENDECHO
 		echo "${mandir}"
 		;;
 	--terminfo)
-		echo "/home/lily/code/vibeos/external/ncurses-src/build-musl/share/terminfo"
+		echo "/usr/share/terminfo"
 		;;
 	--terminfo-dirs)
-		echo "/usr/share/st/terminfo"
+		echo "/usr/share/terminfo:/lib/terminfo:/usr/local/share/terminfo"
 		;;
 	--termpath)
 		echo ""

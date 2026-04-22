@@ -10,6 +10,7 @@ DISK_IMAGE := $(BUILD_DIR)/vibeos-gpt.img
 CC := gcc
 LD := ld
 NASM := nasm
+STRIP ?= strip
 USER_CC := gcc
 BUSYBOX_SRC := external/busybox-src
 BUSYBOX_STATIC := external/busybox-static
@@ -57,14 +58,30 @@ MAN_DB_SRC := external/man-db-src
 USER_SL := $(BUILD_DIR)/userspace/sl
 HELP_SRC := userspace/help.c
 
-.PHONY: all clean run iso disk check-toolchain
+export STRIP_BINARIES ?= 1
+export STRIP
+
+.PHONY: all clean run iso disk check-toolchain all-debug iso-debug disk-debug run-debug
 
 all: disk
+
+all-debug: export STRIP_BINARIES := 0
+all-debug: all
+
+iso-debug: export STRIP_BINARIES := 0
+iso-debug: iso
+
+disk-debug: export STRIP_BINARIES := 0
+disk-debug: disk
+
+run-debug: export STRIP_BINARIES := 0
+run-debug: run
 
 check-toolchain:
 	@command -v $(CC) >/dev/null
 	@command -v $(LD) >/dev/null
 	@command -v $(NASM) >/dev/null
+	@if [[ "$(STRIP_BINARIES)" != "0" ]]; then command -v $(STRIP) >/dev/null; fi
 	@command -v grub-mkrescue >/dev/null
 	@command -v grub-install >/dev/null
 	@command -v mkfs.ext2 >/dev/null
@@ -83,6 +100,7 @@ $(BUILD_DIR)/kernel/src/%.o: kernel/src/%.c | $(BUILD_DIR)
 
 $(KERNEL_BIN): $(KERNEL_OBJS) kernel/linker.ld | $(BUILD_DIR)
 	$(LD) $(LDFLAGS) -o $@ $(KERNEL_OBJS)
+	@if [[ "$(STRIP_BINARIES)" != "0" ]]; then $(STRIP) $@; fi
 
 $(USER_BUSYBOX): | $(BUILD_DIR)
 	./tools/build_busybox.sh $@ "$(BUSYBOX_SRC)" "$(BUSYBOX_STATIC)" "$(BUSYBOX_ROOTFS)"
