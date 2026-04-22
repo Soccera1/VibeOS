@@ -51,6 +51,7 @@ USER_FILE_MAGIC := $(BUILD_DIR)/userspace/file-magic.mgc
 USER_NANO := $(BUILD_DIR)/userspace/nano
 USER_MAN_PAGES := $(BUILD_DIR)/userspace/man-pages
 USER_LIBPIPELINE := $(BUILD_DIR)/userspace/libpipeline
+USER_GDBM := $(BUILD_DIR)/userspace/gdbm
 USER_GROFF := $(BUILD_DIR)/userspace/groff
 USER_MAN_DB := $(BUILD_DIR)/userspace/man-db
 BASH_SRC := external/bash-src
@@ -61,6 +62,7 @@ FILE_SRC := external/file-src
 NANO_SRC := external/nano-src
 MAN_PAGES_SRC := external/man-pages-src
 LIBPIPELINE_SRC := external/libpipeline-src
+GDBM_SRC := external/gdbm-src
 GROFF_SRC := external/groff-src
 MAN_DB_SRC := external/man-db-src
 USER_SL := $(BUILD_DIR)/userspace/sl
@@ -149,11 +151,14 @@ $(USER_MAN_PAGES): | $(BUILD_DIR)
 $(USER_LIBPIPELINE): | $(BUILD_DIR)
 	./tools/build_libpipeline.sh $@ "$(LIBPIPELINE_SRC)"
 
+$(USER_GDBM): | $(BUILD_DIR)
+	./tools/build_gdbm.sh $@ "$(GDBM_SRC)"
+
 $(USER_GROFF): | $(BUILD_DIR)
 	./tools/build_groff.sh $@ "$(GROFF_SRC)"
 
-$(USER_MAN_DB): $(USER_LIBPIPELINE) $(USER_GROFF) | $(BUILD_DIR)
-	./tools/build_man_db.sh $@ "$(MAN_DB_SRC)" "$(USER_LIBPIPELINE)" "$(USER_GROFF)"
+$(USER_MAN_DB): $(USER_LIBPIPELINE) $(USER_GDBM) $(USER_GROFF) | $(BUILD_DIR)
+	./tools/build_man_db.sh $@ "$(MAN_DB_SRC)" "$(USER_LIBPIPELINE)" "$(USER_GDBM)" "$(USER_GROFF)"
 
 $(INITRAMFS): tools/make_initramfs.sh $(USER_BUSYBOX) $(USER_HELP) $(USER_COREUTILS) $(USER_COREUTILS_PROGS)
 	./tools/make_initramfs.sh $@ $(USER_BUSYBOX) $(USER_HELP) $(USER_COREUTILS) $(USER_COREUTILS_PROGS)

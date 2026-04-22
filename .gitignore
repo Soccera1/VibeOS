@@ -67,6 +67,7 @@ external/groff-src/doc/gnu.eps
 external/groff-src/doc/groff.dvi
 external/groff-src/doc/groff.pdf
 external/groff-src/font/devps/prologue.ps
+external/gdbm-src/build-musl/
 
 # Autoconf/configure churn in in-tree external builds
 external/bash-src/config.log

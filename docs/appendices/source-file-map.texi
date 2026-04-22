@@ -223,6 +223,9 @@ Build and stage nano.
 @item tools/build_libpipeline.sh
 Build and stage libpipeline.
 
+@item tools/build_gdbm.sh
+Build and stage gdbm.
+
 @item tools/build_groff.sh
 Build and stage groff.
 
