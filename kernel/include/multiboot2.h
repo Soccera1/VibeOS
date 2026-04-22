@@ -21,6 +21,9 @@ struct mb2_tag_module {
 enum {
     MB2_TAG_END = 0,
     MB2_TAG_MODULE = 3,
+    MB2_TAG_ACPI_OLD = 14,
+    MB2_TAG_ACPI_NEW = 15,
 };
 
 const struct mb2_tag_module* mb2_find_module(uint64_t mb2_info, size_t index);
+const void* mb2_find_rsdp(uint64_t mb2_info, size_t* rsdp_len);

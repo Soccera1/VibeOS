@@ -186,6 +186,10 @@ EOF
   set_cfg "$cfg" "CONFIG_FEATURE_SH_NOFORK" "y"
   set_cfg "$cfg" "CONFIG_ASH" "y"
   set_cfg "$cfg" "CONFIG_SH_IS_ASH" "y"
+  # VibeOS does not boot through BusyBox init or procfs, so the Linux
+  # "wait for init to mount /proc before signalling PID 1" heuristic only
+  # adds a dead 5-second delay to halt/poweroff/reboot.
+  unset_cfg "$cfg" "CONFIG_FEATURE_WAIT_FOR_INIT"
   # Keep the classic BusyBox sysklogd applets available in the initramfs.
   set_cfg "$cfg" "CONFIG_KLOGD" "y"
   set_cfg "$cfg" "CONFIG_FEATURE_KLOGD_KLOGCTL" "y"

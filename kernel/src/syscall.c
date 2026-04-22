@@ -10,6 +10,7 @@
 #include "input.h"
 #include "io.h"
 #include "kmalloc.h"
+#include "power.h"
 #include "process.h"
 #include "string.h"
 #include "userland.h"
@@ -3873,6 +3874,22 @@ static int signal_process(struct process* proc, int sig) {
         return 0;
     }
 
+    /* In VibeOS, PID 1 is the userspace bootstrap process. Treat the
+       traditional BusyBox halt/poweroff/reboot signals as kernel power
+       controls regardless of that process's own signal dispositions. */
+    if (proc->pid == 1) {
+        switch (sig) {
+            case SIGUSR1:
+                power_halt();
+            case SIGUSR2:
+                power_shutdown();
+            case SIGTERM:
+                power_reboot();
+            default:
+                break;
+        }
+    }
+
     struct sigaction_data* action = &proc->sig_actions[sig];
     if (action->handler == SIGNAL_HANDLER_IGN) {
         return 0;
@@ -3974,29 +3991,15 @@ static int sys_set_tid_address(uint64_t tidptr) {
 }
 
 __attribute__((noreturn)) static void do_shutdown(void) {
-    console_write("\nPowering off...\n");
-    outb(0xf4, 0x00);
-    __asm__ volatile("cli");
-    for (;;) {
-        __asm__ volatile("hlt");
-    }
+    power_shutdown();
 }
 
 __attribute__((noreturn)) static void do_halt(void) {
-    console_write("\nSystem halted.\n");
-    __asm__ volatile("cli");
-    for (;;) {
-        __asm__ volatile("hlt");
-    }
+    power_halt();
 }
 
 __attribute__((noreturn)) static void do_reboot(void) {
-    console_write("\nRebooting...\n");
-    uint8_t good = 0x02;
-    outb(0x64, good);
-    for (;;) {
-        __asm__ volatile("hlt");
-    }
+    power_reboot();
 }
 
 static int sys_reboot(int magic1, int magic2, uint64_t cmd) {
