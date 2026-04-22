@@ -12,6 +12,7 @@ NCURSES_BUILD="$3"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/strip_helpers.sh"
 
 mkdir -p "$(dirname "$OUT_BIN")"
 
@@ -71,6 +72,7 @@ popd >/dev/null
 
 cp "$SRC_DIR/sl" "$OUT_BIN"
 chmod +x "$OUT_BIN"
+maybe_strip_binary "$OUT_BIN"
 
 if readelf -h "$OUT_BIN" 2>/dev/null | grep -q "Type:.*EXEC"; then
   echo "Built sl (static ELF): $OUT_BIN"

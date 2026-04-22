@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/strip_helpers.sh"
+
 if [[ $# -lt 1 ]]; then
   echo "usage: $0 <output.ext2> [bash-bin] [help-bin] [sl-bin] [file-bin] [file-magic] [nano-bin] [coreutils-dir] [coreutils-programs] [usr-tree...]" >&2
   exit 1
@@ -110,17 +113,84 @@ copy_terminfo xterm
 copy_terminfo ansi
 copy_terminfo dumb
 
+maybe_strip_tree_binaries "$ROOT"
+
 mkdir -p "$(dirname "$OUT_IMG")"
 
-ROOT_KIB="$(du -sk "$ROOT" | awk '{print $1}')"
-if [[ -z "$ROOT_KIB" || "$ROOT_KIB" -lt 1 ]]; then
-  ROOT_KIB=1
+BLOCK_SIZE=4096
+INODE_SIZE=256
+
+count_root_inodes() {
+  find "$ROOT" -printf '.' | wc -c
+}
+
+estimate_data_blocks() {
+  find "$ROOT" -printf '%y %s\n' | awk -v block_size="$BLOCK_SIZE" '
+    $1 == "d" {
+      blocks += 1
+      next
+    }
+    $1 == "f" {
+      blocks += int(($2 + block_size - 1) / block_size)
+      next
+    }
+    $1 == "l" {
+      if ($2 > 60) {
+        blocks += int(($2 + block_size - 1) / block_size)
+      }
+      next
+    }
+    END {
+      if (blocks < 1) {
+        blocks = 1
+      }
+      print blocks
+    }
+  '
+}
+
+build_ext2_image() {
+  local image="$1"
+  local blocks="$2"
+
+  rm -f "$image"
+  mkfs.ext2 -q -F \
+    -b "$BLOCK_SIZE" \
+    -m 0 \
+    -N "$INODE_COUNT" \
+    -L VIBEUSR \
+    -d "$ROOT" \
+    "$image" "$blocks" >/dev/null 2>&1
+}
+
+INODE_COUNT="$(count_root_inodes)"
+if [[ -z "$INODE_COUNT" || "$INODE_COUNT" -lt 1 ]]; then
+  INODE_COUNT=1
 fi
 
-IMG_KIB=$(( ROOT_KIB + ROOT_KIB / 2 + 16384 ))
-if (( IMG_KIB < 16384 )); then
-  IMG_KIB=16384
+DATA_BLOCKS="$(estimate_data_blocks)"
+INODE_TABLE_BLOCKS=$(( (INODE_COUNT * INODE_SIZE + BLOCK_SIZE - 1) / BLOCK_SIZE ))
+LOWER_BLOCKS=$(( DATA_BLOCKS + INODE_TABLE_BLOCKS + 8 ))
+if (( LOWER_BLOCKS < 16 )); then
+  LOWER_BLOCKS=16
 fi
 
-truncate -s "${IMG_KIB}K" "$OUT_IMG"
-mkfs.ext2 -q -F -b 4096 -L VIBEUSR -d "$ROOT" "$OUT_IMG"
+TMP_IMG="$WORKDIR/usr.ext2"
+UPPER_BLOCKS="$LOWER_BLOCKS"
+until build_ext2_image "$TMP_IMG" "$UPPER_BLOCKS"; do
+  UPPER_BLOCKS=$(( UPPER_BLOCKS * 2 ))
+done
+
+while (( LOWER_BLOCKS < UPPER_BLOCKS )); do
+  MID_BLOCKS=$(( (LOWER_BLOCKS + UPPER_BLOCKS) / 2 ))
+  if build_ext2_image "$TMP_IMG" "$MID_BLOCKS"; then
+    UPPER_BLOCKS="$MID_BLOCKS"
+  else
+    LOWER_BLOCKS=$(( MID_BLOCKS + 1 ))
+  fi
+done
+
+build_ext2_image "$OUT_IMG" "$LOWER_BLOCKS" || {
+  echo "Failed to build ext2 image with $LOWER_BLOCKS blocks" >&2
+  exit 1
+}

@@ -13,6 +13,7 @@ ROOTFS_BIN="$4"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/strip_helpers.sh"
 
 mkdir -p "$(dirname "$OUT_BIN")"
 
@@ -77,6 +78,7 @@ copy_candidate() {
   validate_busybox_binary "$src"
   cp "$src" "$OUT_BIN"
   chmod +x "$OUT_BIN"
+  maybe_strip_binary "$OUT_BIN"
   echo "Using prebuilt upstream BusyBox: $src"
 }
 
@@ -241,6 +243,7 @@ EOF
   validate_busybox_binary "$SRC_DIR/busybox"
   cp "$SRC_DIR/busybox" "$OUT_BIN"
   chmod +x "$OUT_BIN"
+  maybe_strip_binary "$OUT_BIN"
   echo "Built upstream BusyBox from source: $SRC_DIR"
 }
 

@@ -15,6 +15,9 @@ if [[ ! -d "$SRC_DIR" ]]; then
   exit 1
 fi
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/strip_helpers.sh"
+
 ABS_SRC_DIR="$(cd "$SRC_DIR" && pwd)"
 
 mkdir -p "$(dirname "$OUT_DIR")" "$(dirname "$OUT_PROGS")"
@@ -161,6 +164,7 @@ copy_programs() {
     validate_binary "$STAGE_BIN_DIR/$prog"
     cp "$STAGE_BIN_DIR/$prog" "$OUT_DIR/$prog"
     chmod +x "$OUT_DIR/$prog"
+    maybe_strip_binary "$OUT_DIR/$prog"
     printf '%s\n' "$prog" >> "$OUT_PROGS"
   done < <(find "$STAGE_BIN_DIR" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)
 }

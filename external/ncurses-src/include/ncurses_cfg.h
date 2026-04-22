@@ -67,11 +67,10 @@
 #define HAVE_STDINT_H 1
 #define HAVE_UNISTD_H 1
 #define HAVE_DIRENT_H 1
-#define TERMINFO_DIRS "/usr/share/st/terminfo"
-#define TERMINFO "/home/lily/code/vibeos/external/ncurses-src/build-musl/share/terminfo"
+#define TERMINFO_DIRS "/usr/share/terminfo:/lib/terminfo:/usr/local/share/terminfo"
+#define TERMINFO "/usr/share/terminfo"
 #define HAVE_BIG_CORE 1
 #define PURE_TERMINFO 1
-#define USE_HOME_TERMINFO 1
 #define USE_ROOT_ENVIRON 1
 #define USE_ROOT_ACCESS 1
 #define USE_SETUID_ENVIRON 1

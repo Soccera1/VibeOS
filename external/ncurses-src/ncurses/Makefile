@@ -159,7 +159,7 @@ USE_BIG_STRINGS	= 1
 TERMINFO_CAPS	= $(top_srcdir)/include/Caps
 CAPLIST		= $(TERMINFO_CAPS) $(top_srcdir)/include/Caps-ncurses
 
-TERMINFO	= /home/lily/code/vibeos/external/ncurses-src/build-musl/share/terminfo
+TERMINFO	= /usr/share/terminfo
 TERMINFO_SRC	= ${top_srcdir}/misc/terminfo.src
 TIC_PATH	= tic
 INFOCMP_PATH	= infocmp

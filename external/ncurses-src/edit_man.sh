@@ -10,8 +10,8 @@ NCURSES_MINOR="5"
 NCURSES_PATCH="20240427"
 
 NCURSES_OSPEED="short"
-TERMINFO="/home/lily/code/vibeos/external/ncurses-src/build-musl/share/terminfo"
-TERMINFO_DIRS="/usr/share/st/terminfo"
+TERMINFO="/usr/share/terminfo"
+TERMINFO_DIRS="/usr/share/terminfo:/lib/terminfo:/usr/local/share/terminfo"
 
 INSTALL="/usr/bin/install -c"
 INSTALL_DATA="${INSTALL} -m 644"

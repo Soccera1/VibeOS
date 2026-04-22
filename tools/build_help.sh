@@ -10,6 +10,7 @@ OUT_BIN="$1"
 SRC_FILE="$2"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/strip_helpers.sh"
 
 mkdir -p "$(dirname "$OUT_BIN")"
 
@@ -32,6 +33,7 @@ zig cc -target x86_64-linux-musl \
   "$SRC_FILE"
 
 chmod +x "$OUT_BIN"
+maybe_strip_binary "$OUT_BIN"
 
 if ! readelf -h "$OUT_BIN" | grep -q "Machine:[[:space:]]*Advanced Micro Devices X86-64"; then
   echo "Help binary is not amd64: $OUT_BIN" >&2

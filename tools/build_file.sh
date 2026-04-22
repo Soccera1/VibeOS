@@ -12,6 +12,7 @@ SRC_DIR="$3"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/strip_helpers.sh"
 
 if [[ ! -d "$SRC_DIR" ]]; then
   echo "file source directory not found: $SRC_DIR" >&2
@@ -178,6 +179,7 @@ validate_binary "$BIN_SOURCE"
 cp "$BIN_SOURCE" "$OUT_BIN"
 cp "$BUILD_MAGIC" "$OUT_MAGIC"
 chmod +x "$OUT_BIN"
+maybe_strip_binary "$OUT_BIN"
 
 echo "Built file: $OUT_BIN"
 echo "Built magic database: $OUT_MAGIC"

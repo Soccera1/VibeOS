@@ -13,6 +13,7 @@ GROFF_TREE="$4"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/strip_helpers.sh"
 
 if [[ ! -d "$SRC_DIR" ]]; then
   echo "man-db source directory not found: $SRC_DIR" >&2
@@ -349,6 +350,7 @@ stage_man_db() {
     "$OUT_DIR/share/man/man8/catman.8" \
     "$OUT_DIR/share/man/man8/mandb.8"
   write_config "$OUT_DIR/etc/man_db.conf"
+  maybe_strip_tree_binaries "$OUT_DIR"
 }
 
 configure_man_db

@@ -11,6 +11,7 @@ SRC_DIR="$2"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/strip_helpers.sh"
 
 if [[ ! -d "$SRC_DIR" ]]; then
   echo "nano source directory not found: $SRC_DIR" >&2
@@ -171,5 +172,6 @@ validate_binary "$BUILD_BIN"
 
 cp "$BUILD_BIN" "$OUT_BIN"
 chmod +x "$OUT_BIN"
+maybe_strip_binary "$OUT_BIN"
 
 echo "Built nano: $OUT_BIN"

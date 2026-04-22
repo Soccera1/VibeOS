@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/strip_helpers.sh"
+
 if [[ $# -lt 2 ]]; then
   echo "usage: $0 <output.cpio> <busybox-bin> [help-bin] [coreutils-dir] [coreutils-programs]" >&2
   exit 1
@@ -78,8 +81,10 @@ else
 fi
 
 chmod +x "$ROOT/bin/busybox"
+maybe_strip_binary "$ROOT/bin/busybox"
 ln -sf /usr/bin/bash "$ROOT/bin/bash"
 install_coreutils_bins
+maybe_strip_tree_binaries "$ROOT"
 
 is_blocked_applet() {
   is_coreutils_prog "$1"
