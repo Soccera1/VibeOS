@@ -1,13 +1,10 @@
-#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
-#include "common.h"
 #include "console.h"
 #include "fs.h"
 #include "gdt.h"
 #include "idt.h"
-#include "input.h"
 #include "initramfs.h"
 #include "io.h"
 #include "kmalloc.h"
@@ -21,9 +18,6 @@
 uint64_t kernel_exit_stack_top;
 
 static uint8_t post_user_stack[65536];
-static char shell_ls_names[256][64];
-
-static void kernel_shell(void) __attribute__((noreturn));
 
 static void cpuid(uint32_t leaf, uint32_t subleaf, uint32_t* eax, uint32_t* ebx, uint32_t* ecx, uint32_t* edx) {
     __asm__ volatile("cpuid" : "=a"(*eax), "=b"(*ebx), "=c"(*ecx), "=d"(*edx) : "a"(leaf), "c"(subleaf));
@@ -69,181 +63,6 @@ static void enable_user_xsave(void) {
     }
 
     write_cr4(cr4);
-}
-
-static void read_line(char* out, size_t out_len) {
-    size_t n = 0;
-    while (n + 1 < out_len) {
-        int c = input_read_char_blocking();
-        if (c == '\r') {
-            c = '\n';
-        }
-
-        if (c == '\b') {
-            if (n > 0) {
-                --n;
-                console_putc('\b');
-            }
-            continue;
-        }
-
-        if (c == '\n') {
-            console_putc('\n');
-            break;
-        }
-
-        out[n++] = (char)c;
-        console_putc((char)c);
-    }
-    out[n] = '\0';
-}
-
-static const char* trim_left(const char* s) {
-    while (*s == ' ' || *s == '\t') {
-        ++s;
-    }
-    return s;
-}
-
-static void split_cmd(const char* line, char* cmd, size_t cmd_len, char* arg, size_t arg_len) {
-    const char* s = trim_left(line);
-
-    size_t i = 0;
-    while (s[i] != '\0' && s[i] != ' ' && s[i] != '\t' && i + 1 < cmd_len) {
-        cmd[i] = s[i];
-        ++i;
-    }
-    cmd[i] = '\0';
-
-    while (s[i] == ' ' || s[i] == '\t') {
-        ++i;
-    }
-
-    size_t j = 0;
-    while (s[i] != '\0' && j + 1 < arg_len) {
-        arg[j++] = s[i++];
-    }
-    arg[j] = '\0';
-}
-
-static void shell_ls(const char* path) {
-    const char* dir = (path[0] == '\0') ? "/" : path;
-
-    if (strcmp(dir, "/") != 0 && dir[0] != '/') {
-        console_write("ls: use absolute path\n");
-        return;
-    }
-
-    size_t count = 0;
-    uint8_t types[ARRAY_LEN(shell_ls_names)];
-    count = fs_collect_children(dir, shell_ls_names, types, ARRAY_LEN(shell_ls_names));
-    (void)types;
-
-    if (count == 0) {
-        console_write("(empty)\n");
-        return;
-    }
-
-    for (size_t i = 0; i < count; ++i) {
-        console_write(shell_ls_names[i]);
-        console_putc('\n');
-    }
-}
-
-static void shell_cat(const char* path) {
-    if (path[0] == '\0') {
-        console_write("cat: missing file\n");
-        return;
-    }
-
-    struct fs_entry e;
-    if (fs_lookup(path, &e) != 0 || (e.mode & FS_S_IFMT) == FS_S_IFDIR) {
-        console_write("cat: not found\n");
-        return;
-    }
-
-    uint8_t chunk[256];
-    size_t offset = 0;
-    uint8_t last = 0;
-    bool saw_data = false;
-    while (offset < e.size) {
-        size_t want = e.size - offset;
-        if (want > sizeof(chunk)) {
-            want = sizeof(chunk);
-        }
-        int rr = fs_read(&e, offset, chunk, want);
-        if (rr <= 0) {
-            break;
-        }
-        for (int i = 0; i < rr; ++i) {
-            console_putc((char)chunk[i]);
-        }
-        last = chunk[rr - 1];
-        saw_data = true;
-        offset += (size_t)rr;
-    }
-    if (!saw_data || last != '\n') {
-        console_putc('\n');
-    }
-}
-
-static void shell_help(void) {
-    console_write(
-        "VibeOS kernel fallback shell\n"
-        "\n"
-        "This shell is only available when the normal userspace shell did not start.\n"
-        "Use it to inspect the boot filesystems or retry BusyBox.\n"
-        "\n"
-        "Useful commands:\n"
-        "  ls /        list top-level filesystem entries\n"
-        "  ls /bin     see available programs\n"
-        "  cat /etc/motd  read a text file from the mounted filesystems\n"
-        "  busybox     try launching /bin/busybox sh -i\n"
-        "  clear       clear the screen\n"
-        "\n"
-        "Notes:\n"
-        "  ls only accepts absolute paths.\n"
-        "  cat expects a full file path.\n");
-}
-
-static void kernel_shell(void) {
-    char line[256];
-    char cmd[64];
-    char arg[192];
-
-    for (;;) {
-        console_write("vibeos# ");
-        read_line(line, sizeof(line));
-        split_cmd(line, cmd, sizeof(cmd), arg, sizeof(arg));
-
-        if (cmd[0] == '\0') {
-            continue;
-        }
-        if (strcmp(cmd, "help") == 0) {
-            shell_help();
-            continue;
-        }
-        if (strcmp(cmd, "clear") == 0) {
-            console_clear();
-            continue;
-        }
-        if (strcmp(cmd, "ls") == 0) {
-            shell_ls(arg);
-            continue;
-        }
-        if (strcmp(cmd, "cat") == 0) {
-            shell_cat(arg);
-            continue;
-        }
-        if (strcmp(cmd, "busybox") == 0) {
-            if (userland_run_busybox() != 0) {
-                console_write("busybox launch failed\n");
-            }
-            continue;
-        }
-
-        console_write("unknown command\n");
-    }
 }
 
 __attribute__((noreturn)) static void kernel_shutdown(void) {
@@ -297,9 +116,10 @@ void kernel_main(uint64_t mb2_info) {
     syscall_init();
 
     if (userland_run_default_shell() != 0) {
-        console_write("Falling back to kernel shell\n");
-        kernel_shell();
+        console_write("No userspace shell could be launched; halting\n");
+        kernel_shutdown();
     }
 
-    kernel_shell();
+    console_write("userspace launcher returned unexpectedly; halting\n");
+    kernel_shutdown();
 }

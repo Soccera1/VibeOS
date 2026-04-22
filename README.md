@@ -18,7 +18,6 @@ VibeOS is an amd64 monolithic-kernel OS prototype that boots via Multiboot2 and 
   - **file(1):** Static upstream `file` command with a bundled `magic.mgc` database.
   - **man + groff:** Upstream manual page reader and formatter under `/usr`.
   - **Linux man-pages:** Upstream manual pages staged under `/usr/share/man`.
-  - **Kernel Shell:** Built-in fallback shell (`vibeos#`) with `ls`, `cat`, `clear`, and `help`.
 
 ## Build
 

@@ -120,7 +120,7 @@ User VM layout constants and VM-space interfaces.
 
 @table @file
 @item kernel/src/main.c
-Top-level kernel startup, shell-launch policy, and kernel fallback shell.
+Top-level kernel startup and shell-launch policy.
 
 @item kernel/src/multiboot2.c
 Multiboot2 tag scanning helpers for modules, ACPI tables, and framebuffer

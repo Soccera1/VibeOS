@@ -17,7 +17,6 @@
 * Kernel Initialization Sequence::
 * Descriptor Tables and Exception Handling::
 * Early Userspace Launch Policy::
-* Kernel Fallback Shell::
 @end menu
 
 @node Link Address and Image Shape
@@ -163,30 +162,9 @@ The launch policy after initialization is:
 @enumerate
 @item try @file{/usr/bin/bash -i},
 @item if that fails, try @file{/bin/busybox sh -i}, and
-@item if both fail, run the kernel fallback shell.
+@item if both fail, print a boot failure message and halt.
 @end enumerate
 
-This policy means the OS can still be inspected even when the full userland has
-not been staged correctly.
-
-@node Kernel Fallback Shell
-@section Kernel Fallback Shell
-
-The fallback shell lives in @file{kernel/src/main.c}.  It is deliberately tiny
-and only intended for rescue.
-
-Its built-in commands are:
-
-@example
-ls
-cat
-clear
-help
-busybox
-halt
-poweroff
-reboot
-@end example
-
-It reads input through the generic input layer and only understands absolute
-paths for its filesystem inspection commands.
+This policy keeps early boot behavior small and explicit: either a userspace
+shell starts, or the kernel stops instead of carrying a second interactive
+environment.
