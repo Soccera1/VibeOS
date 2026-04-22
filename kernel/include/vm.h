@@ -20,6 +20,7 @@
 struct vm_mapping {
     uint64_t vaddr;
     uint8_t* page;
+    bool owned;
 };
 
 struct vm_space {
@@ -40,6 +41,7 @@ void vm_space_activate(const struct vm_space* space);
 void vm_space_reset_user(struct vm_space* space);
 int vm_space_clone(struct vm_space* dst, const struct vm_space* src);
 int vm_space_map_zero(struct vm_space* space, uint64_t addr, size_t len);
+int vm_space_map_physical(struct vm_space* space, uint64_t addr, uint64_t phys_addr, size_t len);
 int vm_space_write(struct vm_space* space, uint64_t addr, const void* src, size_t len);
 int vm_space_zero(struct vm_space* space, uint64_t addr, size_t len);
 int vm_space_unmap(struct vm_space* space, uint64_t addr, size_t len);

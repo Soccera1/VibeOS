@@ -64,6 +64,17 @@
 #define TIOCSPGRP 0x5410u
 #define TIOCGWINSZ 0x5413u
 #define FIONREAD 0x541Bu
+#define FBIOGET_VSCREENINFO 0x4600u
+#define FBIOPUT_VSCREENINFO 0x4601u
+#define FBIOGET_FSCREENINFO 0x4602u
+#define FBIOGETCMAP 0x4604u
+#define FBIOPUTCMAP 0x4605u
+#define FBIOPAN_DISPLAY 0x4606u
+#define FBIOBLANK 0x4611u
+
+#define FB_TYPE_PACKED_PIXELS 0u
+#define FB_VISUAL_TRUECOLOR 2u
+#define FB_ACCEL_NONE 0u
 
 #define POLLIN 0x0001
 #define POLLPRI 0x0002
@@ -88,6 +99,7 @@
 #define EBADF 9
 #define EFAULT 14
 #define EINVAL 22
+#define ENODEV 19
 #define ENOTTY 25
 #define ENOTDIR 20
 #define EISDIR 21
@@ -214,6 +226,7 @@
 #define ELF_MAGIC 0x464C457Fu
 #define ET_EXEC 2u
 #define PT_LOAD 1u
+
 struct linux_iovec {
     uint64_t base;
     uint64_t len;
@@ -257,6 +270,71 @@ struct linux_termios {
 struct linux_pselect_sigmask {
     uint64_t sigmask;
     uint64_t sigsetsize;
+};
+
+struct fb_fix_screeninfo {
+    char id[16];
+    unsigned long smem_start;
+    uint32_t smem_len;
+    uint32_t type;
+    uint32_t type_aux;
+    uint32_t visual;
+    uint16_t xpanstep;
+    uint16_t ypanstep;
+    uint16_t ywrapstep;
+    uint32_t line_length;
+    unsigned long mmio_start;
+    uint32_t mmio_len;
+    uint32_t accel;
+    uint16_t capabilities;
+    uint16_t reserved[2];
+};
+
+struct fb_bitfield {
+    uint32_t offset;
+    uint32_t length;
+    uint32_t msb_right;
+};
+
+struct fb_var_screeninfo {
+    uint32_t xres;
+    uint32_t yres;
+    uint32_t xres_virtual;
+    uint32_t yres_virtual;
+    uint32_t xoffset;
+    uint32_t yoffset;
+    uint32_t bits_per_pixel;
+    uint32_t grayscale;
+    struct fb_bitfield red;
+    struct fb_bitfield green;
+    struct fb_bitfield blue;
+    struct fb_bitfield transp;
+    uint32_t nonstd;
+    uint32_t activate;
+    uint32_t height;
+    uint32_t width;
+    uint32_t accel_flags;
+    uint32_t pixclock;
+    uint32_t left_margin;
+    uint32_t right_margin;
+    uint32_t upper_margin;
+    uint32_t lower_margin;
+    uint32_t hsync_len;
+    uint32_t vsync_len;
+    uint32_t sync;
+    uint32_t vmode;
+    uint32_t rotate;
+    uint32_t colorspace;
+    uint32_t reserved[4];
+};
+
+struct fb_cmap {
+    uint32_t start;
+    uint32_t len;
+    uint16_t* red;
+    uint16_t* green;
+    uint16_t* blue;
+    uint16_t* transp;
 };
 
 struct linux_rlimit {
@@ -371,6 +449,7 @@ enum fd_kind {
     FD_FILE,
     FD_DIR,
     FD_NULL,
+    FD_FB,
     FD_PIPE_R,
     FD_PIPE_W,
 };
@@ -411,6 +490,10 @@ static int g_current_sid = 1;
 static int g_pending_keyboard_signal;
 static struct pipe_state g_pipes[MAX_PIPES];
 static uint64_t g_tid_address;
+static uint16_t g_fb_cmap_red[256];
+static uint16_t g_fb_cmap_green[256];
+static uint16_t g_fb_cmap_blue[256];
+static uint16_t g_fb_cmap_transp[256];
 
 struct zombie_info {
     bool valid;
@@ -1054,6 +1137,104 @@ static bool is_tty_path(const char* path) {
     return (strcmp(path, "/dev/tty") == 0) || (strcmp(path, "/dev/console") == 0);
 }
 
+static bool is_fb_path(const char* path) {
+    return strcmp(path, "/dev/fb0") == 0;
+}
+
+static bool get_fb_info(struct console_framebuffer_info* info) {
+    if (info == NULL) {
+        return false;
+    }
+    return console_get_framebuffer_info(info);
+}
+
+static void fill_fb_fix_screeninfo(struct fb_fix_screeninfo* fix, const struct console_framebuffer_info* info) {
+    memset(fix, 0, sizeof(*fix));
+    strcpy(fix->id, "vibeosfb");
+    fix->smem_start = (unsigned long)info->phys_addr;
+    fix->smem_len = info->size;
+    fix->type = FB_TYPE_PACKED_PIXELS;
+    fix->visual = FB_VISUAL_TRUECOLOR;
+    fix->line_length = info->pitch;
+    fix->accel = FB_ACCEL_NONE;
+}
+
+static void fill_fb_var_screeninfo(struct fb_var_screeninfo* var, const struct console_framebuffer_info* info) {
+    memset(var, 0, sizeof(*var));
+    var->xres = info->width;
+    var->yres = info->height;
+    var->xres_virtual = info->width;
+    var->yres_virtual = info->height;
+    var->bits_per_pixel = info->bpp;
+    var->red.offset = info->red_offset;
+    var->red.length = info->red_length;
+    var->green.offset = info->green_offset;
+    var->green.length = info->green_length;
+    var->blue.offset = info->blue_offset;
+    var->blue.length = info->blue_length;
+    var->transp.offset = info->transp_offset;
+    var->transp.length = info->transp_length;
+}
+
+static void init_fb_cmap_defaults(void) {
+    for (size_t i = 0; i < ARRAY_LEN(g_fb_cmap_red); ++i) {
+        uint16_t value = (uint16_t)((i << 8) | i);
+        g_fb_cmap_red[i] = value;
+        g_fb_cmap_green[i] = value;
+        g_fb_cmap_blue[i] = value;
+        g_fb_cmap_transp[i] = 0u;
+    }
+}
+
+static int fb_cmap_bounds_check(const struct fb_cmap* cmap) {
+    if (cmap == NULL) {
+        return err(EFAULT);
+    }
+    if (cmap->len == 0u) {
+        return 0;
+    }
+    if (cmap->start >= ARRAY_LEN(g_fb_cmap_red) || cmap->len > ARRAY_LEN(g_fb_cmap_red) - cmap->start) {
+        return err(EINVAL);
+    }
+    return 0;
+}
+
+static void fb_cmap_readback(const struct fb_cmap* cmap) {
+    uint32_t start = cmap->start;
+    for (uint32_t i = 0; i < cmap->len; ++i) {
+        if (cmap->red != NULL) {
+            cmap->red[i] = g_fb_cmap_red[start + i];
+        }
+        if (cmap->green != NULL) {
+            cmap->green[i] = g_fb_cmap_green[start + i];
+        }
+        if (cmap->blue != NULL) {
+            cmap->blue[i] = g_fb_cmap_blue[start + i];
+        }
+        if (cmap->transp != NULL) {
+            cmap->transp[i] = g_fb_cmap_transp[start + i];
+        }
+    }
+}
+
+static void fb_cmap_update(const struct fb_cmap* cmap) {
+    uint32_t start = cmap->start;
+    for (uint32_t i = 0; i < cmap->len; ++i) {
+        if (cmap->red != NULL) {
+            g_fb_cmap_red[start + i] = cmap->red[i];
+        }
+        if (cmap->green != NULL) {
+            g_fb_cmap_green[start + i] = cmap->green[i];
+        }
+        if (cmap->blue != NULL) {
+            g_fb_cmap_blue[start + i] = cmap->blue[i];
+        }
+        if (cmap->transp != NULL) {
+            g_fb_cmap_transp[start + i] = cmap->transp[i];
+        }
+    }
+}
+
 static int normalize_path(const char* input, char* out, size_t out_len) {
     if (out_len < 2) {
         return err(EINVAL);
@@ -1224,6 +1405,26 @@ static int path_mode_size(const char* path, uint32_t* mode_out, size_t* size_out
         return 0;
     }
 
+    if (is_fb_path(path)) {
+        struct console_framebuffer_info fb;
+        if (!get_fb_info(&fb)) {
+            return err(ENOENT);
+        }
+        if (mode_out != NULL) {
+            *mode_out = S_IFCHR | 0666u;
+        }
+        if (size_out != NULL) {
+            *size_out = fb.size;
+        }
+        if (entry_out != NULL) {
+            memset(entry_out, 0, sizeof(*entry_out));
+            strncpy(entry_out->path, path, sizeof(entry_out->path));
+            entry_out->mode = S_IFCHR | 0666u;
+            entry_out->size = fb.size;
+        }
+        return 0;
+    }
+
     if (is_proc_self_exe_path(path)) {
         const char* target = "/bin/busybox";
         if (mode_out != NULL) {
@@ -1317,8 +1518,14 @@ static size_t collect_children(const char* dir, char names[MAX_CHILDREN][64], ui
     count += fs_collect_children(dir, names + count, types + count, MAX_CHILDREN - count);
 
     if (strcmp(dir, "/dev") == 0) {
-        const char* dev_nodes[] = {"tty", "console", "null"};
+        const char* dev_nodes[] = {"tty", "console", "null", "fb0"};
         for (size_t i = 0; i < ARRAY_LEN(dev_nodes) && count < MAX_CHILDREN; ++i) {
+            if (strcmp(dev_nodes[i], "fb0") == 0) {
+                struct console_framebuffer_info fb;
+                if (!get_fb_info(&fb)) {
+                    continue;
+                }
+            }
             if (child_index_of(names, count, dev_nodes[i]) >= 0) {
                 continue;
             }
@@ -1412,6 +1619,28 @@ static int sys_openat(int dirfd, const char* path_user, uint32_t flags) {
         g_fds[fd].fd_flags = 0;
         g_fds[fd].offset = 0;
         g_fds[fd].pipe_id = -1;
+        strncpy(g_fds[fd].path, path, sizeof(g_fds[fd].path));
+        sync_current_process_runtime();
+        return fd;
+    }
+
+    if (is_fb_path(path)) {
+        struct console_framebuffer_info fb;
+        if (!get_fb_info(&fb)) {
+            return err(ENOENT);
+        }
+        int fd = alloc_fd();
+        if (fd < 0) {
+            return fd;
+        }
+        g_fds[fd].kind = FD_FB;
+        g_fds[fd].flags = flags;
+        g_fds[fd].fd_flags = 0;
+        g_fds[fd].offset = 0;
+        g_fds[fd].pipe_id = -1;
+        memset(&g_fds[fd].entry, 0, sizeof(g_fds[fd].entry));
+        g_fds[fd].entry.mode = S_IFCHR | 0666u;
+        g_fds[fd].entry.size = fb.size;
         strncpy(g_fds[fd].path, path, sizeof(g_fds[fd].path));
         sync_current_process_runtime();
         return fd;
@@ -1563,6 +1792,24 @@ static int sys_read(int fd, void* buf, size_t count, struct syscall_frame* frame
         return 0;
     }
 
+    if (g_fds[fd].kind == FD_FB) {
+        struct console_framebuffer_info fb;
+        if (!get_fb_info(&fb)) {
+            return err(ENODEV);
+        }
+        size_t off = g_fds[fd].offset;
+        if (off >= fb.size) {
+            return 0;
+        }
+        size_t n = count;
+        if (n > fb.size - off) {
+            n = fb.size - off;
+        }
+        memcpy(buf, (const void*)(uintptr_t)(fb.phys_addr + off), n);
+        g_fds[fd].offset += n;
+        return (int)n;
+    }
+
     if (g_fds[fd].kind == FD_PIPE_R) {
         int pipe_id = g_fds[fd].pipe_id;
         if (pipe_id < 0 || pipe_id >= MAX_PIPES || !g_pipes[pipe_id].used) {
@@ -1696,6 +1943,24 @@ static int sys_write(int fd, const void* buf, size_t count, struct syscall_frame
         return err(EBADF);
     }
 
+    if (g_fds[fd].kind == FD_FB) {
+        struct console_framebuffer_info fb;
+        if (!get_fb_info(&fb)) {
+            return err(ENODEV);
+        }
+        size_t off = g_fds[fd].offset;
+        if (off >= fb.size) {
+            return 0;
+        }
+        size_t n = count;
+        if (n > fb.size - off) {
+            n = fb.size - off;
+        }
+        memcpy((void*)(uintptr_t)(fb.phys_addr + off), buf, n);
+        g_fds[fd].offset += n;
+        return (int)n;
+    }
+
     if (g_fds[fd].kind != FD_TTY) {
         return err(EBADF);
     }
@@ -1757,7 +2022,15 @@ static int64_t sys_lseek(int fd, int64_t offset, int whence) {
     } else if (whence == SEEK_CUR) {
         base = (int64_t)g_fds[fd].offset;
     } else if (whence == SEEK_END) {
-        base = (int64_t)g_fds[fd].entry.size;
+        if (g_fds[fd].kind == FD_FB) {
+            struct console_framebuffer_info fb;
+            if (!get_fb_info(&fb)) {
+                return err(ENODEV);
+            }
+            base = (int64_t)fb.size;
+        } else {
+            base = (int64_t)g_fds[fd].entry.size;
+        }
     } else {
         return err(EINVAL);
     }
@@ -1783,6 +2056,23 @@ static int sys_pread64(int fd, void* buf, size_t count, int64_t offset) {
     }
     if (g_fds[fd].kind == FD_DIR) {
         return err(EISDIR);
+    }
+
+    if (g_fds[fd].kind == FD_FB) {
+        struct console_framebuffer_info fb;
+        if (!get_fb_info(&fb)) {
+            return err(ENODEV);
+        }
+        size_t off = (size_t)offset;
+        if (off >= fb.size) {
+            return 0;
+        }
+        size_t n = count;
+        if (n > fb.size - off) {
+            n = fb.size - off;
+        }
+        memcpy(buf, (const void*)(uintptr_t)(fb.phys_addr + off), n);
+        return (int)n;
     }
 
     size_t size = g_fds[fd].entry.size;
@@ -1906,6 +2196,101 @@ static int sys_ioctl(int fd, uint64_t req, void* argp) {
         return err(EBADF);
     }
 
+    if (g_fds[fd].kind == FD_FB) {
+        struct console_framebuffer_info fb;
+        if (!get_fb_info(&fb)) {
+            return err(ENODEV);
+        }
+
+        if (req == FBIOGET_FSCREENINFO) {
+            if (argp != NULL) {
+                struct fb_fix_screeninfo fix;
+                fill_fb_fix_screeninfo(&fix, &fb);
+                memcpy(argp, &fix, sizeof(fix));
+            }
+            return 0;
+        }
+
+        if (req == FBIOGET_VSCREENINFO) {
+            if (argp != NULL) {
+                struct fb_var_screeninfo var;
+                fill_fb_var_screeninfo(&var, &fb);
+                memcpy(argp, &var, sizeof(var));
+            }
+            return 0;
+        }
+
+        if (req == FBIOGETCMAP) {
+            if (argp == NULL) {
+                return err(EFAULT);
+            }
+            struct fb_cmap cmap = *(const struct fb_cmap*)(uintptr_t)argp;
+            int cr = fb_cmap_bounds_check(&cmap);
+            if (cr != 0) {
+                return cr;
+            }
+            fb_cmap_readback(&cmap);
+            return 0;
+        }
+
+        if (req == FBIOPUTCMAP) {
+            if (argp == NULL) {
+                return err(EFAULT);
+            }
+            struct fb_cmap cmap = *(const struct fb_cmap*)(uintptr_t)argp;
+            int cr = fb_cmap_bounds_check(&cmap);
+            if (cr != 0) {
+                return cr;
+            }
+            fb_cmap_update(&cmap);
+            return 0;
+        }
+
+        if (req == FBIOPUT_VSCREENINFO) {
+            if (argp == NULL) {
+                return err(EFAULT);
+            }
+
+            struct fb_var_screeninfo requested;
+            struct fb_var_screeninfo current;
+            memcpy(&requested, argp, sizeof(requested));
+            fill_fb_var_screeninfo(&current, &fb);
+            if (requested.xres != current.xres || requested.yres != current.yres ||
+                requested.xres_virtual != current.xres_virtual || requested.yres_virtual != current.yres_virtual ||
+                requested.bits_per_pixel != current.bits_per_pixel || requested.red.offset != current.red.offset ||
+                requested.red.length != current.red.length || requested.green.offset != current.green.offset ||
+                requested.green.length != current.green.length || requested.blue.offset != current.blue.offset ||
+                requested.blue.length != current.blue.length || requested.transp.offset != current.transp.offset ||
+                requested.transp.length != current.transp.length) {
+                return err(EINVAL);
+            }
+
+            memcpy(argp, &current, sizeof(current));
+            return 0;
+        }
+
+        if (req == FBIOPAN_DISPLAY) {
+            if (argp == NULL) {
+                return err(EFAULT);
+            }
+
+            struct fb_var_screeninfo requested = *(const struct fb_var_screeninfo*)(uintptr_t)argp;
+            struct fb_var_screeninfo current;
+            fill_fb_var_screeninfo(&current, &fb);
+            if (requested.xoffset != 0u || requested.yoffset != 0u) {
+                return err(EINVAL);
+            }
+            memcpy(argp, &current, sizeof(current));
+            return 0;
+        }
+
+        if (req == FBIOBLANK) {
+            return 0;
+        }
+
+        return err(EINVAL);
+    }
+
     if (g_fds[fd].kind != FD_TTY) {
         return err(ENOTTY);
     }
@@ -1939,10 +2324,16 @@ static int sys_ioctl(int fd, uint64_t req, void* argp) {
     if (req == TIOCGWINSZ) {
         if (argp != NULL) {
             struct linux_winsize ws;
+            struct console_framebuffer_info fb;
             ws.ws_row = 25;
             ws.ws_col = 80;
-            ws.ws_xpixel = 0;
-            ws.ws_ypixel = 0;
+            if (get_fb_info(&fb)) {
+                ws.ws_xpixel = (uint16_t)fb.width;
+                ws.ws_ypixel = (uint16_t)fb.height;
+            } else {
+                ws.ws_xpixel = 0;
+                ws.ws_ypixel = 0;
+            }
             memcpy(argp, &ws, sizeof(ws));
         }
         return 0;
@@ -2133,6 +2524,15 @@ static uint16_t poll_revents_for_fd(const struct linux_pollfd* pfd) {
             break;
 
         case FD_NULL:
+            if ((events & POLLOUT) != 0u) {
+                revents |= POLLOUT;
+            }
+            break;
+
+        case FD_FB:
+            if ((events & POLLIN) != 0u) {
+                revents |= POLLIN;
+            }
             if ((events & POLLOUT) != 0u) {
                 revents |= POLLOUT;
             }
@@ -2895,6 +3295,13 @@ static int sys_fstat(int fd, struct linux_stat* st) {
         mode = S_IFCHR | 0666u;
     } else if (g_fds[fd].kind == FD_NULL) {
         mode = S_IFCHR | 0666u;
+    } else if (g_fds[fd].kind == FD_FB) {
+        struct console_framebuffer_info fb;
+        if (!get_fb_info(&fb)) {
+            return err(ENODEV);
+        }
+        mode = S_IFCHR | 0666u;
+        size = fb.size;
     } else if (g_fds[fd].kind == FD_DIR) {
         mode = S_IFDIR | 0755u;
     } else if (g_fds[fd].kind == FD_PIPE_R || g_fds[fd].kind == FD_PIPE_W) {
@@ -3300,13 +3707,36 @@ static int64_t sys_mmap(uint64_t addr, size_t len, uint64_t prot, uint64_t flags
         g_mmap_next = base + span;
     }
 
-    if (vm_space_map_zero(&current->vm, base, (size_t)span) != 0) {
-        return err(ENOMEM);
-    }
-
     if (!anonymous) {
-        if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind != FD_FILE) {
+        if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
             return err(EBADF);
+        }
+
+        if (g_fds[fd].kind == FD_FB) {
+            struct console_framebuffer_info fb;
+            uint64_t phys_base;
+            if (!get_fb_info(&fb)) {
+                return err(ENODEV);
+            }
+            if ((size_t)offset > fb.size) {
+                return err(EINVAL);
+            }
+            if ((size_t)offset + len > fb.size) {
+                return err(EINVAL);
+            }
+            phys_base = (fb.phys_addr + offset) & ~(align - 1u);
+            if (vm_space_map_physical(&current->vm, base, phys_base, (size_t)span) != 0) {
+                return err(ENOMEM);
+            }
+            return (int64_t)base;
+        }
+
+        if (g_fds[fd].kind != FD_FILE) {
+            return err(EBADF);
+        }
+
+        if (vm_space_map_zero(&current->vm, base, (size_t)span) != 0) {
+            return err(ENOMEM);
         }
 
         const struct fs_entry* entry = &g_fds[fd].entry;
@@ -3332,6 +3762,8 @@ static int64_t sys_mmap(uint64_t addr, size_t len, uint64_t prot, uint64_t flags
                 return err(ENOMEM);
             }
         }
+    } else if (vm_space_map_zero(&current->vm, base, (size_t)span) != 0) {
+        return err(ENOMEM);
     }
 
     return (int64_t)base;
@@ -4151,6 +4583,7 @@ void syscall_init(void) {
     g_pending_signal_count = 0;
     g_sig_mask = 0;
     memset(g_pipes, 0, sizeof(g_pipes));
+    init_fb_cmap_defaults();
     init_default_tty_termios();
 
     struct process* init_proc = current_process();

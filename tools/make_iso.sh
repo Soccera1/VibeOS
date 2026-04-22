@@ -25,6 +25,10 @@ cat > "$ISO_ROOT/boot/grub/grub.cfg" <<'CFG'
 set timeout=0
 set default=0
 
+insmod all_video
+set gfxmode=1024x768x32
+set gfxpayload=keep
+
 menuentry "VibeOS" {
     multiboot2 /boot/vibeos-kernel.bin
     module2 /boot/initramfs.cpio
