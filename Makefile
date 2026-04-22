@@ -40,12 +40,20 @@ USER_HELP := $(BUILD_DIR)/userspace/help
 USER_FILE := $(BUILD_DIR)/userspace/file
 USER_FILE_MAGIC := $(BUILD_DIR)/userspace/file-magic.mgc
 USER_NANO := $(BUILD_DIR)/userspace/nano
+USER_MAN_PAGES := $(BUILD_DIR)/userspace/man-pages
+USER_LIBPIPELINE := $(BUILD_DIR)/userspace/libpipeline
+USER_GROFF := $(BUILD_DIR)/userspace/groff
+USER_MAN_DB := $(BUILD_DIR)/userspace/man-db
 BASH_SRC := external/bash-src
 NCURSES_SRC := external/ncurses-src
 NCURSES_BUILD := $(NCURSES_SRC)/build-musl
 SL_SRC := external/sl-src
 FILE_SRC := external/file-src
 NANO_SRC := external/nano-src
+MAN_PAGES_SRC := external/man-pages-src
+LIBPIPELINE_SRC := external/libpipeline-src
+GROFF_SRC := external/groff-src
+MAN_DB_SRC := external/man-db-src
 USER_SL := $(BUILD_DIR)/userspace/sl
 HELP_SRC := userspace/help.c
 
@@ -106,11 +114,23 @@ $(USER_FILE_MAGIC): $(USER_FILE)
 $(USER_NANO): $(NCURSES_BUILD)/lib/libncursesw.a | $(BUILD_DIR)
 	./tools/build_nano.sh $@ "$(NANO_SRC)"
 
+$(USER_MAN_PAGES): | $(BUILD_DIR)
+	./tools/build_man_pages.sh $@ "$(MAN_PAGES_SRC)"
+
+$(USER_LIBPIPELINE): | $(BUILD_DIR)
+	./tools/build_libpipeline.sh $@ "$(LIBPIPELINE_SRC)"
+
+$(USER_GROFF): | $(BUILD_DIR)
+	./tools/build_groff.sh $@ "$(GROFF_SRC)"
+
+$(USER_MAN_DB): $(USER_LIBPIPELINE) $(USER_GROFF) | $(BUILD_DIR)
+	./tools/build_man_db.sh $@ "$(MAN_DB_SRC)" "$(USER_LIBPIPELINE)" "$(USER_GROFF)"
+
 $(INITRAMFS): tools/make_initramfs.sh $(USER_BUSYBOX) $(USER_HELP) $(USER_COREUTILS) $(USER_COREUTILS_PROGS)
 	./tools/make_initramfs.sh $@ $(USER_BUSYBOX) $(USER_HELP) $(USER_COREUTILS) $(USER_COREUTILS_PROGS)
 
-$(USR_EXT2): tools/make_usr_ext2.sh $(USER_BASH) $(USER_HELP) $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO) $(USER_COREUTILS) $(USER_COREUTILS_PROGS)
-	./tools/make_usr_ext2.sh $@ $(USER_BASH) $(USER_HELP) $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO) $(USER_COREUTILS) $(USER_COREUTILS_PROGS)
+$(USR_EXT2): tools/make_usr_ext2.sh $(USER_BASH) $(USER_HELP) $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO) $(USER_COREUTILS) $(USER_COREUTILS_PROGS) $(USER_MAN_PAGES) $(USER_GROFF) $(USER_MAN_DB)
+	./tools/make_usr_ext2.sh $@ $(USER_BASH) $(USER_HELP) $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO) $(USER_COREUTILS) $(USER_COREUTILS_PROGS) $(USER_MAN_PAGES) $(USER_GROFF) $(USER_MAN_DB)
 
 iso: check-toolchain $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT2)
 	./tools/make_iso.sh $(ISO_IMAGE) $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT2)

@@ -31,6 +31,8 @@ int main(void) {
         "  busybox --list       list BusyBox applets\n"
         "  busybox --list-full  show the remaining BusyBox applet paths\n"
         "  file /usr/bin/bash   identify a file with libmagic\n"
+        "  ls /usr/share/man    browse the staged manual page tree\n"
+        "  man intro            read the manual with man and groff\n"
         "\n"
         "Notes:\n"
         "  This help is curated on purpose; it is not a full command dump.\n"

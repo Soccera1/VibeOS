@@ -2873,8 +2873,11 @@ static int sys_readlinkat(int dirfd, const char* path_user, char* out, size_t bu
     }
 
     struct fs_entry e;
-    if (fs_lookup(path, &e) != 0 || (e.mode & S_IFMT) != S_IFLNK) {
+    if (fs_lookup(path, &e) != 0) {
         return err(ENOENT);
+    }
+    if ((e.mode & S_IFMT) != S_IFLNK) {
+        return err(EINVAL);
     }
 
     return fs_readlink(&e, out, bufsz);

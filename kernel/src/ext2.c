@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "common.h"
+#include "kmalloc.h"
 #include "string.h"
 
 #define EINVAL 22
@@ -26,9 +27,6 @@
 #define EXT2_FT_FIFO 5u
 #define EXT2_FT_SOCK 6u
 #define EXT2_FT_SYMLINK 7u
-
-#define EXT2_COPY_BASE 0x32000000ull
-#define EXT2_COPY_MAX (64u * 1024u * 1024u)
 
 struct ext2_superblock {
     uint32_t s_inodes_count;
@@ -412,8 +410,8 @@ void ext2_mount_image(const uint8_t* image, size_t size) {
         return;
     }
 
-    if (size <= EXT2_COPY_MAX) {
-        uint8_t* copy = (uint8_t*)(uintptr_t)EXT2_COPY_BASE;
+    uint8_t* copy = kmalloc(size);
+    if (copy != NULL) {
         memcpy(copy, image, size);
         image = copy;
     }

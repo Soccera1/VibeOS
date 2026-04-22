@@ -16,6 +16,8 @@ VibeOS is an amd64 monolithic-kernel OS prototype that boots via Multiboot2 and 
   - **GNU coreutils:** Primary implementation for standard file/text/process utilities.
   - **BusyBox:** Fallback shell and provider for non-coreutils applets.
   - **file(1):** Static upstream `file` command with a bundled `magic.mgc` database.
+  - **man + groff:** Upstream manual page reader and formatter under `/usr`.
+  - **Linux man-pages:** Upstream manual pages staged under `/usr/share/man`.
   - **Kernel Shell:** Built-in fallback shell (`vibeos#`) with `ls`, `cat`, `clear`, and `help`.
 
 ## Build
@@ -61,6 +63,6 @@ qemu-system-x86_64 \
 
 ## Userspace Implementation
 
-VibeOS builds BusyBox, GNU coreutils, Bash, and upstream `file(1)` as static, non-PIE musl binaries so they can run without a dynamic loader. GNU coreutils now provides the standard utility set wherever it has an implementation, with the essential commands copied into `/bin` and the rest copied into `/usr/bin` from the separate `/usr` image. BusyBox remains installed for the fallback shell and the non-coreutils applets such as `vi`, `mount`, `ps`, and similar small-system tools. Standalone programs such as Bash, `file`, `nano`, `sl`, and the curated `help` command live under `/usr/bin`, and `file` ships with its compiled `magic.mgc` database under `/usr/share/misc`.
+VibeOS builds BusyBox, GNU coreutils, Bash, and upstream `file(1)` as static, non-PIE musl binaries so they can run without a dynamic loader. GNU coreutils now provides the standard utility set wherever it has an implementation, with the essential commands copied into `/bin` and the rest copied into `/usr/bin` from the separate `/usr` image. BusyBox remains installed for the fallback shell and the non-coreutils applets such as `vi`, `mount`, `ps`, and similar small-system tools. Standalone programs such as Bash, `file`, `nano`, `sl`, `man`, and the curated `help` command live under `/usr/bin`, `file` ships with its compiled `magic.mgc` database under `/usr/share/misc`, groff provides the formatter stack used by `man`, and the upstream Linux man-pages tree is staged under `/usr/share/man`. The `man` reader is shipped now; the database-maintenance tools from `man-db` can be revisited later once a musl-native `gdbm` port is added.
 
 The initramfs now carries the root filesystem, the essential `/bin` command set, BusyBox, and an empty `/usr` mountpoint. A separate `build/usr.ext2` image is loaded as a second Multiboot module and mounted read-only at `/usr`, where the non-essential GNU utilities and optional standalone programs are exposed under `/usr/bin`.
