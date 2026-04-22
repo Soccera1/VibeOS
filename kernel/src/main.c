@@ -12,6 +12,7 @@
 #include "io.h"
 #include "kmalloc.h"
 #include "multiboot2.h"
+#include "power.h"
 #include "string.h"
 #include "syscall.h"
 #include "userland.h"
@@ -246,11 +247,7 @@ static void kernel_shell(void) {
 }
 
 __attribute__((noreturn)) static void kernel_shutdown(void) {
-    console_write("\nSystem halted.\n");
-    __asm__ volatile("cli");
-    for (;;) {
-        __asm__ volatile("hlt");
-    }
+    power_halt();
 }
 
 void userland_exit_handler(uint64_t code) {
@@ -261,6 +258,7 @@ void userland_exit_handler(uint64_t code) {
 void kernel_main(uint64_t mb2_info) {
     console_init();
     console_write("VibeOS amd64 monolithic kernel prototype\n");
+    power_init(mb2_info);
 
     const struct mb2_tag_module* initramfs_module = mb2_find_module(mb2_info, 0);
     if (initramfs_module == NULL) {

@@ -24,6 +24,10 @@ external/busybox-src/busybox_unstripped
 external/busybox-src/applets/applet_tables
 external/busybox-src/applets/usage
 external/busybox-src/applets/usage_pod
+external/busybox-src/include/autoconf.h
+external/busybox-src/include/bbconfigopts.h
+external/busybox-src/include/bbconfigopts_bz2.h
+external/busybox-src/include/usage_compressed.h
 
 # BusyBox build artifacts (top-level)
 external/busybox-src/.busybox_unstripped.cmd
@@ -33,6 +37,7 @@ external/busybox-src/.kconfig.d
 external/busybox-src/.kernelrelease
 external/busybox-src/.zigcc-musl-wrapper.sh
 external/busybox-src/busybox_unstripped.out
+external/busybox-src/include/config/
 
 # Zig caches under BusyBox source
 external/busybox-src/.zig-global-cache/
