@@ -259,6 +259,7 @@ void kernel_main(uint64_t mb2_info) {
     console_init();
     console_write("VibeOS amd64 monolithic kernel prototype\n");
     power_init(mb2_info);
+    kmalloc_init();
 
     const struct mb2_tag_module* initramfs_module = mb2_find_module(mb2_info, 0);
     if (initramfs_module == NULL) {
@@ -287,7 +288,6 @@ void kernel_main(uint64_t mb2_info) {
 
     kernel_exit_stack_top = (uint64_t)(uintptr_t)(&post_user_stack[sizeof(post_user_stack)]);
 
-    kmalloc_init();
     vm_init();
 
     gdt_init();

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then
-  echo "usage: $0 <output.ext2> [bash-bin] [help-bin] [sl-bin] [file-bin] [file-magic] [nano-bin] [coreutils-dir] [coreutils-programs]" >&2
+  echo "usage: $0 <output.ext2> [bash-bin] [help-bin] [sl-bin] [file-bin] [file-magic] [nano-bin] [coreutils-dir] [coreutils-programs] [usr-tree...]" >&2
   exit 1
 fi
 
@@ -15,6 +15,8 @@ FILE_MAGIC="${6:-}"
 NANO_BIN="${7:-}"
 COREUTILS_DIR="${8:-}"
 COREUTILS_PROGS="${9:-}"
+shift 9
+USR_TREES=("$@")
 
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
@@ -84,6 +86,11 @@ if [[ -n "$NANO_BIN" && -x "$NANO_BIN" ]]; then
   cp "$NANO_BIN" "$ROOT/bin/nano"
   chmod +x "$ROOT/bin/nano"
 fi
+
+for usr_tree in "${USR_TREES[@]}"; do
+  [[ -n "$usr_tree" && -d "$usr_tree" ]] || continue
+  cp -a "$usr_tree"/. "$ROOT"/
+done
 
 install_coreutils_bins
 

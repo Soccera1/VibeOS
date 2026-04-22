@@ -56,6 +56,16 @@ external/coreutils-src/autom4te.cache/
 external/coreutils-src/build-musl/
 external/ncurses-src/build-musl/
 external/nano-src/build-musl/
+external/man-pages-src/.tmp/
+external/libpipeline-src/build-musl/
+external/man-db-src/build-musl/
+external/groff-src/build-musl/
+external/groff-src/contrib/mom/examples/penguin.pdf
+external/groff-src/contrib/mom/examples/penguin.ps
+external/groff-src/doc/gnu.eps
+external/groff-src/doc/groff.dvi
+external/groff-src/doc/groff.pdf
+external/groff-src/font/devps/prologue.ps
 
 # Autoconf/configure churn in in-tree external builds
 external/bash-src/config.log
