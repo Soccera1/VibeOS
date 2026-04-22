@@ -19,6 +19,9 @@
 #define TEXT_PIXEL_HEIGHT (VGA_HEIGHT * FONT_HEIGHT)
 #define VGA_CRTC_INDEX 0x3D4
 #define VGA_CRTC_DATA 0x3D5
+#define VGA_CRTC_CURSOR_START 0x0A
+#define VGA_CRTC_CURSOR_POS_LO 0x0F
+#define VGA_CRTC_CURSOR_POS_HI 0x0E
 
 static volatile uint16_t* const vga_hw = (volatile uint16_t*)0xB8000;
 static uint16_t text_cells[VGA_WIDTH * VGA_HEIGHT];
@@ -52,6 +55,10 @@ static volatile uint8_t* g_fb_base;
 static size_t g_fb_origin_x;
 static size_t g_fb_origin_y;
 static uint32_t g_fb_palette[16];
+static bool cursor_visible = true;
+static bool soft_cursor_drawn;
+static size_t soft_cursor_row;
+static size_t soft_cursor_col;
 
 static const uint8_t g_vga_palette_rgb[16][3] = {
     {0x00, 0x00, 0x00}, {0x00, 0x00, 0xaa}, {0x00, 0xaa, 0x00}, {0x00, 0xaa, 0xaa},
@@ -115,12 +122,7 @@ static void fb_fill_rect(size_t x, size_t y, size_t width, size_t height, uint32
     }
 }
 
-static void draw_cell(size_t row, size_t col, uint16_t cell) {
-    if (!framebuffer_active()) {
-        vga_hw[cell_index(row, col)] = cell;
-        return;
-    }
-
+static void draw_framebuffer_cell(size_t row, size_t col, uint16_t cell, bool cursor_overlay) {
     uint8_t ch = (uint8_t)(cell & 0xffu);
     uint8_t attr = (uint8_t)(cell >> 8);
     uint32_t fg = g_fb_palette[attr & 0x0fu];
@@ -132,9 +134,41 @@ static void draw_cell(size_t row, size_t col, uint16_t cell) {
         uint8_t bits = g_console_font[ch][glyph_row];
         for (size_t glyph_col = 0; glyph_col < FONT_WIDTH; ++glyph_col) {
             uint32_t pixel = ((bits & (0x80u >> glyph_col)) != 0u) ? fg : bg;
+            if (cursor_overlay && glyph_row >= FONT_HEIGHT - 2u) {
+                pixel = fg;
+            }
             fb_store_pixel(x0 + glyph_col, y0 + glyph_row, pixel);
         }
     }
+}
+
+static void draw_cell(size_t row, size_t col, uint16_t cell) {
+    if (!framebuffer_active()) {
+        vga_hw[cell_index(row, col)] = cell;
+        return;
+    }
+
+    draw_framebuffer_cell(row, col, cell, false);
+}
+
+static void restore_soft_cursor(void) {
+    if (!soft_cursor_drawn) {
+        return;
+    }
+
+    draw_cell(soft_cursor_row, soft_cursor_col, text_cells[cell_index(soft_cursor_row, soft_cursor_col)]);
+    soft_cursor_drawn = false;
+}
+
+static void draw_soft_cursor(void) {
+    if (!framebuffer_active() || !cursor_visible) {
+        return;
+    }
+
+    soft_cursor_row = cursor_row;
+    soft_cursor_col = cursor_col;
+    draw_framebuffer_cell(cursor_row, cursor_col, text_cells[cell_index(cursor_row, cursor_col)], true);
+    soft_cursor_drawn = true;
 }
 
 static void present_row_range(size_t row, size_t start_col, size_t end_col) {
@@ -270,17 +304,38 @@ static void clamp_cursor(void) {
     }
 }
 
+static void set_vga_cursor_enabled(bool enabled) {
+    outb(VGA_CRTC_INDEX, VGA_CRTC_CURSOR_START);
+    uint8_t cursor_start = inb(VGA_CRTC_DATA);
+    if (enabled) {
+        cursor_start &= (uint8_t)~0x20u;
+    } else {
+        cursor_start |= 0x20u;
+    }
+    outb(VGA_CRTC_INDEX, VGA_CRTC_CURSOR_START);
+    outb(VGA_CRTC_DATA, cursor_start);
+}
+
 static void update_hw_cursor(void) {
     clamp_cursor();
     if (framebuffer_active()) {
+        restore_soft_cursor();
+        draw_soft_cursor();
         return;
     }
+
+    soft_cursor_drawn = false;
+    set_vga_cursor_enabled(cursor_visible);
+    if (!cursor_visible) {
+        return;
+    }
+
     size_t row = cursor_row;
     size_t col = cursor_col;
     uint16_t pos = (uint16_t)(row * VGA_WIDTH + col);
-    outb(VGA_CRTC_INDEX, 0x0F);
+    outb(VGA_CRTC_INDEX, VGA_CRTC_CURSOR_POS_LO);
     outb(VGA_CRTC_DATA, (uint8_t)(pos & 0xFFu));
-    outb(VGA_CRTC_INDEX, 0x0E);
+    outb(VGA_CRTC_INDEX, VGA_CRTC_CURSOR_POS_HI);
     outb(VGA_CRTC_DATA, (uint8_t)((pos >> 8) & 0xFFu));
 }
 
@@ -567,6 +622,8 @@ static void reset_console_state(void) {
     scroll_bottom = VGA_HEIGHT - 1u;
     g1_charset_graphics = false;
     shift_out_active = false;
+    cursor_visible = true;
+    soft_cursor_drawn = false;
     reset_text_attributes();
 }
 
@@ -854,11 +911,11 @@ static bool handle_ansi_char(char c) {
                 cursor_row = saved_cursor_row;
                 cursor_col = saved_cursor_col;
             } else if (c == 'h' && private_mode && param_count > 0 && params[0] == 25u) {
-                /* Cursor visibility is ignored on VGA text mode for now. */
+                cursor_visible = true;
             } else if (c == 'h' && private_mode && param_count > 0 && params[0] == 1049u) {
                 enter_alt_mode();
             } else if (c == 'l' && private_mode && param_count > 0 && params[0] == 25u) {
-                /* Cursor visibility is ignored on VGA text mode for now. */
+                cursor_visible = false;
             } else if (c == 'l' && private_mode && param_count > 0 && params[0] == 1049u) {
                 exit_alt_mode();
             }
