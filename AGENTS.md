@@ -1,3 +1,3 @@
-No dynamic loader is present, so binaries will fail if dynamically linked!
+A dynamic loader is present, however it is buggy, so statically link unless impossible!
 
-Musl is to be used, rather than glibc.
+Musl is to be used, rather than glibc, when possible.
