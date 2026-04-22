@@ -1,0 +1,185 @@
+@node Filesystems and Namespace
+@chapter Filesystems and Namespace
+
+@cindex filesystem
+@cindex initramfs
+@cindex ext2
+@cindex VFS
+@cindex namespace
+@findex fs_lookup
+@findex ext2_mount_image
+@findex initramfs_find
+@vindex FS_MAX_PATH
+@vindex FS_MAX_NAME
+
+@menu
+* Filesystem Design Summary::
+* Initramfs Backend::
+* ext2 Backend for /usr::
+* VFS Routing Rules::
+* Synthetic Directories and Devices::
+* Path Resolution and Symlink Semantics::
+* Read-Only Nature of the Filesystems::
+@end menu
+
+@node Filesystem Design Summary
+@section Filesystem Design Summary
+
+VibeOS does not implement a general mount tree.  Instead, it exposes two
+read-only backends and a dispatcher:
+
+@itemize @bullet
+@item the initramfs backend for the root filesystem, and
+@item the ext2 backend for @file{/usr}.
+@end itemize
+
+The VFS layer in @file{kernel/src/fs.c} decides which backend owns a path and
+then forwards lookup and read operations accordingly.
+
+@node Initramfs Backend
+@section Initramfs Backend
+
+The initramfs parser consumes a @code{cpio newc} archive.  It stores a flat
+table of entries in memory:
+
+@itemize @bullet
+@item normalized path,
+@item data pointer,
+@item file size, and
+@item mode bits.
+@end itemize
+
+Important implementation details:
+
+@itemize @bullet
+@item Up to 1024 entries are remembered.
+@item Archives up to 16 MiB may be copied to a fixed address at
+@code{0x30000000}.
+@item Paths are normalized to absolute names.
+@item Lookups are linear scans over the indexed entry table.
+@end itemize
+
+This backend is intentionally simple because the root image is built by the
+VibeOS scripts and loaded as an immutable module.
+
+@node ext2 Backend for /usr
+@section ext2 Backend for /usr
+
+The ext2 implementation is a read-only in-memory mount.
+
+It supports:
+
+@itemize @bullet
+@item superblock parsing,
+@item group descriptor parsing,
+@item inode lookup,
+@item direct, single-indirect, double-indirect, and triple-indirect data block
+resolution,
+@item regular file reads,
+@item symlink reads,
+@item directory scans, and
+@item directory child collection for user-visible directory enumeration.
+@end itemize
+
+The ext2 backend only claims paths rooted at @file{/usr}.  A mounted ext2 image
+therefore augments the root namespace without replacing it.
+
+@node VFS Routing Rules
+@section VFS Routing Rules
+
+@findex fs_read
+@findex fs_collect_children
+
+The routing rule is intentionally small:
+
+@itemize @bullet
+@item If the ext2 image is mounted and the path belongs to @file{/usr}, use the
+ext2 backend.
+@item Otherwise use the initramfs backend.
+@end itemize
+
+This affects:
+
+@itemize @bullet
+@item path lookup,
+@item file reads,
+@item symlink reads, and
+@item child enumeration.
+@end itemize
+
+The root directory behaves like a merged view.  It can expose initramfs entries
+plus @file{/usr} when the ext2 backend is mounted.
+
+@node Synthetic Directories and Devices
+@section Synthetic Directories and Devices
+
+The syscall layer synthesizes directory and device objects beyond what the
+underlying backend filesystems contain.
+
+Recognized synthetic directories include:
+
+@example
+/
+/bin
+/dev
+/etc
+/home
+/proc
+/sys
+/tmp
+/usr
+/usr/bin
+/var
+@end example
+
+Recognized synthetic non-directory paths include:
+
+@example
+/dev/tty
+/dev/console
+/dev/null
+/dev/fb0
+/proc/self/exe
+@end example
+
+These special paths are handled in the syscall layer, especially in the helper
+functions around @code{path_mode_size}, @code{sys_openat}, @code{sys_ioctl}, and
+@code{sys_readlinkat}.
+
+@node Path Resolution and Symlink Semantics
+@section Path Resolution and Symlink Semantics
+
+Path resolution follows a predictable set of rules:
+
+@itemize @bullet
+@item relative paths are made absolute against either the current working
+directory or a directory file descriptor,
+@item repeated slashes are collapsed,
+@item @samp{.} segments are ignored,
+@item @samp{..} segments back up one component when possible, and
+@item symlinks are resolved with a fixed maximum depth.
+@end itemize
+
+Final-component symlink following is selectable depending on the operation.  For
+example, @code{readlinkat} does not follow the final link because it needs the
+link object itself.
+
+@node Read-Only Nature of the Filesystems
+@section Read-Only Nature of the Filesystems
+
+The read-only nature of both backends is fundamental to the current OS.
+
+You can:
+
+@itemize @bullet
+@item open files,
+@item read files,
+@item stat files,
+@item traverse directories,
+@item read symlinks, and
+@item access synthetic device-like paths.
+@end itemize
+
+You cannot perform general persistent filesystem mutations.  There are no
+in-kernel implementations for normal file creation, unlink, rename, chmod,
+chown, truncate, or buffered writeback into initramfs or ext2.

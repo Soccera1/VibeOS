@@ -1,0 +1,192 @@
+@node Boot and Initialization
+@chapter Boot and Initialization
+
+@cindex boot process
+@cindex Multiboot2
+@cindex long mode
+@findex kernel_main
+@findex gdt_init
+@findex idt_init
+@findex mb2_find_module
+@vindex MB2_MAGIC
+
+@menu
+* Link Address and Image Shape::
+* Multiboot Header and Module Ordering::
+* Early Long-Mode Transition::
+* Kernel Initialization Sequence::
+* Descriptor Tables and Exception Handling::
+* Early Userspace Launch Policy::
+* Kernel Fallback Shell::
+@end menu
+
+@node Link Address and Image Shape
+@section Link Address and Image Shape
+
+The linker script in @file{kernel/linker.ld} fixes the kernel entry image at
+1 MiB:
+
+@example
+. = 1M;
+@end example
+
+It also defines:
+
+@itemize @bullet
+@item @code{__kernel_start}, and
+@item @code{__kernel_end}.
+@end itemize
+
+These symbols matter later to the heap initializer in
+@file{kernel/src/kmalloc.c}, which verifies that the fixed heap start does not
+overlap the linked kernel image.
+
+The major output sections are:
+
+@itemize @bullet
+@item @code{.multiboot},
+@item @code{.text},
+@item @code{.rodata},
+@item @code{.data}, and
+@item @code{.bss}.
+@end itemize
+
+@node Multiboot Header and Module Ordering
+@section Multiboot Header and Module Ordering
+
+The bootstrap file @file{kernel/boot/boot.asm} provides the Multiboot2 header.
+That header requests:
+
+@itemize @bullet
+@item the i386-style Multiboot2 header format,
+@item a framebuffer preference of 1024x768x32, and
+@item the normal end tag.
+@end itemize
+
+The boot media scripts always pass two Multiboot modules after the kernel:
+
+@enumerate
+@item module 0 is the initramfs, and
+@item module 1 is the @file{/usr} ext2 image.
+@end enumerate
+
+@findex initramfs_init
+@findex fs_init
+
+This ordering is not incidental.  @code{kernel_main} looks up the modules by
+index and assigns fixed meanings to them.
+
+@node Early Long-Mode Transition
+@section Early Long-Mode Transition
+
+The bootstrap path does the following in assembly:
+
+@enumerate
+@item disable interrupts,
+@item switch to a temporary 32-bit stack,
+@item verify long-mode support with @code{cpuid},
+@item zero six pages of bootstrap page-table memory,
+@item build an identity-mapped paging hierarchy for the low 4 GiB using 2 MiB
+pages,
+@item load a temporary 64-bit GDT,
+@item enable PAE,
+@item set the long-mode bit in @code{EFER},
+@item load @code{cr3},
+@item enable paging in @code{cr0}, and
+@item far-jump into 64-bit mode and call @code{kernel_main}.
+@end enumerate
+
+This initial identity map is wider than the short README summary; the actual
+source maps four 1 GiB regions through the bootstrap PDPT, not just one.
+
+@node Kernel Initialization Sequence
+@section Kernel Initialization Sequence
+
+Once C code begins, @code{kernel_main} performs initialization in a fixed order:
+
+@enumerate
+@item console initialization,
+@item ACPI power probing,
+@item heap initialization,
+@item initramfs discovery and indexing,
+@item @file{/usr} ext2 mount attempt,
+@item post-user return-stack installation,
+@item VM template initialization,
+@item GDT setup,
+@item kernel-stack installation into the TSS,
+@item IDT setup,
+@item user XSAVE and FSGSBASE enablement,
+@item syscall subsystem initialization, and
+@item launch of the default userspace shell.
+@end enumerate
+
+The order matters.  For example, the heap must exist before the VM subsystem
+allocates page tables, and the TSS kernel stack must be valid before user mode
+is entered.
+
+@node Descriptor Tables and Exception Handling
+@section Descriptor Tables and Exception Handling
+
+@findex exception_dispatch
+
+The runtime GDT contains:
+
+@itemize @bullet
+@item a null descriptor,
+@item kernel code and data descriptors,
+@item user data and code descriptors, and
+@item a TSS descriptor.
+@end itemize
+
+The TSS stores:
+
+@itemize @bullet
+@item the ring-0 stack pointer used on privilege transitions, and
+@item a dedicated IST entry for double-fault handling.
+@end itemize
+
+The IDT installs handlers for vectors 0 through 31 and vector 128.
+
+Exception handling is intentionally simple.  @code{exception_dispatch} prints a
+register report including the vector, error code, key machine state, and
+@code{cr2}, then halts the machine.  There is no attempt to recover from kernel
+exceptions.
+
+Vector 128 is reserved for the @code{int $0x80} compatibility path, while the
+main syscall path uses @code{IA32_LSTAR}.
+
+@node Early Userspace Launch Policy
+@section Early Userspace Launch Policy
+
+The launch policy after initialization is:
+
+@enumerate
+@item try @file{/usr/bin/bash -i},
+@item if that fails, try @file{/bin/busybox sh -i}, and
+@item if both fail, run the kernel fallback shell.
+@end enumerate
+
+This policy means the OS can still be inspected even when the full userland has
+not been staged correctly.
+
+@node Kernel Fallback Shell
+@section Kernel Fallback Shell
+
+The fallback shell lives in @file{kernel/src/main.c}.  It is deliberately tiny
+and only intended for rescue.
+
+Its built-in commands are:
+
+@example
+ls
+cat
+clear
+help
+busybox
+halt
+poweroff
+reboot
+@end example
+
+It reads input through the generic input layer and only understands absolute
+paths for its filesystem inspection commands.

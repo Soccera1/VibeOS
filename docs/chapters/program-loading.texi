@@ -1,0 +1,186 @@
+@node Program Loading and Userspace
+@chapter Program Loading and Userspace
+
+@cindex ELF loader
+@cindex shebang
+@cindex auxiliary vector
+@cindex userspace layout
+@findex userland_run_default_shell
+@findex userland_run_busybox
+@findex sys_execve
+@vindex USER_ET_DYN_BASE
+@vindex USER_INTERP_BASE
+
+@menu
+* Bootstrap Loader and execve::
+* ELF Image Mapping Rules::
+* Interpreter-Backed Executables::
+* Shebang Processing::
+* Initial Stack and Environment::
+* Userspace Layout and Startup::
+* In-Tree Userspace Helper::
+@end menu
+
+@node Bootstrap Loader and execve
+@section Bootstrap Loader and execve
+
+There are two code paths that can start a user program:
+
+@itemize @bullet
+@item the early bootstrap loader in @file{kernel/src/userland.c}, used before
+the normal syscall path is active for user programs, and
+@item the general @code{execve} implementation in @file{kernel/src/syscall.c}.
+@end itemize
+
+The early loader is only responsible for launching the first interactive shell.
+The syscall path is what later user programs use.
+
+@node ELF Image Mapping Rules
+@section ELF Image Mapping Rules
+
+Both loaders understand ELF64 headers and a small set of program headers.
+
+Accepted executable forms are:
+
+@itemize @bullet
+@item @code{ET_EXEC}, and
+@item @code{ET_DYN}.
+@end itemize
+
+Recognized program-header types are:
+
+@itemize @bullet
+@item @code{PT_LOAD}, and
+@item @code{PT_INTERP}.
+@end itemize
+
+The loader maps each loadable segment as zero-filled memory and then copies the
+file-backed bytes into place.  The loader also calculates:
+
+@itemize @bullet
+@item entry point,
+@item program-header table location,
+@item load bias for @code{ET_DYN}, and
+@item overall mapped image span.
+@end itemize
+
+These values are later exposed to the process through the auxiliary vector.
+
+@node Interpreter-Backed Executables
+@section Interpreter-Backed Executables
+
+When a program contains @code{PT_INTERP}, VibeOS attempts to:
+
+@enumerate
+@item load the main program,
+@item resolve and load the interpreter,
+@item place the interpreter at a fixed higher base, and
+@item enter user mode at the interpreter entry point while exposing the main
+program's program-header information.
+@end enumerate
+
+This is good enough for experimentation, but it is still not the preferred
+deployment model.  The repository-wide packaging scripts continue to target
+static @code{ET_EXEC} binaries because that is the path expected to work.
+
+@node Shebang Processing
+@section Shebang Processing
+
+The @code{execve} path also handles script files beginning with @samp{#!}.
+
+The parser:
+
+@itemize @bullet
+@item detects the interpreter path,
+@item captures one optional argument after the interpreter,
+@item rewrites @code{argv} so the interpreter becomes @code{argv[0]},
+@item inserts the optional argument when present, and
+@item inserts the script path before the script's remaining arguments.
+@end itemize
+
+Nested interpreter resolution is bounded to prevent unending recursion.
+
+@node Initial Stack and Environment
+@section Initial Stack and Environment
+
+@findex build_exec_stack
+
+When a program is launched, the kernel constructs a Linux-like initial user
+stack containing:
+
+@itemize @bullet
+@item @code{argc},
+@item the @code{argv} pointer vector,
+@item the @code{envp} pointer vector, and
+@item an auxiliary vector with entries such as @code{AT_PHDR}, @code{AT_PHENT},
+@code{AT_PHNUM}, @code{AT_ENTRY}, @code{AT_BASE}, @code{AT_RANDOM},
+@code{AT_PLATFORM}, and @code{AT_EXECFN}.
+@end itemize
+
+Default environment strings include:
+
+@example
+TERM=vt100
+HOME=/
+PATH=/bin:/sbin:/usr/bin
+SH_STANDALONE=1
+GLIBC_TUNABLES=glibc.pthread.rseq=0
+@end example
+
+This is one of the reasons statically built GNU userland programs work at all
+inside VibeOS.
+
+@node Userspace Layout and Startup
+@section Userspace Layout and Startup
+
+Userland is split between the root filesystem and @file{/usr}.
+
+Root contains the essential boot path:
+
+@itemize @bullet
+@item @file{/init},
+@item @file{/bin/busybox},
+@item essential coreutils commands,
+@item shell startup files such as @file{/.bashrc}, and
+@item the message of the day.
+@end itemize
+
+@file{/usr} contains the larger optional environment:
+
+@itemize @bullet
+@item Bash,
+@item non-essential coreutils commands,
+@item groff and man-db frontends,
+@item Linux man-pages,
+@item @code{file},
+@item @code{nano},
+@item @code{sl}, and
+@item the in-tree @code{help} helper.
+@end itemize
+
+The generated @file{/init} script is intentionally simple:
+
+@example
+if [ -x /usr/bin/bash ]; then
+  exec /usr/bin/bash -i
+fi
+exec /bin/busybox sh -i
+@end example
+
+@node In-Tree Userspace Helper
+@section In-Tree Userspace Helper
+
+The in-tree userspace helper is @file{userspace/help.c}.  It is compiled by
+@file{tools/build_help.sh} into a static musl binary and staged into
+@file{/usr/bin/help}.
+
+Its purpose is not to dump every command on the system.  Instead it gives a
+curated quick start that points users toward:
+
+@itemize @bullet
+@item basic inspection commands,
+@item shell choices,
+@item BusyBox applet discovery,
+@item manual-page browsing, and
+@item file identification through @code{file(1)}.
+@end itemize

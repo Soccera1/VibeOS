@@ -1,0 +1,263 @@
+@node Source File Map
+@appendix Source File Map
+
+@cindex source file map
+@cindex file map
+@cindex code map
+
+This appendix maps every in-tree source or build file that materially
+contributes to the OS.
+
+@menu
+* Top-Level Files::
+* Kernel Boot Files::
+* Kernel Header Files::
+* Kernel Source Files::
+* In-Tree Userspace Files::
+* Tool Script Files::
+* Documentation Source Files::
+@end menu
+
+@node Top-Level Files
+@appendixsec Top-Level Files
+
+@table @file
+@item Makefile
+Root build graph for the kernel, packaged userspace, disk and ISO images, QEMU
+launch, and documentation generation.
+
+@item README.md
+Short human-readable overview of the project.
+
+@item .gitignore
+Repository ignore rules, including generated build and documentation outputs.
+@end table
+
+@node Kernel Boot Files
+@appendixsec Kernel Boot Files
+
+@table @file
+@item kernel/linker.ld
+Kernel linker script.
+
+@item kernel/boot/boot.asm
+Multiboot2 header, early paging setup, long-mode transition, and handoff to
+@code{kernel_main}.
+
+@item kernel/boot/interrupts.asm
+Assembly helpers for loading the GDT and IDT, syscall entry, user-mode entry
+and exit, and exception stubs.
+@end table
+
+@node Kernel Header Files
+@appendixsec Kernel Header Files
+
+@table @file
+@item kernel/include/common.h
+Small shared macros and reboot command constants.
+
+@item kernel/include/console.h
+Console API and framebuffer information structure.
+
+@item kernel/include/console_font.h
+Built-in console font dimensions and glyph table declaration.
+
+@item kernel/include/ext2.h
+Public interface of the read-only ext2 backend.
+
+@item kernel/include/fs.h
+VFS-level path, mode, backend, and lookup interfaces.
+
+@item kernel/include/gdt.h
+GDT and TSS loader interface.
+
+@item kernel/include/idt.h
+IDT initialization interface.
+
+@item kernel/include/initramfs.h
+Initramfs entry representation and lookup interface.
+
+@item kernel/include/input.h
+Combined serial and keyboard input interface.
+
+@item kernel/include/io.h
+Inline x86 port-I/O, MSR, control-register, TSC, and FS-base helpers.
+
+@item kernel/include/keyboard.h
+Keyboard polling interface and combo-signal enumeration.
+
+@item kernel/include/kmalloc.h
+Kernel heap allocator interface.
+
+@item kernel/include/multiboot2.h
+Multiboot2 tag structures and lookup helpers used by the kernel.
+
+@item kernel/include/power.h
+ACPI and machine power-control interface.
+
+@item kernel/include/process.h
+Process table types, wait-state metadata, signal handler metadata, and process
+management interfaces.
+
+@item kernel/include/serial.h
+Serial console interface.
+
+@item kernel/include/string.h
+Kernel-private memory and string routines.
+
+@item kernel/include/syscall.h
+Saved syscall-frame layout and syscall entry API.
+
+@item kernel/include/userland.h
+Bootstrap userland loader interface.
+
+@item kernel/include/vm.h
+User VM layout constants and VM-space interfaces.
+@end table
+
+@node Kernel Source Files
+@appendixsec Kernel Source Files
+
+@table @file
+@item kernel/src/main.c
+Top-level kernel startup, shell-launch policy, and kernel fallback shell.
+
+@item kernel/src/multiboot2.c
+Multiboot2 tag scanning helpers for modules, ACPI tables, and framebuffer
+information.
+
+@item kernel/src/console.c
+Main console implementation, ANSI handling, framebuffer rendering, and text-cell
+model.
+
+@item kernel/src/console_font.c
+Built-in 8x16 bitmap font table.
+
+@item kernel/src/serial.c
+COM1 initialization and polled serial I/O.
+
+@item kernel/src/input.c
+Input multiplexer over serial and keyboard.
+
+@item kernel/src/keyboard.c
+Polled PS/2 keyboard scancode translator.
+
+@item kernel/src/power.c
+ACPI parsing and machine halt, reboot, and shutdown logic.
+
+@item kernel/src/gdt.c
+Runtime GDT, TSS, and kernel-stack setup.
+
+@item kernel/src/idt.c
+IDT construction and vector installation.
+
+@item kernel/src/exceptions.c
+Exception report printer.
+
+@item kernel/src/kmalloc.c
+Kernel heap allocator.
+
+@item kernel/src/vm.c
+Kernel and per-process page-table management.
+
+@item kernel/src/initramfs.c
+Read-only initramfs parser and entry indexer.
+
+@item kernel/src/ext2.c
+Read-only ext2 filesystem implementation for @file{/usr}.
+
+@item kernel/src/fs.c
+VFS dispatcher over initramfs and ext2.
+
+@item kernel/src/process.c
+Process table allocator, lookup, and pending-signal bookkeeping.
+
+@item kernel/src/userland.c
+Bootstrap ELF loader and initial shell launcher.
+
+@item kernel/src/syscall.c
+The main syscall subsystem: descriptor model, path resolution, pipes, waiting,
+signals, scheduling, exec, fork-like calls, and syscall dispatch.
+
+@item kernel/src/string.c
+Kernel-local @code{memcpy}, @code{memmove}, @code{strlen}, and related helper
+implementations.
+@end table
+
+@node In-Tree Userspace Files
+@appendixsec In-Tree Userspace Files
+
+@table @file
+@item userspace/help.c
+Curated quick-start helper program staged into @file{/usr/bin/help}.
+@end table
+
+@node Tool Script Files
+@appendixsec Tool Script Files
+
+@table @file
+@item tools/build_help.sh
+Build the in-tree @code{help} program.
+
+@item tools/build_busybox.sh
+Build or reuse BusyBox for the VibeOS root image.
+
+@item tools/build_coreutils.sh
+Build and stage GNU coreutils.
+
+@item tools/build_bash.sh
+Build and stage Bash.
+
+@item tools/build_ncurses.sh
+Build a static wide-character ncurses.
+
+@item tools/build_sl.sh
+Build and stage @code{sl}.
+
+@item tools/build_file.sh
+Build and stage @code{file(1)} and @file{magic.mgc}.
+
+@item tools/build_nano.sh
+Build and stage nano.
+
+@item tools/build_libpipeline.sh
+Build and stage libpipeline.
+
+@item tools/build_groff.sh
+Build and stage groff.
+
+@item tools/build_man_pages.sh
+Stage Linux man-pages.
+
+@item tools/build_man_db.sh
+Build and stage man-db.
+
+@item tools/make_initramfs.sh
+Create the initramfs root archive.
+
+@item tools/make_usr_ext2.sh
+Create the ext2 @file{/usr} image.
+
+@item tools/make_iso.sh
+Create the bootable ISO image.
+
+@item tools/make_gpt_disk.sh
+Create the BIOS plus GPT raw disk image.
+
+@item tools/strip_helpers.sh
+Shared stripping helper functions.
+@end table
+
+@node Documentation Source Files
+@appendixsec Documentation Source Files
+
+@table @file
+@item docs/vibeos.texi
+Top-level Texinfo manual file that includes the chapter and appendix sources.
+
+@item docs/chapters/*.texi
+Main body chapters for architecture, build, runtime, and ABI documentation.
+
+@item docs/appendices/*.texi
+Reference appendices for scripts, file maps, constants, and limitations.
+@end table

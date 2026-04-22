@@ -1,0 +1,91 @@
+@node Known Limitations
+@appendix Known Limitations
+
+@cindex limitations
+@cindex missing features
+@cindex compatibility gaps
+
+This appendix records the major architectural and compatibility limits visible
+in the current source tree.
+
+@menu
+* Kernel and Scheduler Limits::
+* Filesystem and Namespace Limits::
+* ABI and Compatibility Limits::
+* Toolchain and Userspace Limits::
+@end menu
+
+@node Kernel and Scheduler Limits
+@appendixsec Kernel and Scheduler Limits
+
+The scheduler is cooperative in practice.  There is no periodic timer interrupt
+and no preemptive multitasking.
+
+Related consequences include:
+
+@itemize @bullet
+@item CPU-bound programs do not lose the processor unless they enter the kernel
+through syscalls.
+@item Sleep and readiness waiting rely on polling and saved syscall context.
+@item Timekeeping is synthetic rather than driven by a real wall-clock source.
+@end itemize
+
+Exception handling is also intentionally simple: kernel exceptions are reported
+and then the machine halts.
+
+@node Filesystem and Namespace Limits
+@appendixsec Filesystem and Namespace Limits
+
+Both filesystem backends are read-only.
+
+The namespace can expose files, directories, symlinks, pipes, TTYs, a null
+device, and possibly a framebuffer device, but it does not yet provide:
+
+@itemize @bullet
+@item writable persistent filesystems,
+@item a real procfs implementation,
+@item a real sysfs implementation,
+@item device discovery beyond the hardcoded synthetic devices, or
+@item dynamic mounting and unmounting.
+@end itemize
+
+@node ABI and Compatibility Limits
+@appendixsec ABI and Compatibility Limits
+
+The userspace ABI is Linux-like, not Linux-complete.
+
+Known gaps include:
+
+@itemize @bullet
+@item stubbed or no-op syscalls such as @code{mprotect}, @code{futex},
+@code{prctl}, and @code{set_robust_list},
+@item no real @code{rseq},
+@item partial signal semantics,
+@item restricted @code{clone} behavior,
+@item limited @code{statx} behavior,
+@item no real thread implementation,
+@item no writable shared-library runtime staging, and
+@item synthetic handling of @file{/proc/self/exe}.
+@end itemize
+
+The presence of @code{PT_INTERP} support in the loader should not be mistaken
+for mature dynamic-linker support across the whole runtime.
+
+@node Toolchain and Userspace Limits
+@appendixsec Toolchain and Userspace Limits
+
+The packaging scripts intentionally target static musl binaries because that is
+the path the current loader and runtime are designed around.
+
+Consequences include:
+
+@itemize @bullet
+@item glibc-oriented dynamic builds are not first-class targets,
+@item packages may be configured with optional features disabled to fit the
+current kernel, and
+@item compatibility shims such as the fake gdbm archive for man-db are used
+where a full dependency port does not yet exist.
+@end itemize
+
+These are acceptable tradeoffs for the current prototype, but they are still
+real limits and should be understood before attempting to broaden the userland.

@@ -1,0 +1,194 @@
+@node Console and Devices
+@chapter Console, Serial, Input, and Power
+
+@cindex console
+@cindex framebuffer
+@cindex serial console
+@cindex input path
+@cindex ACPI power control
+@findex console_init
+@findex serial_init
+@findex power_shutdown
+@vindex CONSOLE_FONT_WIDTH
+@vindex CONSOLE_FONT_HEIGHT
+
+@menu
+* Console Model::
+* ANSI and Terminal Features::
+* Serial Port Backend::
+* Keyboard and Input Multiplexing::
+* TTY and Framebuffer Devices::
+* Power Management and Reset::
+@end menu
+
+@node Console Model
+@section Console Model
+
+The console implementation in @file{kernel/src/console.c} uses an internal
+80x25 text-cell model regardless of whether the physical display is:
+
+@itemize @bullet
+@item VGA text memory at @code{0xB8000}, or
+@item a Multiboot-provided RGB framebuffer.
+@end itemize
+
+The text-cell model stores:
+
+@itemize @bullet
+@item the character byte,
+@item foreground and background attributes,
+@item cursor position,
+@item scroll-region state,
+@item alternate-screen state, and
+@item parser state for escape sequences.
+@end itemize
+
+When a framebuffer is present, the console renders characters by drawing the
+built-in 8x16 bitmap font from @file{kernel/src/console_font.c}.
+
+@node ANSI and Terminal Features
+@section ANSI and Terminal Features
+
+The console parser supports a practical subset of ANSI and DEC terminal
+behavior:
+
+@itemize @bullet
+@item cursor movement,
+@item screen and line clearing,
+@item scrolling regions,
+@item insertion and deletion of lines and characters,
+@item SGR color, bold, and reverse-video state,
+@item save and restore of cursor position,
+@item cursor hide and show,
+@item alternate-screen enter and leave through private mode 1049, and
+@item DEC line-drawing graphics through shift-out and shift-in handling.
+@end itemize
+
+This is the reason ncurses-style applications work at all in VibeOS.
+
+@node Serial Port Backend
+@section Serial Port Backend
+
+@findex serial_putc
+@findex serial_pollc
+
+Serial support is implemented in @file{kernel/src/serial.c} using COM1 at
+@code{0x3F8}.  The initialization sequence programs the UART directly through
+I/O ports.
+
+The console mirrors output to serial unconditionally.  This has two useful
+effects:
+
+@itemize @bullet
+@item kernel diagnostics survive even when graphical output is unavailable, and
+@item QEMU's @code{-serial stdio} option becomes a reliable way to watch the
+system boot and interact with it.
+@end itemize
+
+Serial input is also part of the generic input path.
+
+@node Keyboard and Input Multiplexing
+@section Keyboard and Input Multiplexing
+
+@findex input_poll_char
+@findex keyboard_poll_char
+
+The generic input layer in @file{kernel/src/input.c} merges:
+
+@itemize @bullet
+@item serial input, and
+@item polled PS/2 keyboard input from @file{kernel/src/keyboard.c}.
+@end itemize
+
+The keyboard path:
+
+@itemize @bullet
+@item tracks shift and control state,
+@item handles the extended-scancode prefix,
+@item translates scancodes through normal and shifted key maps, and
+@item converts control combinations into ASCII control characters where that
+makes sense.
+@end itemize
+
+The generic input layer then normalizes:
+
+@itemize @bullet
+@item @code{\n} to @code{\r}, and
+@item serial DEL to backspace.
+@end itemize
+
+Keyboard-generated signal peek and poll hooks exist in the interface, but the
+current keyboard implementation returns @code{KEYBOARD_COMBO_SIGNAL_NONE}; the
+job-control signal generation used by the TTY layer is driven instead by the
+characters read through the terminal path.
+
+@node TTY and Framebuffer Devices
+@section TTY and Framebuffer Devices
+
+The console is exposed to userland through two kinds of special files.
+
+The TTY paths are:
+
+@table @file
+@item /dev/tty
+Primary terminal device.
+
+@item /dev/console
+Alias of the same terminal behavior.
+@end table
+
+The framebuffer path is:
+
+@table @file
+@item /dev/fb0
+Framebuffer device, only present when a valid Multiboot framebuffer was
+discovered.
+@end table
+
+TTY ioctls support:
+
+@itemize @bullet
+@item @code{TCGETS},
+@item @code{TCSETS}, @code{TCSETSW}, and @code{TCSETSF},
+@item @code{TIOCGPGRP} and @code{TIOCSPGRP},
+@item @code{TIOCGWINSZ}, and
+@item @code{FIONREAD}.
+@end itemize
+
+Framebuffer ioctls support:
+
+@itemize @bullet
+@item @code{FBIOGET_FSCREENINFO},
+@item @code{FBIOGET_VSCREENINFO},
+@item @code{FBIOGETCMAP} and @code{FBIOPUTCMAP},
+@item constrained @code{FBIOPUT_VSCREENINFO},
+@item constrained @code{FBIOPAN_DISPLAY}, and
+@item @code{FBIOBLANK}.
+@end itemize
+
+The framebuffer file also supports open, read, write, and seek operations by
+directly accessing the mapped physical framebuffer range.
+
+@node Power Management and Reset
+@section Power Management and Reset
+
+@findex power_init
+@findex power_reboot
+
+Power management is implemented in @file{kernel/src/power.c}.  The kernel:
+
+@enumerate
+@item locates RSDP information through Multiboot tags,
+@item prefers the ACPI 2.0+ XSDT path when available,
+@item falls back to the RSDT path when needed,
+@item locates the FADT,
+@item locates the DSDT, and
+@item parses AML just far enough to recover the S5 sleep-type values.
+@end enumerate
+
+Shutdown first attempts ACPI S5 through the PM1 control registers.  If that
+does not work, the kernel tries several emulator-friendly fallback ports and
+then halts.
+
+Reboot uses the keyboard controller reset command.  Halt simply disables
+interrupts and loops on @code{hlt}.

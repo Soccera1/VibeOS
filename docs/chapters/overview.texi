@@ -1,0 +1,130 @@
+@node Overview
+@chapter Overview
+
+@cindex overview
+@cindex design summary
+@cindex static linking
+@cindex musl
+
+@menu
+* Design Summary::
+* Execution Model::
+* Scope of the Manual::
+* Reading Guide::
+@end menu
+
+@node Design Summary
+@section Design Summary
+
+VibeOS is a small operating-system prototype whose code is concentrated in one
+top-level @file{Makefile}, one kernel tree, one small in-tree userspace tree,
+and a set of build wrappers for third-party packages.
+
+The implemented design is intentionally conservative:
+
+@itemize @bullet
+@item One freestanding monolithic kernel.
+@item One architecture: amd64.
+@item One boot protocol: Multiboot2.
+@item One read-only root filesystem format: @code{cpio newc}.
+@item One read-only secondary filesystem format: ext2 for @file{/usr}.
+@item One primary userspace ABI target: Linux-compatible amd64 syscalls.
+@item One preferred binary model: static, non-PIE, musl-linked executables.
+@end itemize
+
+The system is therefore easier to understand than a production Unix kernel, but
+the current tree already includes enough subsystems to behave like a small
+bootable Unix-like environment:
+
+@itemize @bullet
+@item long-mode bootstrap code,
+@item a VGA and framebuffer text console,
+@item serial I/O,
+@item a kernel heap,
+@item per-process virtual-memory spaces,
+@item a process table and blocking scheduler,
+@item signals, process groups, and sessions,
+@item TTY and pipe file descriptors,
+@item a read-only filesystem namespace,
+@item an ELF loader with shebang support, and
+@item enough Linux syscalls to run static BusyBox, Bash, coreutils, and related
+utilities.
+@end itemize
+
+@node Execution Model
+@section Execution Model
+
+@cindex execution model
+@cindex dynamic loader
+@vindex VM_USER_LIMIT
+
+The execution model is one of the most important things to understand before
+reading the rest of the source.
+
+VibeOS does contain an interpreter-aware ELF path.  Both the early bootstrap
+loader in @file{kernel/src/userland.c} and the full @code{execve} path in
+@file{kernel/src/syscall.c} know how to parse @code{PT_INTERP}.  They can load
+an interpreter image and pass Linux-like auxiliary vector state.
+
+Even so, the repository policy still treats that path as unreliable.  The build
+wrappers consistently prefer:
+
+@itemize @bullet
+@item @code{x86_64-linux-musl},
+@item static linking,
+@item @code{ET_EXEC} instead of PIE,
+@item no requested program interpreter, and
+@item direct validation with @code{readelf} before a binary is staged.
+@end itemize
+
+That policy is not decorative.  It is how the runtime is expected to be used.
+If you are bringing in a new user program, assume that the correct default is a
+static musl binary unless you can prove otherwise.
+
+@node Scope of the Manual
+@section Scope of the Manual
+
+@cindex manual scope
+@cindex upstream packages
+
+This manual aims to answer every practical question a developer is likely to
+have about the in-tree OS:
+
+@itemize @bullet
+@item how the kernel boots,
+@item how memory and process state are represented,
+@item how filesystems are mounted and routed,
+@item which syscalls exist and what they actually do,
+@item what is staged into the system image,
+@item how third-party packages are built for VibeOS, and
+@item where each in-tree file fits into the whole.
+@end itemize
+
+The manual does not try to re-document the internals of upstream projects under
+@file{external/}.  For example, it documents how VibeOS builds Bash and where
+the resulting binary is staged, but it does not try to rewrite the Bash
+Reference Manual.
+
+@node Reading Guide
+@section Reading Guide
+
+If you want the shortest route to the source:
+
+@enumerate
+@item Read @ref{Building VibeOS} for the artifact graph.
+@item Read @ref{Boot and Initialization} for the machine startup path.
+@item Read @ref{System Call Interface} for the kernel ABI that userland sees.
+@item Use @ref{Source File Map} as a file-by-file index into the tree.
+@end enumerate
+
+If you want to change behavior rather than just understand it:
+
+@enumerate
+@item For kernel runtime behavior, focus on @file{kernel/src/syscall.c},
+@file{kernel/src/userland.c}, @file{kernel/src/vm.c}, and
+@file{kernel/src/fs.c}.
+@item For boot issues, focus on @file{kernel/boot/boot.asm},
+@file{kernel/boot/interrupts.asm}, and @file{kernel/src/main.c}.
+@item For image construction and userspace integration, focus on the scripts in
+@file{tools/}.
+@end enumerate

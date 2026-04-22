@@ -1,0 +1,222 @@
+@node System Call Interface
+@chapter System Call Interface
+
+@cindex system calls
+@cindex Linux ABI
+@cindex syscall dispatcher
+@findex syscall_init
+@findex syscall_dispatch
+@vindex IA32_LSTAR
+@vindex IA32_STAR
+@vindex IA32_FMASK
+
+@menu
+* Entry Paths and Calling Convention::
+* Files and Paths::
+* Descriptors and Devices::
+* Process and Signal Calls::
+* Memory and Thread-Local Calls::
+* Identity and Miscellaneous Calls::
+* Compatibility Stubs and No-Op Calls::
+* Error Model and Semantic Caveats::
+@end menu
+
+@node Entry Paths and Calling Convention
+@section Entry Paths and Calling Convention
+
+VibeOS provides two ways for user mode to enter the kernel:
+
+@itemize @bullet
+@item @code{int $0x80} through IDT vector 128, and
+@item amd64 @code{syscall} through the MSR-programmed fast path.
+@end itemize
+
+The main calling convention follows the Linux amd64 syscall ABI:
+
+@itemize @bullet
+@item syscall number in @code{rax},
+@item arguments in @code{rdi}, @code{rsi}, @code{rdx}, @code{r10},
+@code{r8}, and @code{r9}, and
+@item return value in @code{rax}.
+@end itemize
+
+The dispatcher itself is a large switch over syscall numbers in
+@file{kernel/src/syscall.c}.
+
+@node Files and Paths
+@section Files, Paths, and Directories
+
+The following file and path calls are recognized:
+
+@multitable @columnfractions .10 .20 .70
+@headitem Nr @tab Name @tab Notes
+@item 2 @tab @code{open} @tab Implemented as an @code{openat} wrapper using
+@code{AT_FDCWD}.
+@item 3 @tab @code{close} @tab Closes regular descriptors and pipe endpoints.
+@item 4 @tab @code{stat} @tab Linux-compat stat on a followed path.
+@item 5 @tab @code{fstat} @tab Stat by descriptor.
+@item 6 @tab @code{lstat} @tab Linux-compat stat without following the final
+symlink.
+@item 8 @tab @code{lseek} @tab Supported for files, directories, and
+framebuffers where meaningful.
+@item 17 @tab @code{pread64} @tab Position-based reads without updating the
+normal file offset.
+@item 21 @tab @code{access} @tab Existence-style check built on path lookup.
+@item 79 @tab @code{getcwd} @tab Returns the kernel-tracked current directory.
+@item 80 @tab @code{chdir} @tab Changes the kernel-tracked current directory.
+@item 89 @tab @code{readlink} @tab Implemented through @code{readlinkat}.
+@item 217 @tab @code{getdents64} @tab Directory enumeration over the merged
+namespace.
+@item 257 @tab @code{openat} @tab Main path-open primitive.
+@item 262 @tab @code{newfstatat} @tab Followed-path stat.
+@item 267 @tab @code{readlinkat} @tab Non-following symlink read.
+@item 269 @tab @code{faccessat} @tab Same general existence semantics as
+@code{access}.
+@item 332 @tab @code{statx} @tab Partial compatibility implementation.
+@item 439 @tab @code{faccessat2} @tab Same path existence behavior as the
+simpler access helpers.
+@end multitable
+
+The namespace is read-only, so these calls let programs inspect and traverse
+the tree but not persistently change it.
+
+@node Descriptors and Devices
+@section Descriptors, Polling, and Devices
+
+Descriptor and multiplexing calls include:
+
+@multitable @columnfractions .10 .20 .70
+@headitem Nr @tab Name @tab Notes
+@item 0 @tab @code{read} @tab Supports TTY, framebuffer, pipe, regular-file,
+and null descriptors.
+@item 1 @tab @code{write} @tab Supports TTY, framebuffer, pipe, and null
+descriptors.
+@item 7 @tab @code{poll} @tab Busy-wait implementation without a timer source.
+@item 16 @tab @code{ioctl} @tab TTY and framebuffer-specific commands.
+@item 19 @tab @code{readv} @tab Built on repeated @code{read}.
+@item 20 @tab @code{writev} @tab Built on repeated @code{write}.
+@item 22 @tab @code{pipe} @tab Equivalent to @code{pipe2} with zero flags.
+@item 23 @tab @code{select} @tab Blocking scheduler-aware descriptor
+multiplexing.
+@item 32 @tab @code{dup} @tab Duplicate descriptor.
+@item 33 @tab @code{dup2} @tab Duplicate to an exact descriptor.
+@item 40 @tab @code{sendfile} @tab File-to-descriptor copy helper.
+@item 72 @tab @code{fcntl} @tab Limited support for duplication and flag
+queries or updates.
+@item 270 @tab @code{pselect6} @tab Same scan model as @code{select}.
+@item 292 @tab @code{dup3} @tab Implemented like exact descriptor duplication.
+@item 293 @tab @code{pipe2} @tab Main pipe constructor; flags are currently
+restricted.
+@end multitable
+
+The kernel understands TTY descriptors, @file{/dev/null}, a framebuffer
+descriptor, directories, regular files, and pipes.  That is enough to support a
+small shell environment with redirection and pipelines.
+
+@node Process and Signal Calls
+@section Process and Signal Calls
+
+Process-management and signal-related calls include:
+
+@multitable @columnfractions .10 .20 .70
+@headitem Nr @tab Name @tab Notes
+@item 13 @tab @code{rt_sigaction} @tab Install or query handlers.
+@item 14 @tab @code{rt_sigprocmask} @tab Modify blocked-signal mask.
+@item 35 @tab @code{nanosleep} @tab Busy-wait or scheduler-assisted sleep using
+a synthetic time base.
+@item 39 @tab @code{getpid} @tab Returns the current PID.
+@item 56 @tab @code{clone} @tab Restricted clone implementation.
+@item 57 @tab @code{fork} @tab Fork-like VM clone.
+@item 58 @tab @code{vfork} @tab Currently behaves through the same fork-like
+path.
+@item 59 @tab @code{execve} @tab Main image-replacement path.
+@item 60 @tab @code{exit} @tab Process exit.
+@item 61 @tab @code{wait4} @tab Parent wait and reaping path.
+@item 62 @tab @code{kill} @tab Signal delivery to processes and process groups.
+@item 95 @tab @code{umask} @tab Update process umask.
+@item 109 @tab @code{setpgid} @tab Process-group assignment.
+@item 110 @tab @code{getppid} @tab Returns current PPID.
+@item 111 @tab @code{getpgrp} @tab Returns current PGID.
+@item 112 @tab @code{setsid} @tab Create a new session.
+@item 121 @tab @code{getpgid} @tab Query process-group identity.
+@item 169 @tab @code{reboot} @tab Halt, power off, or reboot through kernel
+helpers.
+@item 218 @tab @code{set_tid_address} @tab Track a clear-TID address.
+@item 231 @tab @code{exit_group} @tab Mapped to the same exit logic as
+@code{exit}.
+@end multitable
+
+@node Memory and Thread-Local Calls
+@section Memory and Thread-Local Calls
+
+Memory and thread-local-state calls include:
+
+@multitable @columnfractions .10 .20 .70
+@headitem Nr @tab Name @tab Notes
+@item 9 @tab @code{mmap} @tab Anonymous and low-region mapping helper.
+@item 11 @tab @code{munmap} @tab Unmap helper.
+@item 12 @tab @code{brk} @tab Program-break management.
+@item 158 @tab @code{arch_prctl} @tab Supports @code{ARCH_SET_FS} and
+@code{ARCH_GET_FS}.
+@end multitable
+
+@node Identity and Miscellaneous Calls
+@section Identity, Limits, and Miscellaneous Calls
+
+Miscellaneous calls include:
+
+@multitable @columnfractions .10 .20 .70
+@headitem Nr @tab Name @tab Notes
+@item 63 @tab @code{uname} @tab Returns VibeOS identity strings.
+@item 97 @tab @code{getrlimit} @tab Limited resource-limit reporting.
+@item 228 @tab @code{clock_gettime} @tab Synthetic time source.
+@item 302 @tab @code{prlimit64} @tab Limited resource-limit interface.
+@item 318 @tab @code{getrandom} @tab Pseudorandom bytes from a simple internal
+generator.
+@end multitable
+
+@node Compatibility Stubs and No-Op Calls
+@section Compatibility Stubs and No-Op Calls
+
+Several syscall numbers are accepted mainly to keep userland startup paths
+happy.
+
+@multitable @columnfractions .10 .20 .70
+@headitem Nr @tab Name @tab Behavior
+@item 10 @tab @code{mprotect} @tab Returns success without enforcing page
+protection changes.
+@item 28 @tab @code{madvise} @tab Returns success.
+@item 102 @tab @code{getuid} @tab Returns zero.
+@item 104 @tab @code{getgid} @tab Returns zero.
+@item 107 @tab @code{geteuid} @tab Returns zero.
+@item 108 @tab @code{getegid} @tab Returns zero.
+@item 131 @tab @code{sigaltstack} @tab Returns success.
+@item 157 @tab @code{prctl} @tab Returns success.
+@item 202 @tab @code{futex} @tab Returns success; there is no real futex
+implementation.
+@item 273 @tab @code{set_robust_list} @tab Returns success.
+@item 334 @tab @code{rseq} @tab Returns @code{ENOSYS}.
+@end multitable
+
+These calls are best understood as compatibility shims, not complete
+subsystems.
+
+@node Error Model and Semantic Caveats
+@section Error Model and Semantic Caveats
+
+The syscall layer returns Linux-style negative error numbers from the kernel
+implementation.  Common values include @code{EINVAL}, @code{ENOENT},
+@code{EBADF}, @code{EAGAIN}, @code{ENOSYS}, @code{EPIPE}, @code{ESRCH}, and
+@code{ENOMEM}.
+
+Important semantic caveats to remember:
+
+@itemize @bullet
+@item There is no true filesystem mutation support.
+@item @code{poll}, @code{select}, and @code{nanosleep} are not driven by a real
+timer interrupt or high-quality wall clock.
+@item @code{clone} does not offer full Linux thread semantics.
+@item @code{/proc} and @code{/sys} are not real filesystems.
+@item @code{mprotect}, @code{futex}, and related compatibility calls are not
+full implementations.
+@end itemize

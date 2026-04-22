@@ -1,0 +1,120 @@
+\input texinfo
+@c -*-texinfo-*-
+@c %**start of header
+@setfilename vibeos.info
+@settitle VibeOS Manual
+@documentencoding UTF-8
+@documentlanguage en
+@setchapternewpage odd
+@c %**end of header
+
+@ifnottex
+@dircategory Operating Systems
+@direntry
+* VibeOS: (vibeos). GNU-style manual for the VibeOS kernel, runtime, and build system.
+@end direntry
+@end ifnottex
+
+@copying
+This manual documents the in-tree parts of VibeOS as they exist in this
+repository.
+
+The manual covers the kernel, the in-tree userspace helper program, the image
+construction pipeline, the top-level build rules, and the way VibeOS integrates
+upstream packages.  It does not try to replace the manuals shipped by upstream
+projects inside @file{external/}; instead, it documents the VibeOS-specific
+policy, staging, and compatibility behavior around them.
+@end copying
+
+@titlepage
+@title VibeOS Manual
+@subtitle Architecture, Runtime Behavior, Build Pipeline, and Source Reference
+@author VibeOS contributors
+
+@page
+@vskip 0pt plus 1filll
+@insertcopying
+@end titlepage
+
+@contents
+
+@node Top
+@top VibeOS Manual
+
+VibeOS is an amd64 monolithic kernel prototype that boots through Multiboot2,
+switches itself into long mode, mounts a read-only initramfs root and a
+read-only ext2 @file{/usr} image, and runs a Linux-ABI userspace built mostly
+from static musl binaries.
+
+The repository has two standing policy constraints that shape almost every part
+of the system:
+
+@itemize @bullet
+@item The dynamic loader path exists, but it is still considered buggy in
+practice.  Static linking is preferred unless it is impossible.
+@item Musl is preferred over glibc when possible, and the build wrappers use
+@code{zig cc} or @code{zig c++} with @code{x86_64-linux-musl} targets for most
+userspace packages.
+@end itemize
+
+This manual is written in GNU Texinfo style and is split into many source files
+so that the overall system reference can grow without collapsing into a single
+monolithic document.
+
+@menu
+* Overview::
+* Source Layout::
+* Building VibeOS::
+* Boot and Initialization::
+* Console and Devices::
+* Memory Management::
+* Filesystems and Namespace::
+* Processes and Signals::
+* Program Loading and Userspace::
+* System Call Interface::
+* Hacking on VibeOS::
+* Build Script Reference::
+* Source File Map::
+* Configuration Constants and Limits::
+* Known Limitations::
+* Indexes::
+@end menu
+
+@include chapters/overview.texi
+@include chapters/source-layout.texi
+@include chapters/building.texi
+@include chapters/boot.texi
+@include chapters/console-devices-power.texi
+@include chapters/memory.texi
+@include chapters/filesystems.texi
+@include chapters/processes.texi
+@include chapters/program-loading.texi
+@include chapters/syscalls.texi
+@include chapters/hacking.texi
+@include appendices/build-scripts.texi
+@include appendices/source-file-map.texi
+@include appendices/constants-and-limits.texi
+@include appendices/known-limitations.texi
+
+@node Indexes
+@unnumbered Indexes
+
+@menu
+* Concept Index::
+* Function Index::
+* Variable Index::
+@end menu
+
+@node Concept Index
+@unnumberedsec Concept Index
+@printindex cp
+
+@node Function Index
+@unnumberedsec Function Index
+@printindex fn
+
+@node Variable Index
+@unnumberedsec Variable Index
+@printindex vr
+
+@bye

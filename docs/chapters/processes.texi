@@ -1,0 +1,205 @@
+@node Processes and Signals
+@chapter Processes, Scheduling, and Signals
+
+@cindex process table
+@cindex scheduler
+@cindex signals
+@cindex process groups
+@cindex sessions
+@findex process_init
+@findex process_alloc
+@findex process_send_signal
+@vindex MAX_PROCESSES
+@vindex PROCESS_MAX_FDS
+@vindex MAX_PENDING_SIGNALS
+
+@menu
+* Process Representation::
+* The First Process::
+* File Descriptor State::
+* Scheduling Model::
+* Blocking Operations::
+* Pipe Implementation::
+* Signal Delivery and Job Control::
+* Sessions and PID 1::
+@end menu
+
+@node Process Representation
+@section Process Representation
+
+The process table is a fixed-size array of @code{struct process} instances.
+
+Each process records:
+
+@itemize @bullet
+@item identity fields such as PID, PPID, PGID, and SID,
+@item state such as runnable, running, blocked, stopped, or zombie,
+@item exit status bookkeeping,
+@item the VM space,
+@item the open file descriptor table,
+@item current working directory,
+@item @code{brk}, next @code{mmap} base, and umask,
+@item signal handlers and blocked-signal mask,
+@item pending signals,
+@item saved register state for resumed execution, and
+@item blocking-wait metadata for syscalls that may yield the CPU.
+@end itemize
+
+This is enough state to let the syscall layer save one process, schedule
+another, and later restore the original process into user mode.
+
+@node The First Process
+@section The First Process
+
+@findex process_current
+
+The first process is created by @code{process_init}.  It always starts as:
+
+@itemize @bullet
+@item PID 1,
+@item PPID 0,
+@item PGID 1,
+@item SID 1,
+@item current working directory @file{/}, and
+@item the owner of the initial VM space.
+@end itemize
+
+The syscall subsystem later synchronizes the global runtime variables with this
+process structure and marks file descriptors 0, 1, and 2 as TTY handles.
+
+@node File Descriptor State
+@section File Descriptor State
+
+VibeOS uses a fixed-size file descriptor table with 64 descriptors per process.
+
+Supported descriptor kinds include:
+
+@itemize @bullet
+@item TTY,
+@item null device,
+@item framebuffer,
+@item regular file,
+@item directory,
+@item pipe read end, and
+@item pipe write end.
+@end itemize
+
+The descriptor table tracks:
+
+@itemize @bullet
+@item descriptor kind,
+@item open flags,
+@item descriptor flags such as @code{FD_CLOEXEC},
+@item current offset,
+@item an attached filesystem entry where relevant, and
+@item a pipe identifier when the descriptor refers to a pipe endpoint.
+@end itemize
+
+@node Scheduling Model
+@section Scheduling Model
+
+@findex schedule_away
+
+VibeOS scheduling is not timer-driven.  The scheduler runs when the current task
+blocks in the syscall layer or exits.
+
+This makes the system cooperative in practice:
+
+@itemize @bullet
+@item a process runs until it traps into the kernel and performs a syscall,
+@item if that syscall can complete immediately, the process often continues,
+@item if it must wait and another process has saved runnable context, the kernel
+saves the current process and resumes another one.
+@end itemize
+
+There is no periodic preemption and no interrupt-driven timeslice accounting.
+
+@node Blocking Operations
+@section Blocking Operations
+
+The scheduler understands several wait reasons:
+
+@itemize @bullet
+@item TTY reads,
+@item pipe reads,
+@item pipe writes,
+@item @code{wait4},
+@item @code{select} and @code{pselect6}, and
+@item @code{nanosleep}.
+@end itemize
+
+For each blocked process, the kernel stores enough metadata to later ask
+whether the wait condition has become ready.  The completion helpers then
+populate the saved return value and mark the process runnable again.
+
+@node Pipe Implementation
+@section Pipe Implementation
+
+@findex sys_pipe2
+
+Pipes are implemented as fixed-size in-kernel ring buffers.
+
+Important facts:
+
+@itemize @bullet
+@item The maximum number of pipes is fixed.
+@item Each pipe has a 64 KiB capacity.
+@item Readers block when the buffer is empty unless the descriptor is
+nonblocking.
+@item Writers block when the buffer is full unless the descriptor is
+nonblocking.
+@item The kernel tracks whether a pipe still has readers or writers by scanning
+all live descriptor tables.
+@end itemize
+
+This is a real inter-process communication mechanism, not just a stub.
+
+@node Signal Delivery and Job Control
+@section Signal Delivery and Job Control
+
+@findex sys_kill
+@findex sys_rt_sigaction
+@findex sys_rt_sigprocmask
+
+The signal implementation supports a practical subset of Linux behavior.
+
+Implemented pieces include:
+
+@itemize @bullet
+@item installing and querying handlers with @code{rt_sigaction},
+@item modifying the blocked-signal mask with @code{rt_sigprocmask},
+@item process-directed and process-group-directed @code{kill},
+@item default stop, continue, terminate, and kill actions,
+@item parent notification through @code{SIGCHLD}, and
+@item stop and continue reporting through @code{wait4}.
+@end itemize
+
+TTY-generated job-control behavior is also present.  The terminal layer tracks a
+foreground process group, and control characters can be translated into
+@code{SIGINT} or @code{SIGTSTP} delivery to that foreground group.
+
+@node Sessions and PID 1
+@section Sessions, Process Groups, and PID 1 Special Cases
+
+The kernel supports:
+
+@itemize @bullet
+@item @code{setpgid},
+@item @code{getpgrp},
+@item @code{setsid}, and
+@item @code{getpgid}.
+@end itemize
+
+The TTY layer uses the foreground process group for signal routing.
+
+PID 1 has one VibeOS-specific behavior that is worth calling out explicitly:
+
+@itemize @bullet
+@item @code{SIGUSR1} halts the machine,
+@item @code{SIGUSR2} powers the machine off, and
+@item @code{SIGTERM} reboots the machine.
+@end itemize
+
+This makes the usual small-system userspace shutdown flows work even though PID
+1 in VibeOS is a normal bootstrap shell process rather than a dedicated init
+system with a richer service manager around it.
