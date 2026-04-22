@@ -77,6 +77,7 @@ monolithic document.
 * Source File Map::
 * Configuration Constants and Limits::
 * Known Limitations::
+* ISO Size and Contents::
 * Indexes::
 @end menu
 
@@ -95,6 +96,7 @@ monolithic document.
 @include appendices/source-file-map.texi
 @include appendices/constants-and-limits.texi
 @include appendices/known-limitations.texi
+@include appendices/iso-size.texi
 
 @node Indexes
 @unnumbered Indexes
