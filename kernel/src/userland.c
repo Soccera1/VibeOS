@@ -331,14 +331,6 @@ static int userland_run_program(const char* path, const char* const* argv, size_
                                 const char* launch_message, const char* missing_message,
                                 const char* load_failed_message);
 
-int userland_run_busybox(void) {
-    static const char* const busybox_argv[] = {"busybox", "sh", "-i"};
-    return userland_run_program("/bin/busybox", busybox_argv, ARRAY_LEN(busybox_argv),
-                                "Launching /bin/busybox sh -i\n",
-                                "/bin/busybox not found in initramfs\n",
-                                "busybox ELF load failed\n");
-}
-
 static int userland_run_program(const char* path, const char* const* argv, size_t argc,
                                 const char* launch_message, const char* missing_message,
                                 const char* load_failed_message) {

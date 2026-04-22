@@ -6,7 +6,6 @@
 @cindex auxiliary vector
 @cindex userspace layout
 @findex userland_run_default_shell
-@findex userland_run_busybox
 @findex sys_execve
 @vindex USER_ET_DYN_BASE
 @vindex USER_INTERP_BASE
