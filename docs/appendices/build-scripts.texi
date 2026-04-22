@@ -82,6 +82,9 @@ current runtime assumptions.
 @item tools/build_libpipeline.sh
 Builds a static libpipeline sysroot used by man-db.
 
+@item tools/build_gdbm.sh
+Builds a static gdbm sysroot used by man-db.
+
 @item tools/build_groff.sh
 Builds and stages groff into a tree rooted at @file{/usr}.  The output is later
 copied into the ext2 @file{/usr} image so @code{man} has its formatter stack.
@@ -91,9 +94,8 @@ Installs the Linux man-pages tree under a staging directory and copies the
 result into the VibeOS @file{/usr/share/man} tree.
 
 @item tools/build_man_db.sh
-Builds man-db against the static libpipeline sysroot and the staged groff tree.
-The script also synthesizes a fake static gdbm header and archive so man-db can
-be built in the current musl-oriented environment without a complete gdbm port.
+Builds man-db against the static libpipeline and gdbm sysroots plus the staged
+groff tree.
 @end table
 
 @node Image and Media Builders

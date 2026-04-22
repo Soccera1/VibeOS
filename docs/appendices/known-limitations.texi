@@ -83,8 +83,8 @@ Consequences include:
 @item glibc-oriented dynamic builds are not first-class targets,
 @item packages may be configured with optional features disabled to fit the
 current kernel, and
-@item compatibility shims such as the fake gdbm archive for man-db are used
-where a full dependency port does not yet exist.
+@item targeted compatibility shims may still be used where a full dependency
+port does not yet exist.
 @end itemize
 
 These are acceptable tradeoffs for the current prototype, but they are still

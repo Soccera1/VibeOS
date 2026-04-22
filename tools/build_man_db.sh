@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 4 ]]; then
-  echo "usage: $0 <output-tree> <man-db-src-dir> <libpipeline-sysroot> <groff-tree>" >&2
+if [[ $# -ne 5 ]]; then
+  echo "usage: $0 <output-tree> <man-db-src-dir> <libpipeline-sysroot> <gdbm-sysroot> <groff-tree>" >&2
   exit 1
 fi
 
 OUT_DIR="$1"
 SRC_DIR="$2"
 LIBPIPELINE_SYSROOT="$3"
-GROFF_TREE="$4"
+GDBM_SYSROOT="$4"
+GROFF_TREE="$5"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -23,6 +24,10 @@ if [[ ! -d "$LIBPIPELINE_SYSROOT/usr/lib/pkgconfig" ]]; then
   echo "libpipeline sysroot missing pkg-config metadata: $LIBPIPELINE_SYSROOT" >&2
   exit 1
 fi
+if [[ ! -f "$GDBM_SYSROOT/usr/include/gdbm.h" || ! -f "$GDBM_SYSROOT/usr/lib/libgdbm.a" ]]; then
+  echo "gdbm sysroot missing static library or headers: $GDBM_SYSROOT" >&2
+  exit 1
+fi
 if [[ ! -d "$GROFF_TREE/bin" ]]; then
   echo "groff tree missing bin directory: $GROFF_TREE" >&2
   exit 1
@@ -30,6 +35,7 @@ fi
 
 ABS_SRC_DIR="$(cd "$SRC_DIR" && pwd)"
 ABS_LIBPIPELINE_SYSROOT="$(cd "$LIBPIPELINE_SYSROOT" && pwd)"
+ABS_GDBM_SYSROOT="$(cd "$GDBM_SYSROOT" && pwd)"
 ABS_GROFF_TREE="$(cd "$GROFF_TREE" && pwd)"
 mkdir -p "$(dirname "$OUT_DIR")"
 OUT_DIR="$(cd "$(dirname "$OUT_DIR")" && pwd)/$(basename "$OUT_DIR")"
@@ -37,7 +43,6 @@ OUT_DIR="$(cd "$(dirname "$OUT_DIR")" && pwd)/$(basename "$OUT_DIR")"
 BUILD_DIR="$ABS_SRC_DIR/build-musl"
 STAGE_DIR="$BUILD_DIR/stage"
 CC_WRAPPER="$BUILD_DIR/zigcc-wrapper.sh"
-FAKE_GDBM_DIR="$BUILD_DIR/fake-gdbm"
 
 prepare_zig_wrapper() {
   mkdir -p "$BUILD_DIR"
@@ -94,143 +99,6 @@ EOF
   ln -sf "$(basename "$CC_WRAPPER")" "$BUILD_DIR/zigcxx-wrapper.sh"
 }
 
-prepare_fake_gdbm() {
-  local include_dir="$FAKE_GDBM_DIR/include"
-  local lib_dir="$FAKE_GDBM_DIR/lib"
-  local shim_c="$FAKE_GDBM_DIR/gdbm_shim.c"
-  local shim_o="$FAKE_GDBM_DIR/gdbm_shim.o"
-
-  rm -rf "$FAKE_GDBM_DIR"
-  mkdir -p "$include_dir" "$lib_dir"
-
-  cat > "$include_dir/gdbm.h" <<'EOF'
-#ifndef _GDBM_H_
-#define _GDBM_H_
-
-#include <stdio.h>
-#include <sys/types.h>
-
-#define GDBM_READER 0
-#define GDBM_WRITER 1
-#define GDBM_WRCREAT 2
-#define GDBM_NEWDB 3
-#define GDBM_OPENMASK 7
-
-#define GDBM_FAST 0x0010
-#define GDBM_SYNC 0x0020
-#define GDBM_NOLOCK 0x0040
-#define GDBM_NOMMAP 0x0080
-
-#define GDBM_INSERT 0
-#define GDBM_REPLACE 1
-
-typedef struct {
-  char *dptr;
-  int dsize;
-} datum;
-
-typedef struct gdbm_file_info *GDBM_FILE;
-
-extern GDBM_FILE gdbm_open(const char *file, int block_size, int flags, int mode,
-                           void (*fatal_func)(const char *));
-extern int gdbm_close(GDBM_FILE dbf);
-extern int gdbm_store(GDBM_FILE dbf, datum key, datum content, int flag);
-extern datum gdbm_fetch(GDBM_FILE dbf, datum key);
-extern int gdbm_delete(GDBM_FILE dbf, datum key);
-extern datum gdbm_firstkey(GDBM_FILE dbf);
-extern datum gdbm_nextkey(GDBM_FILE dbf, datum key);
-extern int gdbm_exists(GDBM_FILE dbf, datum key);
-extern int gdbm_fdesc(GDBM_FILE dbf);
-
-#endif
-EOF
-
-  cat > "$shim_c" <<'EOF'
-#include <stdlib.h>
-
-#include "gdbm.h"
-
-struct gdbm_file_info {
-  int unused;
-};
-
-static datum empty_datum(void) {
-  datum value;
-
-  value.dptr = NULL;
-  value.dsize = 0;
-  return value;
-}
-
-GDBM_FILE gdbm_open(const char *file, int block_size, int flags, int mode,
-                    void (*fatal_func)(const char *)) {
-  (void)file;
-  (void)block_size;
-  (void)flags;
-  (void)mode;
-  (void)fatal_func;
-  return NULL;
-}
-
-int gdbm_close(GDBM_FILE dbf) {
-  (void)dbf;
-  return 0;
-}
-
-int gdbm_store(GDBM_FILE dbf, datum key, datum content, int flag) {
-  (void)dbf;
-  (void)key;
-  (void)content;
-  (void)flag;
-  return -1;
-}
-
-datum gdbm_fetch(GDBM_FILE dbf, datum key) {
-  (void)dbf;
-  (void)key;
-  return empty_datum();
-}
-
-int gdbm_delete(GDBM_FILE dbf, datum key) {
-  (void)dbf;
-  (void)key;
-  return -1;
-}
-
-datum gdbm_firstkey(GDBM_FILE dbf) {
-  (void)dbf;
-  return empty_datum();
-}
-
-datum gdbm_nextkey(GDBM_FILE dbf, datum key) {
-  (void)dbf;
-  (void)key;
-  return empty_datum();
-}
-
-int gdbm_exists(GDBM_FILE dbf, datum key) {
-  (void)dbf;
-  (void)key;
-  return 0;
-}
-
-int gdbm_fdesc(GDBM_FILE dbf) {
-  (void)dbf;
-  return -1;
-}
-EOF
-
-  zig cc -target x86_64-linux-musl \
-    -Os \
-    -fno-stack-protector \
-    -fomit-frame-pointer \
-    -fno-pie \
-    -I"$include_dir" \
-    -c "$shim_c" \
-    -o "$shim_o"
-  zig ar rcs "$lib_dir/libgdbm.a" "$shim_o"
-}
-
 write_config() {
   local cfg="$1"
   cat > "$cfg" <<'EOF'
@@ -264,7 +132,6 @@ configure_man_db() {
   mkdir -p "$ZIG_GLOBAL_CACHE_DIR" "$ZIG_LOCAL_CACHE_DIR"
 
   prepare_zig_wrapper
-  prepare_fake_gdbm
 
   pushd "$BUILD_DIR" >/dev/null
   PATH="$ABS_GROFF_TREE/bin:$PATH" \
@@ -291,9 +158,9 @@ configure_man_db() {
     CPP="$CC_WRAPPER -E" \
     AR="zig ar" \
     RANLIB="zig ranlib" \
-    CPPFLAGS="-I$FAKE_GDBM_DIR/include" \
+    CPPFLAGS="-I$ABS_GDBM_SYSROOT/usr/include" \
     CFLAGS="-Os -fno-stack-protector -fomit-frame-pointer -fno-pie" \
-    LDFLAGS="-static -no-pie -L$FAKE_GDBM_DIR/lib" \
+    LDFLAGS="-static -no-pie -L$ABS_GDBM_SYSROOT/usr/lib" \
     2>&1 | tee configure.log || {
       echo "Configure failed. Check $BUILD_DIR/configure.log" >&2
       exit 1

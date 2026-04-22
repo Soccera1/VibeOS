@@ -135,6 +135,7 @@ stage_libpipeline() {
   fi
 
   cp -a "$STAGE_DIR/." "$OUT_DIR"
+  rm -f "$OUT_DIR/usr/lib/libpipeline.la"
 }
 
 configure_libpipeline
