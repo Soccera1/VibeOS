@@ -8,7 +8,17 @@ mb2_header_start:
     dd mb2_header_end - mb2_header_start
     dd -(0xE85250D6 + 0 + (mb2_header_end - mb2_header_start))
 
+    ; optional framebuffer tag
+    align 8
+    dw 5
+    dw 1
+    dd 20
+    dd 1024
+    dd 768
+    dd 32
+
     ; end tag
+    align 8
     dw 0
     dw 0
     dd 8
@@ -72,7 +82,7 @@ check_long_mode:
 
 setup_page_tables:
     mov edi, pml4_table
-    mov ecx, (4096 * 3) / 4
+    mov ecx, (4096 * 6) / 4
     xor eax, eax
     rep stosd
 
@@ -80,20 +90,39 @@ setup_page_tables:
     or eax, 0x07
     mov dword [pml4_table], eax
 
-    mov eax, pd_table
+    xor esi, esi
+.pd_setup_loop:
+    mov eax, pd_table0
+    mov ebx, esi
+    shl ebx, 12
+    add eax, ebx
     or eax, 0x07
-    mov dword [pdpt_table], eax
+    mov [pdpt_table + esi * 8], eax
+    mov dword [pdpt_table + esi * 8 + 4], 0
+    inc esi
+    cmp esi, 4
+    jne .pd_setup_loop
 
+    xor esi, esi
+.pd_fill_loop:
     xor ebx, ebx
 .map_loop:
-    mov eax, ebx
-    shl eax, 21
+    mov eax, esi
+    shl eax, 30
+    mov edx, ebx
+    shl edx, 21
+    add eax, edx
     or eax, 0x87                ; present + rw + user + 2MiB
-    mov [pd_table + ebx * 8], eax
-    mov dword [pd_table + ebx * 8 + 4], 0
+    mov edx, esi
+    shl edx, 12
+    mov [pd_table0 + edx + ebx * 8], eax
+    mov dword [pd_table0 + edx + ebx * 8 + 4], 0
     inc ebx
     cmp ebx, 512
     jne .map_loop
+    inc esi
+    cmp esi, 4
+    jne .pd_fill_loop
 
     ret
 
@@ -132,7 +161,10 @@ mb2_info_ptr: resq 1
 align 4096
 pml4_table: resb 4096
 pdpt_table: resb 4096
-pd_table:   resb 4096
+pd_table0:  resb 4096
+pd_table1:  resb 4096
+pd_table2:  resb 4096
+pd_table3:  resb 4096
 align 16
 boot_stack_bottom: resb 16384
 boot_stack_top32:

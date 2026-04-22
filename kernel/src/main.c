@@ -256,7 +256,7 @@ void userland_exit_handler(uint64_t code) {
 }
 
 void kernel_main(uint64_t mb2_info) {
-    console_init();
+    console_init(mb2_info);
     console_write("VibeOS amd64 monolithic kernel prototype\n");
     power_init(mb2_info);
     kmalloc_init();

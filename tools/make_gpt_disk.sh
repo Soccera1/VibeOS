@@ -56,6 +56,10 @@ cat <<'CFG' | $SUDO tee "$MNT/boot/grub/grub.cfg" >/dev/null
 set timeout=0
 set default=0
 
+insmod all_video
+set gfxmode=1024x768x32
+set gfxpayload=keep
+
 menuentry "VibeOS" {
     multiboot2 /boot/vibeos-kernel.bin
     module2 /boot/initramfs.cpio
@@ -67,7 +71,7 @@ CFG
 $SUDO grub-install \
   --target=i386-pc \
   --boot-directory="$MNT/boot" \
-  --modules="part_gpt ext2 multiboot2 normal" \
+  --modules="part_gpt ext2 multiboot2 normal all_video gfxterm" \
   --recheck \
   "$LOOPDEV"
 
