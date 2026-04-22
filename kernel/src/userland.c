@@ -78,7 +78,7 @@ static uint64_t build_user_stack(const struct user_exec_info* exec, const char* 
     const char* envp[] = {
         "TERM=vt100",
         "HOME=/",
-        "PATH=/bin:/usr/bin",
+        "PATH=/bin:/sbin:/usr/bin",
         "SH_STANDALONE=1",
         "GLIBC_TUNABLES=glibc.pthread.rseq=0",
     };
