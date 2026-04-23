@@ -1150,7 +1150,8 @@ static int resolve_symlinks(const char* abs_in, char* abs_out, size_t out_len, b
 
     for (int depth = 0; depth < EXEC_MAX_SYMLINKS; ++depth) {
         if (is_proc_self_exe_path(current)) {
-            strncpy(abs_out, "/bin/busybox", out_len);
+            const char* target = follow_final ? "/bin/busybox" : current;
+            strncpy(abs_out, target, out_len);
             abs_out[out_len - 1] = '\0';
             return 0;
         }
@@ -6301,8 +6302,27 @@ static int sys_rt_sigprocmask(int how, const uint64_t* set, uint64_t* oldset, si
     return 0;
 }
 
+static bool signal_default_action_ignores(int sig) {
+    return sig == (int)SIGCHLD;
+}
+
+static bool signal_is_ignored_for_process(const struct process* proc, int sig) {
+    if (proc == NULL || sig <= 0 || sig >= (int)NSIG) {
+        return true;
+    }
+
+    const struct sigaction_data* action = (proc == current_process()) ? &g_sig_actions[sig] : &proc->sig_actions[sig];
+    if (action->handler == SIGNAL_HANDLER_IGN) {
+        return true;
+    }
+    return action->handler == SIGNAL_HANDLER_DFL && signal_default_action_ignores(sig);
+}
+
 static void queue_signal_for_process(struct process* proc, int sig) {
     if (proc == NULL || sig <= 0 || sig >= (int)NSIG) {
+        return;
+    }
+    if (signal_is_ignored_for_process(proc, sig)) {
         return;
     }
 
