@@ -58,8 +58,8 @@ The userspace ABI is Linux-like, not Linux-complete.
 Known gaps include:
 
 @itemize @bullet
-@item stubbed or no-op syscalls such as @code{mprotect}, @code{futex},
-@code{prctl}, and @code{set_robust_list},
+@item partial syscall coverage for features such as full @code{futex},
+@code{prctl}, alternate-signal-stack delivery, and robust-list semantics,
 @item no real @code{rseq},
 @item partial signal semantics,
 @item restricted @code{clone} behavior,

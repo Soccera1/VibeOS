@@ -42,6 +42,18 @@ static void flush_if_active(const struct vm_space* space, uint64_t addr) {
     invlpg((void*)(uintptr_t)addr);
 }
 
+static uint64_t pte_flags_for_prot(uint32_t prot) {
+    if ((prot & (VM_PROT_READ | VM_PROT_WRITE | VM_PROT_EXEC)) == 0u) {
+        return 0;
+    }
+
+    uint64_t flags = VM_PTE_PRESENT | VM_PTE_USER;
+    if ((prot & VM_PROT_WRITE) != 0u) {
+        flags |= VM_PTE_RW;
+    }
+    return flags;
+}
+
 static int ensure_mapping_capacity(struct vm_space* space, size_t need) {
     if (need <= space->mapping_cap) {
         return 0;
@@ -97,7 +109,7 @@ static int ensure_pt(struct vm_space* space, size_t pd_index) {
     return 0;
 }
 
-static int map_user_page(struct vm_space* space, uint64_t page_addr, uint8_t* backing_page, bool replace_existing, bool owned) {
+static int map_user_page(struct vm_space* space, uint64_t page_addr, uint8_t* backing_page, bool replace_existing, bool owned, uint32_t prot) {
     if (!user_page_valid(page_addr) || backing_page == NULL) {
         return -1;
     }
@@ -120,6 +132,7 @@ static int map_user_page(struct vm_space* space, uint64_t page_addr, uint8_t* ba
         }
         space->mappings[existing].page = backing_page;
         space->mappings[existing].owned = owned;
+        space->mappings[existing].prot = prot;
     } else {
         if (ensure_mapping_capacity(space, space->mapping_count + 1) != 0) {
             return -1;
@@ -127,22 +140,23 @@ static int map_user_page(struct vm_space* space, uint64_t page_addr, uint8_t* ba
         space->mappings[space->mapping_count].vaddr = page_addr;
         space->mappings[space->mapping_count].page = backing_page;
         space->mappings[space->mapping_count].owned = owned;
+        space->mappings[space->mapping_count].prot = prot;
         space->mapping_count++;
     }
 
-    space->pts[pd_index][pt_index] = ((uint64_t)(uintptr_t)backing_page) | VM_PTE_PRESENT | VM_PTE_RW | VM_PTE_USER;
+    space->pts[pd_index][pt_index] = ((uint64_t)(uintptr_t)backing_page) | pte_flags_for_prot(prot);
     flush_if_active(space, page_addr);
     return 0;
 }
 
-static int alloc_and_map_zero_page(struct vm_space* space, uint64_t page_addr, bool replace_existing) {
+static int alloc_and_map_zero_page(struct vm_space* space, uint64_t page_addr, bool replace_existing, uint32_t prot) {
     uint8_t* page = kmalloc_aligned(VM_PAGE_SIZE, VM_PAGE_SIZE);
     if (page == NULL) {
         return -1;
     }
 
     memset(page, 0, VM_PAGE_SIZE);
-    if (map_user_page(space, page_addr, page, replace_existing, true) != 0) {
+    if (map_user_page(space, page_addr, page, replace_existing, true, prot) != 0) {
         kfree_aligned(page);
         return -1;
     }
@@ -293,7 +307,7 @@ int vm_space_clone(struct vm_space* dst, const struct vm_space* src) {
 
     for (size_t i = 0; i < src->mapping_count; ++i) {
         if (!src->mappings[i].owned) {
-            if (map_user_page(dst, src->mappings[i].vaddr, src->mappings[i].page, false, false) != 0) {
+            if (map_user_page(dst, src->mappings[i].vaddr, src->mappings[i].page, false, false, src->mappings[i].prot) != 0) {
                 vm_space_destroy(dst);
                 return -1;
             }
@@ -307,7 +321,7 @@ int vm_space_clone(struct vm_space* dst, const struct vm_space* src) {
         }
 
         memcpy(page, src->mappings[i].page, VM_PAGE_SIZE);
-        if (map_user_page(dst, src->mappings[i].vaddr, page, false, true) != 0) {
+        if (map_user_page(dst, src->mappings[i].vaddr, page, false, true, src->mappings[i].prot) != 0) {
             kfree_aligned(page);
             vm_space_destroy(dst);
             return -1;
@@ -317,7 +331,7 @@ int vm_space_clone(struct vm_space* dst, const struct vm_space* src) {
     return 0;
 }
 
-int vm_space_map_zero(struct vm_space* space, uint64_t addr, size_t len) {
+int vm_space_map_zero(struct vm_space* space, uint64_t addr, size_t len, uint32_t prot) {
     if (space == NULL) {
         return -1;
     }
@@ -335,7 +349,7 @@ int vm_space_map_zero(struct vm_space* space, uint64_t addr, size_t len) {
         if (find_mapping_index(space, page_addr) >= 0) {
             continue;
         }
-        if (alloc_and_map_zero_page(space, page_addr, false) != 0) {
+        if (alloc_and_map_zero_page(space, page_addr, false, prot) != 0) {
             return -1;
         }
     }
@@ -343,7 +357,7 @@ int vm_space_map_zero(struct vm_space* space, uint64_t addr, size_t len) {
     return 0;
 }
 
-int vm_space_map_physical(struct vm_space* space, uint64_t addr, uint64_t phys_addr, size_t len) {
+int vm_space_map_physical(struct vm_space* space, uint64_t addr, uint64_t phys_addr, size_t len, uint32_t prot) {
     if (space == NULL) {
         return -1;
     }
@@ -365,7 +379,7 @@ int vm_space_map_physical(struct vm_space* space, uint64_t addr, uint64_t phys_a
         if (phys >= VM_IDENTITY_LIMIT) {
             return -1;
         }
-        if (map_user_page(space, page_addr, (uint8_t*)(uintptr_t)phys, true, false) != 0) {
+        if (map_user_page(space, page_addr, (uint8_t*)(uintptr_t)phys, true, false, prot) != 0) {
             return -1;
         }
     }
@@ -482,6 +496,39 @@ int vm_space_unmap(struct vm_space* space, uint64_t addr, size_t len) {
     return 0;
 }
 
+int vm_space_mprotect(struct vm_space* space, uint64_t addr, size_t len, uint32_t prot) {
+    if (space == NULL) {
+        return -1;
+    }
+    if (len == 0) {
+        return 0;
+    }
+
+    uint64_t start = addr & VM_PAGE_MASK;
+    uint64_t end = (addr + len + VM_PAGE_SIZE - 1ull) & VM_PAGE_MASK;
+    if (end < start || start < VM_USER_BASE || end > VM_USER_LIMIT) {
+        return -1;
+    }
+
+    for (uint64_t page_addr = start; page_addr < end; page_addr += VM_PAGE_SIZE) {
+        if (find_mapping_index(space, page_addr) < 0) {
+            return -1;
+        }
+    }
+
+    for (uint64_t page_addr = start; page_addr < end; page_addr += VM_PAGE_SIZE) {
+        int index = find_mapping_index(space, page_addr);
+        size_t pd_index = (size_t)((page_addr >> 21) & 0x1FFu);
+        size_t pt_index = (size_t)((page_addr >> 12) & 0x1FFu);
+        uint64_t page_ptr = (uint64_t)(uintptr_t)space->mappings[index].page;
+        space->mappings[index].prot = prot;
+        space->pts[pd_index][pt_index] = page_ptr | pte_flags_for_prot(prot);
+        flush_if_active(space, page_addr);
+    }
+
+    return 0;
+}
+
 bool vm_space_range_mapped(const struct vm_space* space, uint64_t addr, size_t len) {
     if (space == NULL) {
         return false;
@@ -501,4 +548,28 @@ bool vm_space_range_mapped(const struct vm_space* space, uint64_t addr, size_t l
         }
     }
     return true;
+}
+
+void* vm_space_host_ptr(const struct vm_space* space, uint64_t addr, size_t len) {
+    if (space == NULL) {
+        return NULL;
+    }
+    if (len == 0) {
+        return (void*)(uintptr_t)addr;
+    }
+    if (addr < VM_USER_BASE || addr + len < addr || addr + len > VM_USER_LIMIT) {
+        return NULL;
+    }
+
+    size_t page_off = (size_t)(addr & (VM_PAGE_SIZE - 1ull));
+    if (page_off + len > VM_PAGE_SIZE) {
+        return NULL;
+    }
+
+    uint8_t* page = mapping_page_for(space, addr);
+    if (page == NULL) {
+        return NULL;
+    }
+
+    return page + page_off;
 }

@@ -7,6 +7,7 @@
 #include <poll.h>
 #include <sched.h>
 #include <signal.h>
+#include <sys/prctl.h>
 #include <stddef.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -29,6 +30,7 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#include <linux/futex.h>
 
 #ifndef F_DUPFD_CLOEXEC
 #define F_DUPFD_CLOEXEC 1030
@@ -107,10 +109,21 @@ static void fill_sockaddr(struct sockaddr_un* addr, const char* path, socklen_t*
 
 static void wait_for_exit_code(pid_t pid, int expected) {
     int status = 0;
-    pid_t got = waitpid(pid, &status, 0);
+    pid_t got = -1;
+    do {
+        got = waitpid(pid, &status, 0);
+    } while (got < 0 && errno == EINTR);
     REQUIRE(got == pid, "waitpid(%d) returned %d: %s", (int)pid, (int)got, strerror(errno));
     REQUIRE(WIFEXITED(status), "child %d did not exit normally: status=0x%x", (int)pid, status);
     REQUIRE(WEXITSTATUS(status) == expected, "child %d exit code %d != %d", (int)pid, WEXITSTATUS(status), expected);
+}
+
+static pid_t waitpid_retry(pid_t pid, int* status, int options) {
+    pid_t got = -1;
+    do {
+        got = waitpid(pid, status, options);
+    } while (got < 0 && errno == EINTR);
+    return got;
 }
 
 static void test_identity_and_paths(void) {
@@ -467,7 +480,7 @@ static void test_process_wait_and_exec(void) {
     close(gate[0]);
     gate[0] = -1;
     status = 0;
-    got = waitpid(child, &status, WNOHANG);
+    got = waitpid_retry(child, &status, WNOHANG);
     REQUIRE(got == 0, "waitpid(WNOHANG) returned %d", (int)got);
     REQUIRE(write(gate[1], "x", 1) == 1, "release write failed: %s", strerror(errno));
     close(gate[1]);
@@ -591,18 +604,18 @@ static void test_process_groups_and_signals(void) {
     close(gate[0]);
     gate[0] = -1;
     REQUIRE(kill(child, SIGSTOP) == 0, "kill(SIGSTOP) failed: %s", strerror(errno));
-    got = waitpid(child, &status, WUNTRACED);
+    got = waitpid_retry(child, &status, WUNTRACED);
     REQUIRE(got == child, "waitpid(WUNTRACED) returned %d", (int)got);
     REQUIRE(WIFSTOPPED(status), "child status 0x%x was not stopped", status);
     REQUIRE(WSTOPSIG(status) == SIGSTOP, "stopped child signal %d != SIGSTOP", WSTOPSIG(status));
 
     REQUIRE(kill(child, SIGCONT) == 0, "kill(SIGCONT) failed: %s", strerror(errno));
-    got = waitpid(child, &status, WCONTINUED);
+    got = waitpid_retry(child, &status, WCONTINUED);
     REQUIRE(got == child, "waitpid(WCONTINUED) returned %d", (int)got);
     REQUIRE(WIFCONTINUED(status), "child status 0x%x was not continued", status);
 
     REQUIRE(kill(child, SIGTERM) == 0, "kill(SIGTERM) failed: %s", strerror(errno));
-    got = waitpid(child, &status, 0);
+    got = waitpid_retry(child, &status, 0);
     REQUIRE(got == child, "waitpid(SIGTERM child) returned %d", (int)got);
     REQUIRE(WIFSIGNALED(status), "SIGTERM child status 0x%x was not signaled", status);
     REQUIRE(WTERMSIG(status) == SIGTERM, "SIGTERM child signal %d != SIGTERM", WTERMSIG(status));
@@ -625,7 +638,7 @@ static void test_process_groups_and_signals(void) {
             (int)group_child, (int)group_child, strerror(errno));
     REQUIRE(getpgid(group_child) == group_child, "getpgid(%d) returned %d", (int)group_child, (int)getpgid(group_child));
     REQUIRE(kill(-group_child, SIGTERM) == 0, "kill(-%d, SIGTERM) failed: %s", (int)group_child, strerror(errno));
-    got = waitpid(group_child, &status, 0);
+    got = waitpid_retry(group_child, &status, 0);
     REQUIRE(got == group_child, "waitpid(group child) returned %d", (int)got);
     REQUIRE(WIFSIGNALED(status), "group child status 0x%x was not signaled", status);
     REQUIRE(WTERMSIG(status) == SIGTERM, "group child signal %d != SIGTERM", WTERMSIG(status));
@@ -747,6 +760,105 @@ static void test_memory_and_misc(void) {
     }
 }
 
+static void test_compat_syscalls(void) {
+    static unsigned char altstack_mem[8192];
+    stack_t ss;
+    stack_t old_ss;
+    stack_t probe_ss;
+    int pdeathsig = 0;
+    int futex_word = 0;
+    int status = 0;
+    pid_t child = -1;
+    char name[16];
+    struct timespec timeout = { .tv_sec = 0, .tv_nsec = 1000000L };
+    unsigned long robust_head[3] = { 0, 0, 0 };
+    void* map = MAP_FAILED;
+
+    memset(&old_ss, 0, sizeof(old_ss));
+    REQUIRE(sigaltstack(NULL, &old_ss) == 0, "sigaltstack(query) failed: %s", strerror(errno));
+    REQUIRE((old_ss.ss_flags & SS_DISABLE) != 0, "initial alt stack was unexpectedly enabled");
+
+    memset(&ss, 0, sizeof(ss));
+    ss.ss_sp = altstack_mem;
+    ss.ss_size = sizeof(altstack_mem);
+    ss.ss_flags = 0;
+    REQUIRE(sigaltstack(&ss, NULL) == 0, "sigaltstack(enable) failed: %s", strerror(errno));
+
+    memset(&probe_ss, 0, sizeof(probe_ss));
+    REQUIRE(sigaltstack(NULL, &probe_ss) == 0, "sigaltstack(re-query) failed: %s", strerror(errno));
+    REQUIRE((probe_ss.ss_flags & SS_DISABLE) == 0, "alt stack still reported disabled");
+    REQUIRE(probe_ss.ss_sp == ss.ss_sp, "alt stack base changed unexpectedly");
+    REQUIRE(probe_ss.ss_size == ss.ss_size, "alt stack size changed unexpectedly");
+
+    memset(&ss, 0, sizeof(ss));
+    ss.ss_flags = SS_DISABLE;
+    REQUIRE(sigaltstack(&ss, NULL) == 0, "sigaltstack(disable) failed: %s", strerror(errno));
+
+    memset(name, 0, sizeof(name));
+    REQUIRE(prctl(PR_SET_NAME, (unsigned long)"k-tests", 0, 0, 0) == 0, "prctl(PR_SET_NAME) failed: %s", strerror(errno));
+    REQUIRE(prctl(PR_GET_NAME, (unsigned long)name, 0, 0, 0) == 0, "prctl(PR_GET_NAME) failed: %s", strerror(errno));
+    REQUIRE(strcmp(name, "k-tests") == 0, "PR_GET_NAME returned %s", name);
+
+    REQUIRE(prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) == 0, "prctl(PR_SET_DUMPABLE,0) failed: %s", strerror(errno));
+    REQUIRE(prctl(PR_GET_DUMPABLE, 0, 0, 0, 0) == 0, "prctl(PR_GET_DUMPABLE) did not report 0");
+    REQUIRE(prctl(PR_SET_DUMPABLE, 1, 0, 0, 0) == 0, "prctl(PR_SET_DUMPABLE,1) failed: %s", strerror(errno));
+    REQUIRE(prctl(PR_GET_DUMPABLE, 0, 0, 0, 0) == 1, "prctl(PR_GET_DUMPABLE) did not report 1");
+
+    REQUIRE(prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0, "prctl(PR_SET_NO_NEW_PRIVS) failed: %s", strerror(errno));
+    REQUIRE(prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) == 1, "prctl(PR_GET_NO_NEW_PRIVS) did not report 1");
+
+    pdeathsig = 0;
+    REQUIRE(prctl(PR_SET_PDEATHSIG, SIGUSR1, 0, 0, 0) == 0, "prctl(PR_SET_PDEATHSIG) failed: %s", strerror(errno));
+    REQUIRE(prctl(PR_GET_PDEATHSIG, (unsigned long)&pdeathsig, 0, 0, 0) == 0, "prctl(PR_GET_PDEATHSIG) failed: %s", strerror(errno));
+    REQUIRE(pdeathsig == SIGUSR1, "PR_GET_PDEATHSIG returned %d", pdeathsig);
+
+    REQUIRE(syscall(SYS_set_robust_list, robust_head, sizeof(robust_head)) == 0,
+            "set_robust_list failed: %s", strerror(errno));
+
+    errno = 0;
+    REQUIRE(syscall(SYS_futex, &futex_word, FUTEX_WAIT | FUTEX_PRIVATE_FLAG, 1, NULL, NULL, 0) == -1 && errno == EAGAIN,
+            "futex WAIT mismatch returned errno=%d", errno);
+    REQUIRE(syscall(SYS_futex, &futex_word, FUTEX_WAKE | FUTEX_PRIVATE_FLAG, 1, NULL, NULL, 0) == 0,
+            "futex WAKE with no waiters failed: %s", strerror(errno));
+
+    errno = 0;
+    REQUIRE(syscall(SYS_futex, &futex_word, FUTEX_WAIT | FUTEX_PRIVATE_FLAG, 0, &timeout, NULL, 0) == -1 && errno == ETIMEDOUT,
+            "futex WAIT timeout returned errno=%d", errno);
+
+    child = fork();
+    REQUIRE(child >= 0, "fork(futex interrupter) failed: %s", strerror(errno));
+    if (child == 0) {
+        nanosleep(&(const struct timespec){ .tv_sec = 0, .tv_nsec = 1000000L }, NULL);
+        kill(getppid(), SIGUSR1);
+        _exit(0);
+    }
+
+    errno = 0;
+    REQUIRE(syscall(SYS_futex, &futex_word, FUTEX_WAIT | FUTEX_PRIVATE_FLAG, 0, NULL, NULL, 0) == -1 && errno == EINTR,
+            "futex WAIT interruption returned errno=%d", errno);
+    wait_for_exit_code(child, 0);
+    child = -1;
+
+    map = mmap(NULL, 4096, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    REQUIRE(map != MAP_FAILED, "mmap(read-only anon) failed: %s", strerror(errno));
+    errno = 0;
+    REQUIRE(syscall(SYS_mprotect, (char*)map + 1, 4096, PROT_READ) == -1 && errno == EINVAL,
+            "misaligned mprotect returned errno=%d", errno);
+    REQUIRE(mprotect(map, 4096, PROT_NONE) == 0, "mprotect(PROT_NONE) failed: %s", strerror(errno));
+    REQUIRE(mprotect(map, 4096, PROT_READ | PROT_WRITE) == 0, "mprotect(PROT_READ|PROT_WRITE) failed: %s", strerror(errno));
+    ((volatile unsigned char*)map)[0] = 0x7c;
+    REQUIRE(((volatile unsigned char*)map)[0] == 0x7c, "mprotect-upgraded page was not writable");
+    REQUIRE(munmap(map, 4096) == 0, "munmap(compat map) failed: %s", strerror(errno));
+    map = MAP_FAILED;
+
+    if (map != MAP_FAILED) {
+        munmap(map, 4096);
+    }
+    if (child >= 0) {
+        waitpid_retry(child, &status, 0);
+    }
+}
+
 struct test_case {
     const char* name;
     void (*fn)(void);
@@ -757,9 +869,10 @@ static const struct test_case g_tests[] = {
     { "file_io_and_mmap", test_file_io_and_mmap },
     { "pipes_select_and_poll", test_pipes_select_and_poll },
     { "socketpair_and_unix_sockets", test_socketpair_and_unix_sockets },
+    { "memory_and_misc", test_memory_and_misc },
+    { "compat_syscalls", test_compat_syscalls },
     { "process_wait_and_exec", test_process_wait_and_exec },
     { "process_groups_and_signals", test_process_groups_and_signals },
-    { "memory_and_misc", test_memory_and_misc },
 };
 
 int main(void) {

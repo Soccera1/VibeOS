@@ -22,6 +22,8 @@ void process_init(void) {
     g_processes[0].brk_current = VM_USER_BRK_BASE;
     g_processes[0].mmap_next = VM_USER_MMAP_BASE;
     g_processes[0].umask = 022u;
+    g_processes[0].dumpable = true;
+    strcpy(g_processes[0].comm, "init");
     strcpy(g_processes[0].cwd, "/");
     for (int i = 0; i < PROCESS_MAX_FDS; ++i) {
         g_processes[0].fds[i].kind = 0;
@@ -64,6 +66,7 @@ struct process* process_alloc(void) {
             proc->brk_current = VM_USER_BRK_BASE;
             proc->mmap_next = VM_USER_MMAP_BASE;
             proc->umask = 022u;
+            proc->dumpable = true;
             for (int j = 0; j < PROCESS_MAX_FDS; ++j) {
                 proc->fds[j].pipe_id = -1;
                 proc->fds[j].socket_id = -1;
