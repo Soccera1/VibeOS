@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/strip_helpers.sh"
 
 if [[ $# -lt 1 ]]; then
-  echo "usage: $0 <output.ext2> [bash-bin] [help-bin] [sl-bin] [file-bin] [file-magic] [nano-bin] [coreutils-dir] [coreutils-programs] [usr-tree...]" >&2
+  echo "usage: $0 <output.ext3> [bash-bin] [help-bin] [sl-bin] [file-bin] [file-magic] [nano-bin] [coreutils-dir] [coreutils-programs] [usr-tree...]" >&2
   exit 1
 fi
 
@@ -18,7 +18,11 @@ FILE_MAGIC="${6:-}"
 NANO_BIN="${7:-}"
 COREUTILS_DIR="${8:-}"
 COREUTILS_PROGS="${9:-}"
-shift 9
+if [[ $# -gt 9 ]]; then
+  shift 9
+else
+  shift $#
+fi
 USR_TREES=("$@")
 
 WORKDIR="$(mktemp -d)"
@@ -149,15 +153,16 @@ estimate_data_blocks() {
   '
 }
 
-build_ext2_image() {
+build_ext3_image() {
   local image="$1"
   local blocks="$2"
 
   rm -f "$image"
-  mkfs.ext2 -q -F \
+  mkfs.ext3 -q -F \
     -b "$BLOCK_SIZE" \
     -m 0 \
     -N "$INODE_COUNT" \
+    -O ^dir_index \
     -L VIBEUSR \
     -d "$ROOT" \
     "$image" "$blocks" >/dev/null 2>&1
@@ -175,22 +180,22 @@ if (( LOWER_BLOCKS < 16 )); then
   LOWER_BLOCKS=16
 fi
 
-TMP_IMG="$WORKDIR/usr.ext2"
+TMP_IMG="$WORKDIR/usr.ext3"
 UPPER_BLOCKS="$LOWER_BLOCKS"
-until build_ext2_image "$TMP_IMG" "$UPPER_BLOCKS"; do
+until build_ext3_image "$TMP_IMG" "$UPPER_BLOCKS"; do
   UPPER_BLOCKS=$(( UPPER_BLOCKS * 2 ))
 done
 
 while (( LOWER_BLOCKS < UPPER_BLOCKS )); do
   MID_BLOCKS=$(( (LOWER_BLOCKS + UPPER_BLOCKS) / 2 ))
-  if build_ext2_image "$TMP_IMG" "$MID_BLOCKS"; then
+  if build_ext3_image "$TMP_IMG" "$MID_BLOCKS"; then
     UPPER_BLOCKS="$MID_BLOCKS"
   else
     LOWER_BLOCKS=$(( MID_BLOCKS + 1 ))
   fi
 done
 
-build_ext2_image "$OUT_IMG" "$LOWER_BLOCKS" || {
-  echo "Failed to build ext2 image with $LOWER_BLOCKS blocks" >&2
+build_ext3_image "$OUT_IMG" "$LOWER_BLOCKS" || {
+  echo "Failed to build ext3 image with $LOWER_BLOCKS blocks" >&2
   exit 1
 }

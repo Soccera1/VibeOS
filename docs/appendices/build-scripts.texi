@@ -110,10 +110,10 @@ and creates BusyBox applet symlinks while avoiding applets that should be
 provided by GNU coreutils instead.
 
 @item tools/make_usr_ext2.sh
-Constructs the read-only @file{/usr} ext2 image.  It copies optional program
+Constructs the read-only @file{/usr} ext3 image.  It copies optional program
 trees, stages non-essential coreutils, installs data files such as
 @file{magic.mgc}, copies selected terminfo entries, estimates the block count,
-and then runs @code{mkfs.ext2 -d} to create the filesystem image.
+and then runs @code{mkfs.ext3 -d} to create the filesystem image.
 
 @item tools/make_iso.sh
 Creates a temporary ISO tree, copies the kernel and both module images into
@@ -122,7 +122,7 @@ two @code{module2} directives, and then runs @code{grub-mkrescue}.
 
 @item tools/make_gpt_disk.sh
 Creates a raw disk image, partitions it with GPT, creates a BIOS GRUB partition
-plus a main ext2 partition, mounts the filesystem, copies the kernel and module
+plus a main ext3 partition, mounts the filesystem, copies the kernel and module
 images into @file{/boot}, writes GRUB configuration, and installs BIOS GRUB
 into the resulting loop device.
 @end table

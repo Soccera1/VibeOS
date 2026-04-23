@@ -99,10 +99,10 @@ The image-building scripts also encode important assumptions:
 @file{tools/make_gpt_disk.sh}
 @item BIOS GRUB partition @tab @code{1 MiB-3 MiB} @tab Reserved boot area on
 the GPT disk
-@item Main disk partition start @tab @code{3 MiB} @tab Start of the VIBEOS ext2
+@item Main disk partition start @tab @code{3 MiB} @tab Start of the VIBEOS ext3
 partition
-@item ext2 image block size @tab 4096 @tab Block size used by
+@item ext3 image block size @tab 4096 @tab Block size used by
 @file{tools/make_usr_ext2.sh}
-@item ext2 inode size @tab 256 @tab Inode size used while estimating the
+@item ext3 inode size @tab 256 @tab Inode size used while estimating the
 filesystem image
 @end multitable

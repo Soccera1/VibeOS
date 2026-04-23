@@ -66,7 +66,7 @@ The boot media scripts always pass two Multiboot modules after the kernel:
 
 @enumerate
 @item module 0 is the initramfs, and
-@item module 1 is the @file{/usr} ext2 image.
+@item module 1 is the @file{/usr} ext3 image.
 @end enumerate
 
 @findex initramfs_init
@@ -108,7 +108,7 @@ Once C code begins, @code{kernel_main} performs initialization in a fixed order:
 @item ACPI power probing,
 @item heap initialization,
 @item initramfs discovery and indexing,
-@item @file{/usr} ext2 mount attempt,
+@item @file{/usr} ext3 mount attempt,
 @item post-user return-stack installation,
 @item VM template initialization,
 @item GDT setup,

@@ -98,7 +98,7 @@ void fs_init(const uint8_t* usrfs_start, size_t usrfs_size) {
             .source = (usrfs_start != NULL && usrfs_size != 0u) ? BOOT_EXT2_SOURCE_IMAGE : BOOT_EXT2_SOURCE_FILE,
             .image = usrfs_start,
             .size = usrfs_size,
-            .file_path = "/boot/usr.ext2",
+            .file_path = "/boot/usr.ext3",
         },
         {
             .mount_path = "/home",

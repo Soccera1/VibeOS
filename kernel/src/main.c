@@ -103,21 +103,21 @@ void kernel_main(uint64_t mb2_info) {
     fs_init(usrfs_start, usrfs_size);
     if (fs_usr_mount_ready()) {
         if (usrfs_module != NULL) {
-            console_printf("/usr: ext2 module mounted (%u bytes)\n", (unsigned)usrfs_size);
+            console_printf("/usr: ext3 module mounted (%u bytes)\n", (unsigned)usrfs_size);
         } else {
-            console_write("/usr: ext2 image mounted from /boot/usr.ext2\n");
+            console_write("/usr: ext3 image mounted from /boot/usr.ext3\n");
         }
     } else {
         if (usrfs_module != NULL) {
-            console_write("/usr: ext2 module present but mount failed\n");
+            console_write("/usr: ext3 module present but mount failed\n");
         } else {
-            console_write("/usr: no ext2 module provided and /boot/usr.ext2 unavailable\n");
+            console_write("/usr: no ext3 module provided and /boot/usr.ext3 unavailable\n");
         }
     }
     if (fs_home_mount_ready()) {
-        console_write("/home: ext2 disk mounted read-write\n");
+        console_write("/home: ext3 disk mounted read-write\n");
     } else {
-        console_write("/home: no writable ext2 disk attached\n");
+        console_write("/home: no writable ext3 disk attached\n");
     }
 
     kernel_exit_stack_top = (uint64_t)(uintptr_t)(&post_user_stack[sizeof(post_user_stack)]);
