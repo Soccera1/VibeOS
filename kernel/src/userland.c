@@ -14,6 +14,9 @@
 #define ELF_MAGIC 0x464C457Fu
 #define ET_EXEC 2u
 #define ET_DYN 3u
+#define PF_X 0x1u
+#define PF_W 0x2u
+#define PF_R 0x4u
 #define PT_LOAD 1u
 #define PT_INTERP 3u
 #define USER_ET_DYN_BASE 0x01000000ull
@@ -101,6 +104,20 @@ static uint64_t choose_interp_base(uint64_t main_image_end) {
     return base;
 }
 
+static uint32_t elf_segment_prot(uint32_t flags) {
+    uint32_t prot = VM_PROT_NONE;
+    if ((flags & PF_R) != 0u) {
+        prot |= VM_PROT_READ;
+    }
+    if ((flags & PF_W) != 0u) {
+        prot |= VM_PROT_READ | VM_PROT_WRITE;
+    }
+    if ((flags & PF_X) != 0u) {
+        prot |= VM_PROT_EXEC;
+    }
+    return prot;
+}
+
 static uint64_t build_user_stack(const struct user_exec_info* exec, const char* execfn,
                                  const char* const* argv, size_t argc, struct vm_space* space) {
     const char* envp[] = {
@@ -121,7 +138,7 @@ static uint64_t build_user_stack(const struct user_exec_info* exec, const char* 
         0x12, 0x6E, 0xA7, 0x39, 0x55, 0xC8, 0x03, 0xF1, 0x88, 0x22, 0x74, 0xB5, 0xE1, 0x9C, 0x41, 0x0D,
     };
 
-    (void)vm_space_map_zero(space, VM_USER_STACK_BASE, VM_USER_STACK_SIZE);
+    (void)vm_space_map_zero(space, VM_USER_STACK_BASE, VM_USER_STACK_SIZE, VM_PROT_READ | VM_PROT_WRITE);
 
     size_t execfn_len = strlen(execfn) + 1u;
     sp = push_bytes(sp, execfn, execfn_len, space);
@@ -287,7 +304,7 @@ static int load_elf64_exec(const uint8_t* image, size_t image_size, uint64_t et_
         }
 
         const uint8_t* src = image + ph[i].p_offset;
-        if (vm_space_map_zero(space, seg_vaddr, (size_t)ph[i].p_memsz) != 0) {
+        if (vm_space_map_zero(space, seg_vaddr, (size_t)ph[i].p_memsz, elf_segment_prot(ph[i].p_flags)) != 0) {
             return -1;
         }
         if (vm_space_write(space, seg_vaddr, src, (size_t)ph[i].p_filesz) != 0) {

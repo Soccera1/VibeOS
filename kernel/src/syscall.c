@@ -98,6 +98,10 @@
 
 #define MAX_FDS 64
 #define MAX_CHILDREN 256
+#define PROT_NONE 0x0u
+#define PROT_READ 0x1u
+#define PROT_WRITE 0x2u
+#define PROT_EXEC 0x4u
 #define MAP_SHARED 0x01u
 #define MAP_PRIVATE 0x02u
 #define MAP_FIXED 0x10u
@@ -136,6 +140,7 @@
 #define EADDRNOTAVAIL 99
 #define EISCONN 106
 #define ENOTCONN 107
+#define ETIMEDOUT 110
 #define ECONNREFUSED 111
 
 #define IRET_SLOT_RIP 15u
@@ -175,6 +180,31 @@
 #define WAIT_NOHANG 1u
 #define WAIT_UNTRACED 2u
 #define WAIT_CONTINUED 8u
+
+#define SS_ONSTACK 1u
+#define SS_DISABLE 2u
+#define MINSIGSTKSZ 2048u
+
+#define PR_SET_PDEATHSIG 1u
+#define PR_GET_PDEATHSIG 2u
+#define PR_GET_DUMPABLE 3u
+#define PR_SET_DUMPABLE 4u
+#define PR_SET_NAME 15u
+#define PR_GET_NAME 16u
+#define PR_SET_MM 35u
+#define PR_SET_MM_ARG_START 8u
+#define PR_SET_NO_NEW_PRIVS 38u
+#define PR_GET_NO_NEW_PRIVS 39u
+#define PR_SET_VMA 0x53564D41u
+#define PR_SET_VMA_ANON_NAME 0u
+
+#define FUTEX_WAIT 0u
+#define FUTEX_WAKE 1u
+#define FUTEX_PRIVATE_FLAG 128u
+#define FUTEX_CLOCK_REALTIME 256u
+#define FUTEX_WAIT_BITSET 9u
+#define FUTEX_WAKE_BITSET 10u
+#define FUTEX_BITSET_MATCH_ANY 0xFFFFFFFFu
 
 #define SIG_DFL ((void*)0)
 #define SIG_IGN ((void*)1)
@@ -306,6 +336,13 @@ struct linux_termios {
 struct linux_pselect_sigmask {
     uint64_t sigmask;
     uint64_t sigsetsize;
+};
+
+struct linux_stack_t {
+    void* ss_sp;
+    int32_t ss_flags;
+    uint32_t __pad;
+    uint64_t ss_size;
 };
 
 struct fb_fix_screeninfo {
@@ -582,6 +619,15 @@ static struct pipe_state g_pipes[MAX_PIPES];
 static struct unix_socket_state g_unix_sockets[MAX_UNIX_SOCKETS];
 static struct unix_connection_state g_unix_connections[MAX_UNIX_CONNECTIONS];
 static uint64_t g_tid_address;
+static uint64_t g_altstack_sp;
+static uint64_t g_altstack_size;
+static uint32_t g_altstack_flags;
+static uint32_t g_pdeath_signal;
+static uint64_t g_robust_list_head;
+static uint64_t g_robust_list_len;
+static bool g_dumpable = true;
+static bool g_no_new_privs;
+static char g_task_name[16] = "init";
 static uint16_t g_fb_cmap_red[256];
 static uint16_t g_fb_cmap_green[256];
 static uint16_t g_fb_cmap_blue[256];
@@ -621,9 +667,11 @@ static int try_complete_unix_recv(struct process* proc);
 static int try_complete_unix_send(struct process* proc);
 static int try_complete_select(struct process* proc);
 static int try_complete_nanosleep(struct process* proc);
+static int try_complete_futex(struct process* proc);
 static uint64_t schedule_away(struct syscall_frame* frame);
 static int signal_process_group(int pgid, int sig);
-static int map_exec_segment(struct vm_space* space, uint64_t vaddr, size_t memsz, const void* src, size_t filesz);
+static int signal_process(struct process* proc, int sig);
+static int map_exec_segment(struct vm_space* space, uint64_t vaddr, size_t memsz, const void* src, size_t filesz, uint32_t prot);
 static void close_cloexec_fds(void);
 static int sys_close(int fd);
 
@@ -874,6 +922,15 @@ static int save_live_process(struct process* proc, struct syscall_frame* frame) 
     proc->tid_address = g_tid_address;
     proc->fs_base = read_fs_base_current();
     proc->umask = g_umask;
+    proc->altstack_sp = g_altstack_sp;
+    proc->altstack_size = g_altstack_size;
+    proc->altstack_flags = g_altstack_flags;
+    proc->pdeath_signal = g_pdeath_signal;
+    proc->robust_list_head = g_robust_list_head;
+    proc->robust_list_len = g_robust_list_len;
+    proc->dumpable = g_dumpable;
+    proc->no_new_privs = g_no_new_privs;
+    memcpy(proc->comm, g_task_name, sizeof(g_task_name));
 
     memcpy(proc->fds, g_fds, sizeof(g_fds));
     memcpy(proc->cwd, g_cwd, sizeof(g_cwd));
@@ -905,6 +962,15 @@ static void sync_current_process_runtime(void) {
     proc->tid_address = g_tid_address;
     proc->fs_base = read_fs_base_current();
     proc->umask = g_umask;
+    proc->altstack_sp = g_altstack_sp;
+    proc->altstack_size = g_altstack_size;
+    proc->altstack_flags = g_altstack_flags;
+    proc->pdeath_signal = g_pdeath_signal;
+    proc->robust_list_head = g_robust_list_head;
+    proc->robust_list_len = g_robust_list_len;
+    proc->dumpable = g_dumpable;
+    proc->no_new_privs = g_no_new_privs;
+    memcpy(proc->comm, g_task_name, sizeof(g_task_name));
     memcpy(proc->fds, g_fds, sizeof(g_fds));
     memcpy(proc->cwd, g_cwd, sizeof(g_cwd));
     memcpy(proc->sig_actions, g_sig_actions, sizeof(g_sig_actions));
@@ -925,6 +991,15 @@ static void load_process_runtime(struct process* proc) {
     g_mmap_next = proc->mmap_next;
     g_tid_address = proc->tid_address;
     g_umask = proc->umask;
+    g_altstack_sp = proc->altstack_sp;
+    g_altstack_size = proc->altstack_size;
+    g_altstack_flags = proc->altstack_flags;
+    g_pdeath_signal = proc->pdeath_signal;
+    g_robust_list_head = proc->robust_list_head;
+    g_robust_list_len = proc->robust_list_len;
+    g_dumpable = proc->dumpable;
+    g_no_new_privs = proc->no_new_privs;
+    memcpy(g_task_name, proc->comm, sizeof(g_task_name));
 
     memcpy(g_fds, proc->fds, sizeof(g_fds));
     memcpy(g_cwd, proc->cwd, sizeof(g_cwd));
@@ -939,6 +1014,61 @@ static void load_process_runtime(struct process* proc) {
 
 static struct process* current_process(void) {
     return process_current();
+}
+
+static void set_task_name(const char* name) {
+    if (name == NULL || name[0] == '\0') {
+        strncpy(g_task_name, "init", sizeof(g_task_name));
+    } else {
+        strncpy(g_task_name, name, sizeof(g_task_name));
+    }
+    g_task_name[sizeof(g_task_name) - 1] = '\0';
+}
+
+static void set_task_name_from_path(const char* path) {
+    const char* name = path;
+    if (path != NULL) {
+        for (const char* p = path; *p != '\0'; ++p) {
+            if (*p == '/' && p[1] != '\0') {
+                name = p + 1;
+            }
+        }
+    }
+    set_task_name(name);
+}
+
+static int linux_prot_to_vm(uint64_t prot, uint32_t* out) {
+    if ((prot & ~(uint64_t)(PROT_READ | PROT_WRITE | PROT_EXEC)) != 0ull || out == NULL) {
+        return err(EINVAL);
+    }
+
+    uint32_t vm_prot = VM_PROT_NONE;
+    if ((prot & PROT_READ) != 0u) {
+        vm_prot |= VM_PROT_READ;
+    }
+    if ((prot & PROT_WRITE) != 0u) {
+        vm_prot |= VM_PROT_READ | VM_PROT_WRITE;
+    }
+    if ((prot & PROT_EXEC) != 0u) {
+        vm_prot |= VM_PROT_EXEC;
+    }
+
+    *out = vm_prot;
+    return 0;
+}
+
+static uint32_t elf_segment_prot(uint32_t flags) {
+    uint32_t prot = VM_PROT_NONE;
+    if ((flags & 0x4u) != 0u) {
+        prot |= VM_PROT_READ;
+    }
+    if ((flags & 0x2u) != 0u) {
+        prot |= VM_PROT_READ | VM_PROT_WRITE;
+    }
+    if ((flags & 0x1u) != 0u) {
+        prot |= VM_PROT_EXEC;
+    }
+    return prot;
 }
 
 static bool has_other_runnable_process(const struct process* current) {
@@ -4085,6 +4215,8 @@ static bool process_block_ready(const struct process* proc) {
         }
         case PROCESS_WAIT_NANOSLEEP:
             return read_tsc() >= proc->wait.deadline_ns;
+        case PROCESS_WAIT_FUTEX:
+            return proc->wait.has_timeout && read_tsc() >= proc->wait.deadline_ns;
         case PROCESS_WAIT_NONE:
         default:
             return false;
@@ -4416,6 +4548,21 @@ static int try_complete_nanosleep(struct process* proc) {
     return 0;
 }
 
+static int try_complete_futex(struct process* proc) {
+    if (proc->pending_count > 0) {
+        (void)process_take_pending_signal(proc);
+        unblock_process(proc, err(EINTR));
+        return 0;
+    }
+
+    if (proc->wait.has_timeout && read_tsc() >= proc->wait.deadline_ns) {
+        unblock_process(proc, err(ETIMEDOUT));
+        return 0;
+    }
+
+    return err(EAGAIN);
+}
+
 static int complete_blocked_process(struct process* proc) {
     switch (proc->wait.reason) {
         case PROCESS_WAIT_TTY_READ:
@@ -4436,6 +4583,8 @@ static int complete_blocked_process(struct process* proc) {
             return try_complete_select(proc);
         case PROCESS_WAIT_NANOSLEEP:
             return try_complete_nanosleep(proc);
+        case PROCESS_WAIT_FUTEX:
+            return try_complete_futex(proc);
         case PROCESS_WAIT_NONE:
         default:
             return 0;
@@ -5027,8 +5176,254 @@ static int sys_getpgid(int pid) {
     return target->pgid;
 }
 
+static int sys_mprotect(uint64_t addr, size_t len, uint64_t prot) {
+    uint32_t vm_prot = VM_PROT_NONE;
+    struct process* current = current_process();
+    if (current == NULL) {
+        return err(ENOMEM);
+    }
+    if (len == 0) {
+        return err(EINVAL);
+    }
+    if ((addr & (VM_PAGE_SIZE - 1ull)) != 0ull) {
+        return err(EINVAL);
+    }
+    int pr = linux_prot_to_vm(prot, &vm_prot);
+    if (pr != 0) {
+        return pr;
+    }
+    return vm_space_mprotect(&current->vm, addr, len, vm_prot) == 0 ? 0 : err(ENOMEM);
+}
+
+static int sys_sigaltstack(const struct linux_stack_t* ss, struct linux_stack_t* old_ss) {
+    if (old_ss != NULL) {
+        old_ss->ss_sp = (void*)(uintptr_t)g_altstack_sp;
+        old_ss->ss_flags = (int32_t)g_altstack_flags;
+        old_ss->__pad = 0;
+        old_ss->ss_size = g_altstack_size;
+    }
+
+    if (ss == NULL) {
+        return 0;
+    }
+
+    if ((ss->ss_flags & ~(int32_t)SS_DISABLE) != 0) {
+        return err(EINVAL);
+    }
+
+    if ((ss->ss_flags & (int32_t)SS_DISABLE) != 0) {
+        g_altstack_sp = 0;
+        g_altstack_size = 0;
+        g_altstack_flags = SS_DISABLE;
+        return 0;
+    }
+
+    if (ss->ss_sp == NULL) {
+        return err(EFAULT);
+    }
+    if (ss->ss_size < MINSIGSTKSZ) {
+        return err(ENOMEM);
+    }
+
+    g_altstack_sp = (uint64_t)(uintptr_t)ss->ss_sp;
+    g_altstack_size = ss->ss_size;
+    g_altstack_flags = 0;
+    return 0;
+}
+
+static int sys_set_robust_list(uint64_t head, size_t len) {
+    if (len != 3u * sizeof(uint64_t)) {
+        return err(EINVAL);
+    }
+    g_robust_list_head = head;
+    g_robust_list_len = len;
+    return 0;
+}
+
+static int sys_prctl(uint64_t option, uint64_t arg2, uint64_t arg3, uint64_t arg4, uint64_t arg5) {
+    (void)arg4;
+    (void)arg5;
+
+    switch (option) {
+        case PR_SET_PDEATHSIG:
+            if (arg2 >= NSIG) {
+                return err(EINVAL);
+            }
+            g_pdeath_signal = (uint32_t)arg2;
+            return 0;
+        case PR_GET_PDEATHSIG:
+            if (arg2 == 0) {
+                return err(EFAULT);
+            }
+            *(int*)(uintptr_t)arg2 = (int)g_pdeath_signal;
+            return 0;
+        case PR_GET_DUMPABLE:
+            return g_dumpable ? 1 : 0;
+        case PR_SET_DUMPABLE:
+            if (arg2 > 1) {
+                return err(EINVAL);
+            }
+            g_dumpable = arg2 != 0;
+            return 0;
+        case PR_SET_NAME:
+        {
+            if (arg2 == 0) {
+                return err(EFAULT);
+            }
+            char name[sizeof(g_task_name)];
+            memset(name, 0, sizeof(name));
+            for (size_t i = 0; i + 1 < sizeof(name); ++i) {
+                char c = ((const char*)(uintptr_t)arg2)[i];
+                name[i] = c;
+                if (c == '\0') {
+                    break;
+                }
+            }
+            set_task_name(name);
+            return 0;
+        }
+        case PR_GET_NAME:
+            if (arg2 == 0) {
+                return err(EFAULT);
+            }
+            memset((void*)(uintptr_t)arg2, 0, sizeof(g_task_name));
+            memcpy((void*)(uintptr_t)arg2, g_task_name, sizeof(g_task_name));
+            return 0;
+        case PR_SET_MM:
+            if (arg2 == PR_SET_MM_ARG_START) {
+                return 0;
+            }
+            return err(EINVAL);
+        case PR_SET_NO_NEW_PRIVS:
+            if (arg2 != 1 || arg3 != 0 || arg4 != 0 || arg5 != 0) {
+                return err(EINVAL);
+            }
+            g_no_new_privs = true;
+            return 0;
+        case PR_GET_NO_NEW_PRIVS:
+            return g_no_new_privs ? 1 : 0;
+        case PR_SET_VMA:
+            if (arg2 == PR_SET_VMA_ANON_NAME) {
+                return 0;
+            }
+            return err(EINVAL);
+        default:
+            return err(EINVAL);
+    }
+}
+
+static uint64_t futex_key_for_current(const uint32_t* uaddr) {
+    struct process* current = current_process();
+    if (current == NULL || uaddr == NULL) {
+        return 0;
+    }
+
+    void* host = vm_space_host_ptr(&current->vm, (uint64_t)(uintptr_t)uaddr, sizeof(*uaddr));
+    if (host == NULL) {
+        return 0;
+    }
+
+    return (uint64_t)(uintptr_t)host;
+}
+
+static int futex_wake_waiters(uint64_t key, uint32_t bitset, int max_wake) {
+    int woke = 0;
+    if (max_wake <= 0) {
+        return 0;
+    }
+
+    for (int i = 0; i < MAX_PROCESSES && woke < max_wake; ++i) {
+        struct process* proc = process_at(i);
+        if (proc == NULL || proc->state != PROCESS_BLOCKED || proc->wait.reason != PROCESS_WAIT_FUTEX || !proc->has_saved_context) {
+            continue;
+        }
+        if (proc->wait.ptr0 != key) {
+            continue;
+        }
+        if ((((uint32_t)proc->wait.aux0) & bitset) == 0u) {
+            continue;
+        }
+        unblock_process(proc, 0);
+        woke++;
+    }
+
+    return woke;
+}
+
+static int sys_futex(uint32_t* uaddr, uint32_t op, uint32_t val, const struct linux_timespec* timeout, uint32_t* uaddr2, uint32_t val3,
+                     struct syscall_frame* frame) {
+    (void)uaddr2;
+
+    uint32_t cmd = op & ~(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
+    uint32_t bitset = (cmd == FUTEX_WAIT_BITSET || cmd == FUTEX_WAKE_BITSET) ? val3 : FUTEX_BITSET_MATCH_ANY;
+    uint64_t key = futex_key_for_current(uaddr);
+    if (key == 0) {
+        return err(EFAULT);
+    }
+    if ((cmd == FUTEX_WAIT_BITSET || cmd == FUTEX_WAKE_BITSET) && bitset == 0u) {
+        return err(EINVAL);
+    }
+
+    switch (cmd) {
+        case FUTEX_WAIT:
+        case FUTEX_WAIT_BITSET:
+        {
+            if (*(volatile uint32_t*)(uintptr_t)key != val) {
+                return err(EAGAIN);
+            }
+
+            uint64_t deadline = 0;
+            bool has_timeout = false;
+            if (timeout != NULL) {
+                if (timeout->tv_sec < 0 || timeout->tv_nsec < 0 || timeout->tv_nsec >= 1000000000ll) {
+                    return err(EINVAL);
+                }
+                deadline = read_tsc() + timeout_to_tsc_cycles(timeout->tv_sec, timeout->tv_nsec);
+                has_timeout = true;
+                if (read_tsc() >= deadline) {
+                    return err(ETIMEDOUT);
+                }
+            }
+
+            if (frame != NULL && has_other_runnable_process(current_process())) {
+                struct process* proc = current_process();
+                int sr = save_live_process(proc, frame);
+                if (sr != 0) {
+                    return sr;
+                }
+                proc->state = PROCESS_BLOCKED;
+                proc->wait.reason = PROCESS_WAIT_FUTEX;
+                proc->wait.ptr0 = key;
+                proc->wait.aux0 = (int)bitset;
+                proc->wait.has_timeout = has_timeout;
+                proc->wait.deadline_ns = deadline;
+                return (int)schedule_away(frame);
+            }
+
+            if (!has_timeout) {
+                return err(EAGAIN);
+            }
+
+            for (;;) {
+                if (g_pending_signal_count > 0) {
+                    return err(EINTR);
+                }
+                if (has_timeout && read_tsc() >= deadline) {
+                    return err(ETIMEDOUT);
+                }
+                __asm__ volatile("pause");
+            }
+        }
+        case FUTEX_WAKE:
+        case FUTEX_WAKE_BITSET:
+            return futex_wake_waiters(key, bitset, (int)val);
+        default:
+            return err(EINVAL);
+    }
+}
+
 static int64_t sys_mmap(uint64_t addr, size_t len, uint64_t prot, uint64_t flags, int fd, uint64_t offset) {
-    (void)prot;
+    uint32_t vm_prot = VM_PROT_NONE;
     if (len == 0) {
         return err(EINVAL);
     }
@@ -5044,6 +5439,10 @@ static int64_t sys_mmap(uint64_t addr, size_t len, uint64_t prot, uint64_t flags
 
     if ((offset & (align - 1u)) != 0u) {
         return err(EINVAL);
+    }
+    int pr = linux_prot_to_vm(prot, &vm_prot);
+    if (pr != 0) {
+        return pr;
     }
 
     if (!anonymous && (flags & (MAP_SHARED | MAP_PRIVATE)) == 0u) {
@@ -5088,7 +5487,7 @@ static int64_t sys_mmap(uint64_t addr, size_t len, uint64_t prot, uint64_t flags
                 return err(EINVAL);
             }
             phys_base = (fb.phys_addr + offset) & ~(align - 1u);
-            if (vm_space_map_physical(&current->vm, base, phys_base, (size_t)span) != 0) {
+            if (vm_space_map_physical(&current->vm, base, phys_base, (size_t)span, vm_prot) != 0) {
                 return err(ENOMEM);
             }
             return (int64_t)base;
@@ -5098,7 +5497,7 @@ static int64_t sys_mmap(uint64_t addr, size_t len, uint64_t prot, uint64_t flags
             return err(EBADF);
         }
 
-        if (vm_space_map_zero(&current->vm, base, (size_t)span) != 0) {
+        if (vm_space_map_zero(&current->vm, base, (size_t)span, vm_prot) != 0) {
             return err(ENOMEM);
         }
 
@@ -5125,7 +5524,7 @@ static int64_t sys_mmap(uint64_t addr, size_t len, uint64_t prot, uint64_t flags
                 return err(ENOMEM);
             }
         }
-    } else if (vm_space_map_zero(&current->vm, base, (size_t)span) != 0) {
+    } else if (vm_space_map_zero(&current->vm, base, (size_t)span, vm_prot) != 0) {
         return err(ENOMEM);
     }
 
@@ -5157,7 +5556,7 @@ static int64_t sys_brk(uint64_t brk) {
         return (int64_t)g_brk_current;
     }
     if (brk > old) {
-        if (vm_space_map_zero(&current->vm, old, (size_t)(brk - old)) != 0) {
+        if (vm_space_map_zero(&current->vm, old, (size_t)(brk - old), VM_PROT_READ | VM_PROT_WRITE) != 0) {
             return (int64_t)g_brk_current;
         }
     } else if (brk < old) {
@@ -5389,11 +5788,11 @@ static uint64_t choose_interp_base(uint64_t main_image_end) {
     return base;
 }
 
-static int map_exec_segment(struct vm_space* space, uint64_t vaddr, size_t memsz, const void* src, size_t filesz) {
+static int map_exec_segment(struct vm_space* space, uint64_t vaddr, size_t memsz, const void* src, size_t filesz, uint32_t prot) {
     if (space == NULL) {
         return err(EINVAL);
     }
-    if (vm_space_map_zero(space, vaddr, memsz) != 0) {
+    if (vm_space_map_zero(space, vaddr, memsz, prot) != 0) {
         return err(ENOMEM);
     }
     if (filesz != 0 && vm_space_write(space, vaddr, src, filesz) != 0) {
@@ -5495,7 +5894,7 @@ static int load_exec_image(struct vm_space* space, const uint8_t* image, size_t 
         }
 
         const uint8_t* src = image + ph[i].p_offset;
-        int mr = map_exec_segment(space, seg_vaddr, (size_t)ph[i].p_memsz, src, (size_t)ph[i].p_filesz);
+        int mr = map_exec_segment(space, seg_vaddr, (size_t)ph[i].p_memsz, src, (size_t)ph[i].p_filesz, elf_segment_prot(ph[i].p_flags));
         if (mr != 0) {
             return mr;
         }
@@ -5535,7 +5934,7 @@ static int build_exec_stack(const char* execfn, char argv[EXEC_MAX_ARGS][EXEC_ST
         0x12, 0x6E, 0xA7, 0x39, 0x55, 0xC8, 0x03, 0xF1, 0x88, 0x22, 0x74, 0xB5, 0xE1, 0x9C, 0x41, 0x0D,
     };
 
-    if (space == NULL || vm_space_map_zero(space, VM_USER_STACK_BASE, VM_USER_STACK_SIZE) != 0) {
+    if (space == NULL || vm_space_map_zero(space, VM_USER_STACK_BASE, VM_USER_STACK_SIZE, VM_PROT_READ | VM_PROT_WRITE) != 0) {
         return err(ENOMEM);
     }
 
@@ -5764,8 +6163,14 @@ static int sys_execve(struct syscall_frame* frame, const char* path_user, uint64
     g_brk_current = VM_USER_BRK_BASE;
     g_mmap_next = VM_USER_MMAP_BASE;
     g_tid_address = 0;
+    g_altstack_sp = 0;
+    g_altstack_size = 0;
+    g_altstack_flags = SS_DISABLE;
+    g_robust_list_head = 0;
+    g_robust_list_len = 0;
     write_fs_base_current(0);
     userland_set_image_span(image_start, image_end);
+    set_task_name_from_path(current_exec_path);
 
     current->tid_address = 0;
     current->fs_base = 0;
@@ -5773,6 +6178,11 @@ static int sys_execve(struct syscall_frame* frame, const char* path_user, uint64
     current->image_end = image_end;
     current->brk_current = g_brk_current;
     current->mmap_next = g_mmap_next;
+    current->altstack_sp = g_altstack_sp;
+    current->altstack_size = g_altstack_size;
+    current->altstack_flags = g_altstack_flags;
+    current->robust_list_head = 0;
+    current->robust_list_len = 0;
 
     close_cloexec_fds();
     sync_current_process_runtime();
@@ -5929,6 +6339,15 @@ static void note_child_status_change(struct process* proc, int status) {
 static void terminate_process(struct process* proc, int exit_code, int wait_status) {
     if (proc == NULL || proc->state == PROCESS_ZOMBIE || proc->state == PROCESS_FREE) {
         return;
+    }
+
+    for (int i = 0; i < MAX_PROCESSES; ++i) {
+        struct process* child = process_at(i);
+        if (child == NULL || child->state == PROCESS_FREE || child->state == PROCESS_ZOMBIE || child->ppid != proc->pid ||
+            child->pdeath_signal == 0) {
+            continue;
+        }
+        (void)signal_process(child, (int)child->pdeath_signal);
     }
 
     release_process_fds(proc);
@@ -6156,6 +6575,14 @@ static int sys_fork_like(struct syscall_frame* frame, uint64_t clone_flags, uint
     child->umask = current->umask;
     child->fs_base = ((from_clone && (clone_flags & CLONE_SETTLS) != 0ull) ? tls : current->fs_base);
     child->tid_address = ((from_clone && (clone_flags & CLONE_CHILD_CLEARTID)) != 0ull) ? child_tid_ptr : current->tid_address;
+    child->altstack_sp = current->altstack_sp;
+    child->altstack_size = current->altstack_size;
+    child->altstack_flags = current->altstack_flags;
+    child->pdeath_signal = current->pdeath_signal;
+    child->robust_list_head = current->robust_list_head;
+    child->robust_list_len = current->robust_list_len;
+    child->dumpable = current->dumpable;
+    child->no_new_privs = current->no_new_privs;
     child->sig_mask = current->sig_mask;
     child->pending_count = 0;
     child->has_wait_event = false;
@@ -6166,6 +6593,7 @@ static int sys_fork_like(struct syscall_frame* frame, uint64_t clone_flags, uint
     memcpy(child->fds, current->fds, sizeof(child->fds));
     memcpy(child->cwd, current->cwd, sizeof(child->cwd));
     memcpy(child->sig_actions, current->sig_actions, sizeof(child->sig_actions));
+    memcpy(child->comm, current->comm, sizeof(child->comm));
     memset(child->pending_signals, 0, sizeof(child->pending_signals));
 
     vm_space_destroy(&child->vm);
@@ -6242,6 +6670,15 @@ void syscall_init(void) {
     g_current_sid = 1;
     g_pending_keyboard_signal = 0;
     g_tid_address = 0;
+    g_altstack_sp = 0;
+    g_altstack_size = 0;
+    g_altstack_flags = SS_DISABLE;
+    g_pdeath_signal = 0;
+    g_robust_list_head = 0;
+    g_robust_list_len = 0;
+    g_dumpable = true;
+    g_no_new_privs = false;
+    set_task_name("init");
     g_umask = 022u;
     g_terminal_fg_pgrp = 1;
     g_zombie_count = 0;
@@ -6260,6 +6697,9 @@ void syscall_init(void) {
         init_proc->brk_current = g_brk_current;
         init_proc->mmap_next = g_mmap_next;
         init_proc->umask = g_umask;
+        init_proc->altstack_flags = g_altstack_flags;
+        init_proc->dumpable = g_dumpable;
+        memcpy(init_proc->comm, g_task_name, sizeof(g_task_name));
         vm_space_activate(&init_proc->vm);
     }
 
@@ -6316,7 +6756,7 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
         case 9:
             return (uint64_t)sys_mmap(a0, (size_t)a1, a2, a3, (int)a4, a5);
         case 10:
-            return 0;
+            return (uint64_t)sys_mprotect(a0, (size_t)a1, a2);
         case 11:
             return (uint64_t)sys_munmap(a0, (size_t)a1);
         case 12:
@@ -6434,9 +6874,9 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
         case 121:
             return (uint64_t)sys_getpgid((int)a0);
         case 131:
-            return 0;
+            return (uint64_t)sys_sigaltstack((const struct linux_stack_t*)(uintptr_t)a0, (struct linux_stack_t*)(uintptr_t)a1);
         case 157:
-            return 0;
+            return (uint64_t)sys_prctl(a0, a1, a2, a3, a4);
         case 158:
             return (uint64_t)sys_arch_prctl(a0, a1);
         case 169:
@@ -6444,7 +6884,8 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
         case 186:
             return (uint64_t)g_current_pid;
         case 202:
-            return 0;
+            return (uint64_t)sys_futex((uint32_t*)(uintptr_t)a0, (uint32_t)a1, (uint32_t)a2,
+                                       (const struct linux_timespec*)(uintptr_t)a3, (uint32_t*)(uintptr_t)a4, (uint32_t)a5, frame);
         case 217:
             return (uint64_t)sys_getdents64((int)a0, (void*)(uintptr_t)a1, (size_t)a2);
         case 218:
@@ -6466,7 +6907,7 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
                                           (const struct linux_timespec*)(uintptr_t)a4,
                                           (const struct linux_pselect_sigmask*)(uintptr_t)a5, frame);
         case 273:
-            return 0;
+            return (uint64_t)sys_set_robust_list(a0, (size_t)a1);
         case 288:
             return (uint64_t)sys_accept4((int)a0, (void*)(uintptr_t)a1, (uint32_t*)(uintptr_t)a2, (uint32_t)a3, frame);
         case 292:

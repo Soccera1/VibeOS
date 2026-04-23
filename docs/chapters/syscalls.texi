@@ -209,18 +209,22 @@ happy.
 
 @multitable @columnfractions .10 .20 .70
 @headitem Nr @tab Name @tab Behavior
-@item 10 @tab @code{mprotect} @tab Returns success without enforcing page
-protection changes.
+@item 10 @tab @code{mprotect} @tab Updates user-page presence and write
+permissions for existing mappings.
 @item 28 @tab @code{madvise} @tab Returns success.
 @item 102 @tab @code{getuid} @tab Returns zero.
 @item 104 @tab @code{getgid} @tab Returns zero.
 @item 107 @tab @code{geteuid} @tab Returns zero.
 @item 108 @tab @code{getegid} @tab Returns zero.
-@item 131 @tab @code{sigaltstack} @tab Returns success.
-@item 157 @tab @code{prctl} @tab Returns success.
-@item 202 @tab @code{futex} @tab Returns success; there is no real futex
-implementation.
-@item 273 @tab @code{set_robust_list} @tab Returns success.
+@item 131 @tab @code{sigaltstack} @tab Stores and reports alternate-signal-stack
+state, but signal delivery does not yet switch to it.
+@item 157 @tab @code{prctl} @tab Supports task name, dumpable,
+no-new-privs, and parent-death-signal state; a few Linux compatibility
+subcommands are accepted as no-ops.
+@item 202 @tab @code{futex} @tab Supports basic wait/wake operations with
+timeouts and signal interruption.
+@item 273 @tab @code{set_robust_list} @tab Stores robust-list metadata for the
+current task.
 @item 334 @tab @code{rseq} @tab Returns @code{ENOSYS}.
 @end multitable
 
@@ -243,8 +247,11 @@ Important semantic caveats to remember:
 timer interrupt or high-quality wall clock.
 @item @code{clone} does not offer full Linux thread semantics.
 @item @code{/proc} and @code{/sys} are not real filesystems.
-@item @code{mprotect}, @code{futex}, and related compatibility calls are not
-full implementations.
+@item @code{mprotect} enforces only coarse present/write page permissions; page
+fault reporting is still primitive.
+@item @code{futex}, @code{sigaltstack}, and @code{set_robust_list} implement
+useful state and wait/wake behavior, but not the full Linux threading/runtime
+contract.
 @item Socket support is currently limited to pathname Unix-domain stream
 sockets; there is no Internet stack or datagram socket support.
 @end itemize

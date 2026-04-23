@@ -37,6 +37,7 @@ enum process_wait_reason {
     PROCESS_WAIT_WAIT4,
     PROCESS_WAIT_SELECT,
     PROCESS_WAIT_NANOSLEEP,
+    PROCESS_WAIT_FUTEX,
 };
 
 struct process_fd {
@@ -95,6 +96,15 @@ struct process {
     uint64_t brk_current;
     uint64_t mmap_next;
     uint32_t umask;
+    char comm[16];
+    uint64_t altstack_sp;
+    uint64_t altstack_size;
+    uint32_t altstack_flags;
+    uint32_t pdeath_signal;
+    uint64_t robust_list_head;
+    uint64_t robust_list_len;
+    bool dumpable;
+    bool no_new_privs;
 
     struct sigaction_data sig_actions[MAX_SIGNALS];
     uint64_t sig_mask;
