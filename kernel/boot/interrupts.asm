@@ -260,3 +260,5 @@ isr_common:
 section .bss
 align 8
 syscall_user_rsp_tmp: resq 1
+
+section .note.GNU-stack noalloc noexec nowrite progbits
