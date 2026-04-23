@@ -63,7 +63,7 @@ Console API and framebuffer information structure.
 Built-in console font dimensions and glyph table declaration.
 
 @item kernel/include/ext2.h
-Public interface of the read-only ext2 backend.
+Public interface of the ext2 backend.
 
 @item kernel/include/fs.h
 VFS-level path, mode, backend, and lookup interfaces.
@@ -164,7 +164,7 @@ Kernel and per-process page-table management.
 Read-only initramfs parser and entry indexer.
 
 @item kernel/src/ext2.c
-Read-only ext2 filesystem implementation for @file{/usr}.
+Ext2 filesystem implementation used for the @file{/usr} mount.
 
 @item kernel/src/fs.c
 VFS dispatcher over initramfs and ext2.

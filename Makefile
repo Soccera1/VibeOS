@@ -4,6 +4,7 @@ BUILD_DIR := build
 KERNEL_BIN := $(BUILD_DIR)/vibeos-kernel.bin
 INITRAMFS := $(BUILD_DIR)/initramfs.cpio
 USR_EXT2 := $(BUILD_DIR)/usr.ext2
+HOME_EXT2 := $(BUILD_DIR)/home.ext2
 ISO_IMAGE := $(BUILD_DIR)/vibeos.iso
 DISK_IMAGE := $(BUILD_DIR)/vibeos-gpt.img
 DOCS_DIR := docs
@@ -171,18 +172,22 @@ $(INITRAMFS): tools/make_initramfs.sh $(USER_BUSYBOX) $(USER_HELP) $(USER_COREUT
 $(USR_EXT2): tools/make_usr_ext2.sh $(USER_BASH) $(USER_HELP) $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO) $(USER_COREUTILS) $(USER_COREUTILS_PROGS) $(USER_MAN_PAGES) $(USER_GROFF) $(USER_MAN_DB) $(USER_TESTS)
 	./tools/make_usr_ext2.sh $@ $(USER_BASH) $(USER_HELP) $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO) $(USER_COREUTILS) $(USER_COREUTILS_PROGS) $(USER_MAN_PAGES) $(USER_GROFF) $(USER_MAN_DB) $(USER_TESTS)
 
+$(HOME_EXT2): tools/make_home_ext2.sh | $(BUILD_DIR)
+	./tools/make_home_ext2.sh $@
+
 iso: check-toolchain $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT2)
 	./tools/make_iso.sh $(ISO_IMAGE) $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT2)
 
 # BIOS + GPT raw disk image. Needs loop devices and mount permissions.
-disk: check-toolchain $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT2)
+disk: check-toolchain $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT2) $(HOME_EXT2)
 	./tools/make_gpt_disk.sh $(DISK_IMAGE) $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT2)
 
 run: disk
 	qemu-system-x86_64 \
-		-machine q35,accel=kvm:tcg \
+		-machine pc,accel=kvm:tcg \
 		-m 1G \
-		-drive format=raw,file=$(DISK_IMAGE) \
+		-drive format=raw,file=$(DISK_IMAGE),if=ide,index=0 \
+		-drive format=raw,file=$(HOME_EXT2),if=ide,index=1 \
 		-serial stdio
 
 docs: $(DOCS_SRC) | $(DOCS_OUT)

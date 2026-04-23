@@ -1,6 +1,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "ata.h"
 #include "console.h"
 #include "fs.h"
 #include "gdt.h"
@@ -79,6 +80,7 @@ void kernel_main(uint64_t mb2_info) {
     console_write("VibeOS amd64 monolithic kernel prototype\n");
     power_init(mb2_info);
     kmalloc_init();
+    ata_init();
 
     const struct mb2_tag_module* initramfs_module = mb2_find_module(mb2_info, 0);
     if (initramfs_module == NULL) {
@@ -91,18 +93,31 @@ void kernel_main(uint64_t mb2_info) {
     }
 
     const struct mb2_tag_module* usrfs_module = mb2_find_module(mb2_info, 1);
+    const uint8_t* usrfs_start = NULL;
+    size_t usrfs_size = 0;
     if (usrfs_module != NULL) {
-        const uint8_t* start = (const uint8_t*)(uintptr_t)usrfs_module->mod_start;
-        size_t size = (size_t)(usrfs_module->mod_end - usrfs_module->mod_start);
-        fs_init(start, size);
-        if (fs_usr_mount_ready()) {
-            console_printf("/usr: ext2 module mounted (%u bytes)\n", (unsigned)size);
+        usrfs_start = (const uint8_t*)(uintptr_t)usrfs_module->mod_start;
+        usrfs_size = (size_t)(usrfs_module->mod_end - usrfs_module->mod_start);
+    }
+
+    fs_init(usrfs_start, usrfs_size);
+    if (fs_usr_mount_ready()) {
+        if (usrfs_module != NULL) {
+            console_printf("/usr: ext2 module mounted (%u bytes)\n", (unsigned)usrfs_size);
         } else {
-            console_write("/usr: ext2 module present but mount failed\n");
+            console_write("/usr: ext2 image mounted from /boot/usr.ext2\n");
         }
     } else {
-        fs_init(NULL, 0);
-        console_write("/usr: no ext2 module provided\n");
+        if (usrfs_module != NULL) {
+            console_write("/usr: ext2 module present but mount failed\n");
+        } else {
+            console_write("/usr: no ext2 module provided and /boot/usr.ext2 unavailable\n");
+        }
+    }
+    if (fs_home_mount_ready()) {
+        console_write("/home: ext2 disk mounted read-write\n");
+    } else {
+        console_write("/home: no writable ext2 disk attached\n");
     }
 
     kernel_exit_stack_top = (uint64_t)(uintptr_t)(&post_user_stack[sizeof(post_user_stack)]);
