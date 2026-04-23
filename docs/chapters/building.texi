@@ -187,7 +187,10 @@ which expands to a QEMU invocation similar to:
 qemu-system-x86_64 \
   -machine q35,accel=kvm:tcg \
   -m 1G \
-  -drive format=raw,file=build/vibeos-gpt.img \
+  -drive format=raw,file=build/vibeos-gpt.img,if=ide,index=0 \
+  -device virtio-scsi-pci-transitional,id=scsi0 \
+  -drive format=raw,file=build/home.ext3,if=none,id=home \
+  -device scsi-hd,drive=home,bus=scsi0.0 \
   -serial stdio
 @end example
 
