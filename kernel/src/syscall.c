@@ -31,6 +31,7 @@
 #define O_RDWR 2u
 #define O_CREAT 0x40u
 #define O_NONBLOCK 0x800u
+#define O_CLOEXEC 0x80000u
 #define O_DIRECTORY 0x10000u
 
 #define FD_CLOEXEC 1u
@@ -45,6 +46,7 @@
 #define S_IFDIR 0040000u
 #define S_IFREG 0100000u
 #define S_IFLNK 0120000u
+#define S_IFSOCK 0140000u
 
 #define DT_UNKNOWN 0
 #define DT_FIFO 1
@@ -52,6 +54,17 @@
 #define DT_DIR 4
 #define DT_REG 8
 #define DT_LNK 10
+#define DT_SOCK 12
+
+#define AF_UNIX 1
+#define AF_LOCAL AF_UNIX
+
+#define SOCK_STREAM 1
+#define SOCK_DGRAM 2
+#define SOCK_SEQPACKET 5
+#define SOCK_TYPE_MASK 0x0Fu
+#define SOCK_NONBLOCK O_NONBLOCK
+#define SOCK_CLOEXEC O_CLOEXEC
 
 #define ARCH_SET_FS 0x1002u
 #define ARCH_GET_FS 0x1003u
@@ -92,6 +105,7 @@
 #define MAP_FIXED_NOREPLACE 0x100000u
 
 #define ENOSYS 38
+#define ENXIO 6
 #define ENOENT 2
 #define EINTR 4
 #define ECHILD 10
@@ -113,6 +127,16 @@
 #define ESRCH 3
 #define EPERM 1
 #define EPIPE 32
+#define ENOTSOCK 88
+#define EDESTADDRREQ 89
+#define EPROTOTYPE 91
+#define EOPNOTSUPP 95
+#define EAFNOSUPPORT 97
+#define EADDRINUSE 98
+#define EADDRNOTAVAIL 99
+#define EISCONN 106
+#define ENOTCONN 107
+#define ECONNREFUSED 111
 
 #define IRET_SLOT_RIP 15u
 #define IRET_SLOT_CS 16u
@@ -215,6 +239,10 @@
 
 #define MAX_PIPES 64
 #define PIPE_CAPACITY 65536
+#define MAX_UNIX_SOCKETS 128
+#define MAX_UNIX_CONNECTIONS 128
+#define UNIX_SOCKET_BUFFER_CAPACITY 65536
+#define UNIX_SOCKET_BACKLOG_MAX 32
 
 #define EXEC_MAX_ARGS 64
 #define EXEC_MAX_ENVS 64
@@ -423,6 +451,11 @@ struct linux_dirent64 {
     char d_name[];
 };
 
+struct linux_sockaddr_un {
+    uint16_t sun_family;
+    char sun_path[108];
+};
+
 struct elf64_ehdr {
     uint8_t e_ident[16];
     uint16_t e_type;
@@ -472,6 +505,7 @@ enum fd_kind {
     FD_FB,
     FD_PIPE_R,
     FD_PIPE_W,
+    FD_UNIX,
 };
 
 struct fd_state {
@@ -480,6 +514,7 @@ struct fd_state {
     uint32_t fd_flags;
     size_t offset;
     int pipe_id;
+    int socket_id;
     struct fs_entry entry;
     char path[FS_MAX_PATH];
 };
@@ -489,6 +524,41 @@ struct pipe_state {
     size_t read_off;
     size_t size;
     uint8_t data[PIPE_CAPACITY];
+};
+
+enum unix_socket_state_kind {
+    UNIX_SOCKET_STATE_UNBOUND = 0,
+    UNIX_SOCKET_STATE_BOUND,
+    UNIX_SOCKET_STATE_LISTENING,
+    UNIX_SOCKET_STATE_CONNECTED,
+};
+
+struct unix_socket_buffer {
+    size_t read_off;
+    size_t size;
+    uint8_t data[UNIX_SOCKET_BUFFER_CAPACITY];
+};
+
+struct unix_socket_state {
+    bool used;
+    int type;
+    enum unix_socket_state_kind state;
+    char path[FS_MAX_PATH];
+    int conn_id;
+    uint8_t endpoint;
+    uint16_t backlog;
+    uint16_t pending_head;
+    uint16_t pending_count;
+    int pending[UNIX_SOCKET_BACKLOG_MAX];
+};
+
+struct unix_connection_state {
+    bool used;
+    int type;
+    struct unix_socket_buffer inbound[2];
+    bool read_open[2];
+    bool write_open[2];
+    char local_path[2][FS_MAX_PATH];
 };
 
 static struct fd_state g_fds[MAX_FDS];
@@ -509,6 +579,8 @@ static int g_current_pgid = 1;
 static int g_current_sid = 1;
 static int g_pending_keyboard_signal;
 static struct pipe_state g_pipes[MAX_PIPES];
+static struct unix_socket_state g_unix_sockets[MAX_UNIX_SOCKETS];
+static struct unix_connection_state g_unix_connections[MAX_UNIX_CONNECTIONS];
 static uint64_t g_tid_address;
 static uint16_t g_fb_cmap_red[256];
 static uint16_t g_fb_cmap_green[256];
@@ -544,6 +616,9 @@ static int try_complete_wait4(struct process* proc);
 static int try_complete_tty_read(struct process* proc);
 static int try_complete_pipe_read(struct process* proc);
 static int try_complete_pipe_write(struct process* proc);
+static int try_complete_unix_accept(struct process* proc);
+static int try_complete_unix_recv(struct process* proc);
+static int try_complete_unix_send(struct process* proc);
 static int try_complete_select(struct process* proc);
 static int try_complete_nanosleep(struct process* proc);
 static uint64_t schedule_away(struct syscall_frame* frame);
@@ -561,6 +636,7 @@ extern void syscall_entry(void);
 
 static int normalize_path(const char* input, char* out, size_t out_len);
 static int join_path(const char* base, const char* leaf, char* out, size_t out_len);
+static int child_index_of(char names[MAX_CHILDREN][64], size_t count, const char* name);
 
 static int err(int code) {
     return -code;
@@ -1102,6 +1178,282 @@ static int alloc_pipe_slot(void) {
     return err(ENOMEM);
 }
 
+static bool unix_socket_is_referenced_in_fd_table(const struct fd_state* fds, int socket_id) {
+    for (int fd = 0; fd < MAX_FDS; ++fd) {
+        if (fds[fd].kind == FD_UNIX && fds[fd].socket_id == socket_id) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool unix_socket_is_referenced_in_process_fd_table(const struct process_fd* fds, int socket_id) {
+    for (int fd = 0; fd < PROCESS_MAX_FDS; ++fd) {
+        if (fds[fd].kind == FD_UNIX && fds[fd].socket_id == socket_id) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool unix_socket_is_referenced(int socket_id) {
+    if (socket_id < 0 || socket_id >= MAX_UNIX_SOCKETS) {
+        return false;
+    }
+    if (unix_socket_is_referenced_in_fd_table(g_fds, socket_id)) {
+        return true;
+    }
+    for (int i = 0; i < MAX_PROCESSES; ++i) {
+        struct process* proc = process_at(i);
+        if (proc == current_process() || !process_holds_pipe_refs(proc)) {
+            continue;
+        }
+        if (unix_socket_is_referenced_in_process_fd_table(proc->fds, socket_id)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool unix_connection_is_queued_on_socket(const struct unix_socket_state* sock, int conn_id) {
+    if (sock == NULL || sock->state != UNIX_SOCKET_STATE_LISTENING) {
+        return false;
+    }
+    for (uint16_t i = 0; i < sock->pending_count; ++i) {
+        uint16_t idx = (uint16_t)((sock->pending_head + i) % UNIX_SOCKET_BACKLOG_MAX);
+        if (sock->pending[idx] == conn_id) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool unix_connection_is_queued(int conn_id) {
+    if (conn_id < 0 || conn_id >= MAX_UNIX_CONNECTIONS) {
+        return false;
+    }
+    for (int i = 0; i < MAX_UNIX_SOCKETS; ++i) {
+        if (!g_unix_sockets[i].used) {
+            continue;
+        }
+        if (unix_connection_is_queued_on_socket(&g_unix_sockets[i], conn_id)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool unix_connection_endpoint_is_referenced_in_fd_table(const struct fd_state* fds, int conn_id, uint8_t endpoint) {
+    for (int fd = 0; fd < MAX_FDS; ++fd) {
+        if (fds[fd].kind != FD_UNIX) {
+            continue;
+        }
+        int socket_id = fds[fd].socket_id;
+        if (socket_id < 0 || socket_id >= MAX_UNIX_SOCKETS) {
+            continue;
+        }
+        struct unix_socket_state* sock = &g_unix_sockets[socket_id];
+        if (sock->used && sock->state == UNIX_SOCKET_STATE_CONNECTED && sock->conn_id == conn_id && sock->endpoint == endpoint) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool unix_connection_endpoint_is_referenced_in_process_fd_table(const struct process_fd* fds, int conn_id, uint8_t endpoint) {
+    for (int fd = 0; fd < PROCESS_MAX_FDS; ++fd) {
+        if (fds[fd].kind != FD_UNIX) {
+            continue;
+        }
+        int socket_id = fds[fd].socket_id;
+        if (socket_id < 0 || socket_id >= MAX_UNIX_SOCKETS) {
+            continue;
+        }
+        struct unix_socket_state* sock = &g_unix_sockets[socket_id];
+        if (sock->used && sock->state == UNIX_SOCKET_STATE_CONNECTED && sock->conn_id == conn_id && sock->endpoint == endpoint) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool unix_connection_endpoint_is_referenced(int conn_id, uint8_t endpoint) {
+    if (conn_id < 0 || conn_id >= MAX_UNIX_CONNECTIONS) {
+        return false;
+    }
+    if (unix_connection_endpoint_is_referenced_in_fd_table(g_fds, conn_id, endpoint)) {
+        return true;
+    }
+    for (int i = 0; i < MAX_PROCESSES; ++i) {
+        struct process* proc = process_at(i);
+        if (proc == current_process() || !process_holds_pipe_refs(proc)) {
+            continue;
+        }
+        if (unix_connection_endpoint_is_referenced_in_process_fd_table(proc->fds, conn_id, endpoint)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static int alloc_unix_socket_slot(void) {
+    for (int i = 0; i < MAX_UNIX_SOCKETS; ++i) {
+        if (!g_unix_sockets[i].used) {
+            memset(&g_unix_sockets[i], 0, sizeof(g_unix_sockets[i]));
+            g_unix_sockets[i].used = true;
+            g_unix_sockets[i].conn_id = -1;
+            return i;
+        }
+    }
+    return err(ENOMEM);
+}
+
+static int alloc_unix_connection_slot(void) {
+    for (int i = 0; i < MAX_UNIX_CONNECTIONS; ++i) {
+        if (!g_unix_connections[i].used) {
+            memset(&g_unix_connections[i], 0, sizeof(g_unix_connections[i]));
+            g_unix_connections[i].used = true;
+            g_unix_connections[i].read_open[0] = true;
+            g_unix_connections[i].read_open[1] = true;
+            g_unix_connections[i].write_open[0] = true;
+            g_unix_connections[i].write_open[1] = true;
+            return i;
+        }
+    }
+    return err(ENOMEM);
+}
+
+static void unix_socket_buffer_discard(struct unix_socket_buffer* buf) {
+    if (buf == NULL) {
+        return;
+    }
+    buf->read_off = 0;
+    buf->size = 0;
+}
+
+static size_t unix_socket_buffer_read(struct unix_socket_buffer* buf, void* out, size_t count) {
+    size_t n = (count < buf->size) ? count : buf->size;
+    size_t first = n;
+    if (first > UNIX_SOCKET_BUFFER_CAPACITY - buf->read_off) {
+        first = UNIX_SOCKET_BUFFER_CAPACITY - buf->read_off;
+    }
+    memcpy(out, &buf->data[buf->read_off], first);
+    if (n > first) {
+        memcpy((uint8_t*)out + first, &buf->data[0], n - first);
+    }
+    buf->read_off = (buf->read_off + n) % UNIX_SOCKET_BUFFER_CAPACITY;
+    buf->size -= n;
+    return n;
+}
+
+static size_t unix_socket_buffer_write(struct unix_socket_buffer* buf, const void* in, size_t count) {
+    size_t avail = UNIX_SOCKET_BUFFER_CAPACITY - buf->size;
+    size_t n = (count < avail) ? count : avail;
+    size_t write_off = (buf->read_off + buf->size) % UNIX_SOCKET_BUFFER_CAPACITY;
+    size_t first = n;
+    if (first > UNIX_SOCKET_BUFFER_CAPACITY - write_off) {
+        first = UNIX_SOCKET_BUFFER_CAPACITY - write_off;
+    }
+    memcpy(&buf->data[write_off], in, first);
+    if (n > first) {
+        memcpy(&buf->data[0], (const uint8_t*)in + first, n - first);
+    }
+    buf->size += n;
+    return n;
+}
+
+static bool unix_socket_accept_ready(int socket_id) {
+    if (socket_id < 0 || socket_id >= MAX_UNIX_SOCKETS) {
+        return true;
+    }
+    struct unix_socket_state* sock = &g_unix_sockets[socket_id];
+    return !sock->used || (sock->state == UNIX_SOCKET_STATE_LISTENING && sock->pending_count > 0);
+}
+
+static bool unix_socket_read_ready(int socket_id) {
+    if (socket_id < 0 || socket_id >= MAX_UNIX_SOCKETS) {
+        return true;
+    }
+    struct unix_socket_state* sock = &g_unix_sockets[socket_id];
+    if (!sock->used || sock->state != UNIX_SOCKET_STATE_CONNECTED || sock->conn_id < 0 || sock->conn_id >= MAX_UNIX_CONNECTIONS) {
+        return true;
+    }
+    struct unix_connection_state* conn = &g_unix_connections[sock->conn_id];
+    if (!conn->used) {
+        return true;
+    }
+    uint8_t endpoint = sock->endpoint;
+    uint8_t peer = (uint8_t)(1u - endpoint);
+    return conn->inbound[endpoint].size > 0 || !conn->write_open[peer];
+}
+
+static bool unix_socket_write_ready(int socket_id) {
+    if (socket_id < 0 || socket_id >= MAX_UNIX_SOCKETS) {
+        return true;
+    }
+    struct unix_socket_state* sock = &g_unix_sockets[socket_id];
+    if (!sock->used || sock->state != UNIX_SOCKET_STATE_CONNECTED || sock->conn_id < 0 || sock->conn_id >= MAX_UNIX_CONNECTIONS) {
+        return true;
+    }
+    struct unix_connection_state* conn = &g_unix_connections[sock->conn_id];
+    if (!conn->used) {
+        return true;
+    }
+    uint8_t endpoint = sock->endpoint;
+    uint8_t peer = (uint8_t)(1u - endpoint);
+    return !conn->read_open[peer] || conn->inbound[peer].size < UNIX_SOCKET_BUFFER_CAPACITY;
+}
+
+static void unix_connection_maybe_destroy(int conn_id) {
+    if (conn_id < 0 || conn_id >= MAX_UNIX_CONNECTIONS || !g_unix_connections[conn_id].used) {
+        return;
+    }
+    if (unix_connection_is_queued(conn_id)) {
+        return;
+    }
+    if (unix_connection_endpoint_is_referenced(conn_id, 0) || unix_connection_endpoint_is_referenced(conn_id, 1)) {
+        return;
+    }
+    memset(&g_unix_connections[conn_id], 0, sizeof(g_unix_connections[conn_id]));
+}
+
+static void unix_socket_cleanup_if_unreferenced(int socket_id) {
+    if (socket_id < 0 || socket_id >= MAX_UNIX_SOCKETS) {
+        return;
+    }
+    if (!g_unix_sockets[socket_id].used || unix_socket_is_referenced(socket_id)) {
+        return;
+    }
+
+    struct unix_socket_state* sock = &g_unix_sockets[socket_id];
+    int conn_id = sock->conn_id;
+
+    if (sock->state == UNIX_SOCKET_STATE_LISTENING) {
+        while (sock->pending_count > 0) {
+            int pending_conn = sock->pending[sock->pending_head];
+            sock->pending[sock->pending_head] = 0;
+            sock->pending_head = (uint16_t)((sock->pending_head + 1u) % UNIX_SOCKET_BACKLOG_MAX);
+            sock->pending_count--;
+            if (pending_conn >= 0 && pending_conn < MAX_UNIX_CONNECTIONS && g_unix_connections[pending_conn].used) {
+                g_unix_connections[pending_conn].write_open[1] = false;
+                g_unix_connections[pending_conn].read_open[1] = false;
+                unix_socket_buffer_discard(&g_unix_connections[pending_conn].inbound[1]);
+            }
+            unix_connection_maybe_destroy(pending_conn);
+        }
+    } else if (sock->state == UNIX_SOCKET_STATE_CONNECTED && conn_id >= 0 && conn_id < MAX_UNIX_CONNECTIONS &&
+               g_unix_connections[conn_id].used) {
+        uint8_t endpoint = sock->endpoint;
+        g_unix_connections[conn_id].write_open[endpoint] = false;
+        g_unix_connections[conn_id].read_open[endpoint] = false;
+        unix_socket_buffer_discard(&g_unix_connections[conn_id].inbound[endpoint]);
+    }
+
+    memset(sock, 0, sizeof(*sock));
+    sock->conn_id = -1;
+    unix_connection_maybe_destroy(conn_id);
+}
+
 static void release_process_fds(struct process* proc) {
     if (proc == NULL) {
         return;
@@ -1109,6 +1461,8 @@ static void release_process_fds(struct process* proc) {
 
     int pipe_ids[PROCESS_MAX_FDS];
     size_t pipe_count = 0;
+    int socket_ids[PROCESS_MAX_FDS];
+    size_t socket_count = 0;
     for (int fd = 0; fd < PROCESS_MAX_FDS; ++fd) {
         if ((proc->fds[fd].kind == FD_PIPE_R || proc->fds[fd].kind == FD_PIPE_W) && proc->fds[fd].pipe_id >= 0) {
             int pipe_id = proc->fds[fd].pipe_id;
@@ -1123,8 +1477,22 @@ static void release_process_fds(struct process* proc) {
                 pipe_ids[pipe_count++] = pipe_id;
             }
         }
+        if (proc->fds[fd].kind == FD_UNIX && proc->fds[fd].socket_id >= 0) {
+            int socket_id = proc->fds[fd].socket_id;
+            bool seen = false;
+            for (size_t i = 0; i < socket_count; ++i) {
+                if (socket_ids[i] == socket_id) {
+                    seen = true;
+                    break;
+                }
+            }
+            if (!seen && socket_count < ARRAY_LEN(socket_ids)) {
+                socket_ids[socket_count++] = socket_id;
+            }
+        }
         memset(&proc->fds[fd], 0, sizeof(proc->fds[fd]));
         proc->fds[fd].pipe_id = -1;
+        proc->fds[fd].socket_id = -1;
     }
 
     for (size_t i = 0; i < pipe_count; ++i) {
@@ -1132,6 +1500,9 @@ static void release_process_fds(struct process* proc) {
         if (pipe_id >= 0 && pipe_id < MAX_PIPES && g_pipes[pipe_id].used && !pipe_is_referenced(pipe_id)) {
             memset(&g_pipes[pipe_id], 0, sizeof(g_pipes[pipe_id]));
         }
+    }
+    for (size_t i = 0; i < socket_count; ++i) {
+        unix_socket_cleanup_if_unreferenced(socket_ids[i]);
     }
 }
 
@@ -1388,8 +1759,150 @@ static int make_absolute_path(int dirfd, const char* path, char* out, size_t out
     return normalize_path(joined, out, out_len);
 }
 
+static bool unix_socket_has_bound_path(const struct unix_socket_state* sock) {
+    return sock != NULL && sock->used &&
+           (sock->state == UNIX_SOCKET_STATE_BOUND || sock->state == UNIX_SOCKET_STATE_LISTENING) && sock->path[0] != '\0';
+}
+
+static int find_bound_unix_socket_by_path(const char* path) {
+    for (int i = 0; i < MAX_UNIX_SOCKETS; ++i) {
+        if (unix_socket_has_bound_path(&g_unix_sockets[i]) && strcmp(g_unix_sockets[i].path, path) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static bool unix_socket_immediate_child(const char* dir, const char* full, char* child_out, size_t child_out_len) {
+    if (dir == NULL || full == NULL || child_out == NULL || child_out_len == 0 || strcmp(full, "/") == 0) {
+        return false;
+    }
+
+    const char* rest = NULL;
+    size_t dir_len = strlen(dir);
+    if (strcmp(dir, "/") == 0) {
+        if (full[0] != '/' || full[1] == '\0') {
+            return false;
+        }
+        rest = full + 1;
+    } else {
+        if (strncmp(full, dir, dir_len) != 0 || full[dir_len] != '/') {
+            return false;
+        }
+        rest = full + dir_len + 1;
+    }
+
+    if (*rest == '\0') {
+        return false;
+    }
+
+    size_t i = 0;
+    while (rest[i] != '\0' && rest[i] != '/' && i + 1 < child_out_len) {
+        child_out[i] = rest[i];
+        ++i;
+    }
+    child_out[i] = '\0';
+    return i > 0;
+}
+
+static bool unix_socket_path_has_child(const char* dir) {
+    char child[64];
+    for (int i = 0; i < MAX_UNIX_SOCKETS; ++i) {
+        if (!unix_socket_has_bound_path(&g_unix_sockets[i])) {
+            continue;
+        }
+        if (unix_socket_immediate_child(dir, g_unix_sockets[i].path, child, sizeof(child))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static size_t collect_bound_unix_socket_children(const char* dir, char names[MAX_CHILDREN][64], uint8_t types[MAX_CHILDREN],
+                                                 size_t start_count) {
+    size_t count = start_count;
+    char child[64];
+    for (int i = 0; i < MAX_UNIX_SOCKETS && count < MAX_CHILDREN; ++i) {
+        if (!unix_socket_has_bound_path(&g_unix_sockets[i])) {
+            continue;
+        }
+        if (!unix_socket_immediate_child(dir, g_unix_sockets[i].path, child, sizeof(child))) {
+            continue;
+        }
+        if (child_index_of(names, count, child) >= 0) {
+            continue;
+        }
+        strncpy(names[count], child, 64);
+        names[count][63] = '\0';
+        types[count] = DT_SOCK;
+        ++count;
+    }
+    return count - start_count;
+}
+
+static int resolve_unix_socket_address(const void* addr, uint32_t addrlen, char* out, size_t out_len) {
+    if (addr == NULL || out == NULL || addrlen < offsetof(struct linux_sockaddr_un, sun_path)) {
+        return err(EINVAL);
+    }
+
+    const struct linux_sockaddr_un* sun = (const struct linux_sockaddr_un*)addr;
+    if (sun->sun_family != AF_UNIX && sun->sun_family != AF_LOCAL) {
+        return err(EAFNOSUPPORT);
+    }
+
+    size_t raw_len = addrlen - offsetof(struct linux_sockaddr_un, sun_path);
+    if (raw_len == 0) {
+        return err(EDESTADDRREQ);
+    }
+
+    char raw[sizeof(sun->sun_path) + 1u];
+    if (raw_len > sizeof(sun->sun_path)) {
+        raw_len = sizeof(sun->sun_path);
+    }
+    memcpy(raw, sun->sun_path, raw_len);
+    raw[raw_len] = '\0';
+
+    if (raw[0] == '\0') {
+        return err(EADDRNOTAVAIL);
+    }
+
+    return make_absolute_path(AT_FDCWD, raw, out, out_len);
+}
+
+static int write_unix_socket_address(const char* path, void* addr, uint32_t* addrlen) {
+    if (addr == NULL || addrlen == NULL) {
+        return 0;
+    }
+
+    struct linux_sockaddr_un sun;
+    memset(&sun, 0, sizeof(sun));
+    sun.sun_family = AF_UNIX;
+
+    size_t actual_len = offsetof(struct linux_sockaddr_un, sun_path);
+    if (path != NULL && path[0] != '\0') {
+        size_t path_len = strlen(path);
+        if (path_len > sizeof(sun.sun_path) - 1u) {
+            path_len = sizeof(sun.sun_path) - 1u;
+        }
+        memcpy(sun.sun_path, path, path_len);
+        sun.sun_path[path_len] = '\0';
+        actual_len += path_len + 1u;
+    }
+
+    uint32_t copy_len = *addrlen;
+    if (copy_len > sizeof(sun)) {
+        copy_len = sizeof(sun);
+    }
+    if ((size_t)copy_len > actual_len) {
+        copy_len = (uint32_t)actual_len;
+    }
+    memcpy(addr, &sun, copy_len);
+    *addrlen = (uint32_t)actual_len;
+    return 0;
+}
+
 static bool path_has_child(const char* dir) {
-    return fs_path_has_child(dir);
+    return fs_path_has_child(dir) || unix_socket_path_has_child(dir);
 }
 
 static int path_mode_size(const char* path, uint32_t* mode_out, size_t* size_out, struct fs_entry* entry_out) {
@@ -1441,6 +1954,21 @@ static int path_mode_size(const char* path, uint32_t* mode_out, size_t* size_out
             strncpy(entry_out->path, path, sizeof(entry_out->path));
             entry_out->mode = S_IFCHR | 0666u;
             entry_out->size = fb.size;
+        }
+        return 0;
+    }
+
+    if (find_bound_unix_socket_by_path(path) >= 0) {
+        if (mode_out != NULL) {
+            *mode_out = S_IFSOCK | 0777u;
+        }
+        if (size_out != NULL) {
+            *size_out = 0;
+        }
+        if (entry_out != NULL) {
+            memset(entry_out, 0, sizeof(*entry_out));
+            strncpy(entry_out->path, path, sizeof(entry_out->path));
+            entry_out->mode = S_IFSOCK | 0777u;
         }
         return 0;
     }
@@ -1536,6 +2064,7 @@ static size_t collect_children(const char* dir, char names[MAX_CHILDREN][64], ui
     }
 
     count += fs_collect_children(dir, names + count, types + count, MAX_CHILDREN - count);
+    count += collect_bound_unix_socket_children(dir, names, types, count);
 
     if (strcmp(dir, "/dev") == 0) {
         const char* dev_nodes[] = {"tty", "console", "null", "fb0"};
@@ -1624,6 +2153,7 @@ static int sys_openat(int dirfd, const char* path_user, uint32_t flags) {
         g_fds[fd].fd_flags = 0;
         g_fds[fd].offset = 0;
         g_fds[fd].pipe_id = -1;
+        g_fds[fd].socket_id = -1;
         strncpy(g_fds[fd].path, path, sizeof(g_fds[fd].path));
         sync_current_process_runtime();
         return fd;
@@ -1639,6 +2169,7 @@ static int sys_openat(int dirfd, const char* path_user, uint32_t flags) {
         g_fds[fd].fd_flags = 0;
         g_fds[fd].offset = 0;
         g_fds[fd].pipe_id = -1;
+        g_fds[fd].socket_id = -1;
         strncpy(g_fds[fd].path, path, sizeof(g_fds[fd].path));
         sync_current_process_runtime();
         return fd;
@@ -1658,6 +2189,7 @@ static int sys_openat(int dirfd, const char* path_user, uint32_t flags) {
         g_fds[fd].fd_flags = 0;
         g_fds[fd].offset = 0;
         g_fds[fd].pipe_id = -1;
+        g_fds[fd].socket_id = -1;
         memset(&g_fds[fd].entry, 0, sizeof(g_fds[fd].entry));
         g_fds[fd].entry.mode = S_IFCHR | 0666u;
         g_fds[fd].entry.size = fb.size;
@@ -1681,6 +2213,7 @@ static int sys_openat(int dirfd, const char* path_user, uint32_t flags) {
             g_fds[fd].fd_flags = 0;
             g_fds[fd].offset = 0;
             g_fds[fd].pipe_id = -1;
+            g_fds[fd].socket_id = -1;
             strncpy(g_fds[fd].path, "/dev/null", sizeof(g_fds[fd].path));
             sync_current_process_runtime();
             return fd;
@@ -1690,6 +2223,9 @@ static int sys_openat(int dirfd, const char* path_user, uint32_t flags) {
 
     if (((flags & O_DIRECTORY) != 0u) && ((mode & S_IFMT) != S_IFDIR)) {
         return err(ENOTDIR);
+    }
+    if ((mode & S_IFMT) == S_IFSOCK) {
+        return err(ENXIO);
     }
 
     int fd = alloc_fd();
@@ -1701,6 +2237,7 @@ static int sys_openat(int dirfd, const char* path_user, uint32_t flags) {
     g_fds[fd].fd_flags = 0;
     g_fds[fd].offset = 0;
     g_fds[fd].pipe_id = -1;
+    g_fds[fd].socket_id = -1;
     strncpy(g_fds[fd].path, path, sizeof(g_fds[fd].path));
     g_fds[fd].entry = e;
 
@@ -1722,15 +2259,207 @@ static int sys_close(int fd) {
 
     enum fd_kind kind = g_fds[fd].kind;
     int pipe_id = g_fds[fd].pipe_id;
+    int socket_id = g_fds[fd].socket_id;
     memset(&g_fds[fd], 0, sizeof(g_fds[fd]));
     g_fds[fd].pipe_id = -1;
+    g_fds[fd].socket_id = -1;
 
     if ((kind == FD_PIPE_R || kind == FD_PIPE_W) && pipe_id >= 0 && pipe_id < MAX_PIPES && g_pipes[pipe_id].used &&
         !pipe_is_referenced(pipe_id)) {
         memset(&g_pipes[pipe_id], 0, sizeof(g_pipes[pipe_id]));
     }
+    if (kind == FD_UNIX) {
+        unix_socket_cleanup_if_unreferenced(socket_id);
+    }
     sync_current_process_runtime();
     return 0;
+}
+
+static int unix_socket_enqueue_pending(struct unix_socket_state* listener, int conn_id) {
+    if (listener == NULL || listener->state != UNIX_SOCKET_STATE_LISTENING) {
+        return err(EINVAL);
+    }
+    if (listener->pending_count >= listener->backlog || listener->pending_count >= UNIX_SOCKET_BACKLOG_MAX) {
+        return err(EAGAIN);
+    }
+    uint16_t idx = (uint16_t)((listener->pending_head + listener->pending_count) % UNIX_SOCKET_BACKLOG_MAX);
+    listener->pending[idx] = conn_id;
+    listener->pending_count++;
+    return 0;
+}
+
+static int unix_socket_accept_now(int listener_fd, void* addr, uint32_t* addrlen, uint32_t flags) {
+    if ((flags & ~(SOCK_NONBLOCK | SOCK_CLOEXEC)) != 0u) {
+        return err(EINVAL);
+    }
+    if (listener_fd < 0 || listener_fd >= MAX_FDS || g_fds[listener_fd].kind == FD_FREE) {
+        return err(EBADF);
+    }
+    if (g_fds[listener_fd].kind != FD_UNIX) {
+        return err(ENOTSOCK);
+    }
+
+    int listener_socket_id = g_fds[listener_fd].socket_id;
+    if (listener_socket_id < 0 || listener_socket_id >= MAX_UNIX_SOCKETS) {
+        return err(ENOTSOCK);
+    }
+    struct unix_socket_state* listener = &g_unix_sockets[listener_socket_id];
+    if (!listener->used || listener->state != UNIX_SOCKET_STATE_LISTENING) {
+        return err(EINVAL);
+    }
+    if (listener->pending_count == 0) {
+        return err(EAGAIN);
+    }
+
+    int conn_id = listener->pending[listener->pending_head];
+    if (conn_id < 0 || conn_id >= MAX_UNIX_CONNECTIONS || !g_unix_connections[conn_id].used) {
+        listener->pending[listener->pending_head] = 0;
+        listener->pending_head = (uint16_t)((listener->pending_head + 1u) % UNIX_SOCKET_BACKLOG_MAX);
+        listener->pending_count--;
+        return err(EAGAIN);
+    }
+
+    int fd = alloc_fd();
+    if (fd < 0) {
+        return fd;
+    }
+    int socket_id = alloc_unix_socket_slot();
+    if (socket_id < 0) {
+        return socket_id;
+    }
+
+    listener->pending[listener->pending_head] = 0;
+    listener->pending_head = (uint16_t)((listener->pending_head + 1u) % UNIX_SOCKET_BACKLOG_MAX);
+    listener->pending_count--;
+
+    struct unix_socket_state* sock = &g_unix_sockets[socket_id];
+    sock->type = SOCK_STREAM;
+    sock->state = UNIX_SOCKET_STATE_CONNECTED;
+    sock->conn_id = conn_id;
+    sock->endpoint = 1u;
+
+    struct unix_connection_state* conn = &g_unix_connections[conn_id];
+    g_fds[fd].kind = FD_UNIX;
+    g_fds[fd].flags = O_RDWR | (flags & SOCK_NONBLOCK);
+    g_fds[fd].fd_flags = ((flags & SOCK_CLOEXEC) != 0u) ? FD_CLOEXEC : 0u;
+    g_fds[fd].offset = 0;
+    g_fds[fd].pipe_id = -1;
+    g_fds[fd].socket_id = socket_id;
+    memset(&g_fds[fd].entry, 0, sizeof(g_fds[fd].entry));
+    strncpy(g_fds[fd].path, conn->local_path[1], sizeof(g_fds[fd].path));
+    g_fds[fd].path[sizeof(g_fds[fd].path) - 1] = '\0';
+
+    if (addr != NULL && addrlen == NULL) {
+        return err(EFAULT);
+    }
+    if (addr != NULL && addrlen != NULL) {
+        int wr = write_unix_socket_address(conn->local_path[0], addr, addrlen);
+        if (wr != 0) {
+            return wr;
+        }
+    }
+
+    sync_current_process_runtime();
+    return fd;
+}
+
+static int unix_stream_recv_fd(int fd, void* buf, size_t count, struct syscall_frame* frame) {
+    int socket_id = g_fds[fd].socket_id;
+    if (socket_id < 0 || socket_id >= MAX_UNIX_SOCKETS) {
+        return err(ENOTSOCK);
+    }
+    struct unix_socket_state* sock = &g_unix_sockets[socket_id];
+    if (!sock->used || sock->state != UNIX_SOCKET_STATE_CONNECTED || sock->conn_id < 0 || sock->conn_id >= MAX_UNIX_CONNECTIONS) {
+        return err(ENOTCONN);
+    }
+
+    struct unix_connection_state* conn = &g_unix_connections[sock->conn_id];
+    if (!conn->used) {
+        return 0;
+    }
+
+    uint8_t endpoint = sock->endpoint;
+    uint8_t peer = (uint8_t)(1u - endpoint);
+    struct unix_socket_buffer* inbound = &conn->inbound[endpoint];
+
+    while (inbound->size == 0) {
+        if (!conn->write_open[peer] || !conn->read_open[endpoint]) {
+            return 0;
+        }
+        if (fd_is_nonblocking(fd)) {
+            return err(EAGAIN);
+        }
+        if (frame != NULL && has_other_runnable_process(current_process())) {
+            struct process* proc = current_process();
+            int sr = save_live_process(proc, frame);
+            if (sr != 0) {
+                return sr;
+            }
+            proc->state = PROCESS_BLOCKED;
+            proc->wait.reason = PROCESS_WAIT_UNIX_RECV;
+            proc->wait.fd = fd;
+            proc->wait.aux0 = socket_id;
+            proc->wait.ptr0 = (uint64_t)(uintptr_t)buf;
+            proc->wait.ptr1 = count;
+            proc->wait.has_timeout = false;
+            return (int)schedule_away(frame);
+        }
+        __asm__ volatile("pause");
+    }
+
+    return (int)unix_socket_buffer_read(inbound, buf, count);
+}
+
+static int unix_stream_send_fd(int fd, const void* buf, size_t count, struct syscall_frame* frame) {
+    int socket_id = g_fds[fd].socket_id;
+    if (socket_id < 0 || socket_id >= MAX_UNIX_SOCKETS) {
+        return err(ENOTSOCK);
+    }
+    struct unix_socket_state* sock = &g_unix_sockets[socket_id];
+    if (!sock->used || sock->state != UNIX_SOCKET_STATE_CONNECTED || sock->conn_id < 0 || sock->conn_id >= MAX_UNIX_CONNECTIONS) {
+        return err(ENOTCONN);
+    }
+
+    struct unix_connection_state* conn = &g_unix_connections[sock->conn_id];
+    if (!conn->used) {
+        return err(EPIPE);
+    }
+
+    uint8_t endpoint = sock->endpoint;
+    uint8_t peer = (uint8_t)(1u - endpoint);
+    if (!conn->write_open[endpoint] || !conn->read_open[peer]) {
+        return err(EPIPE);
+    }
+
+    struct unix_socket_buffer* outbound = &conn->inbound[peer];
+    size_t avail = UNIX_SOCKET_BUFFER_CAPACITY - outbound->size;
+    while (avail == 0) {
+        if (!conn->read_open[peer]) {
+            return err(EPIPE);
+        }
+        if (fd_is_nonblocking(fd)) {
+            return err(EAGAIN);
+        }
+        if (frame != NULL && has_other_runnable_process(current_process())) {
+            struct process* proc = current_process();
+            int sr = save_live_process(proc, frame);
+            if (sr != 0) {
+                return sr;
+            }
+            proc->state = PROCESS_BLOCKED;
+            proc->wait.reason = PROCESS_WAIT_UNIX_SEND;
+            proc->wait.fd = fd;
+            proc->wait.aux0 = socket_id;
+            proc->wait.ptr0 = (uint64_t)(uintptr_t)buf;
+            proc->wait.ptr1 = count;
+            proc->wait.has_timeout = false;
+            return (int)schedule_away(frame);
+        }
+        __asm__ volatile("pause");
+        avail = UNIX_SOCKET_BUFFER_CAPACITY - outbound->size;
+    }
+
+    return (int)unix_socket_buffer_write(outbound, buf, count);
 }
 
 static int sys_read(int fd, void* buf, size_t count, struct syscall_frame* frame) {
@@ -1882,6 +2611,10 @@ static int sys_read(int fd, void* buf, size_t count, struct syscall_frame* frame
         return err(EBADF);
     }
 
+    if (g_fds[fd].kind == FD_UNIX) {
+        return unix_stream_recv_fd(fd, buf, count, frame);
+    }
+
     if (g_fds[fd].kind == FD_DIR) {
         return err(EISDIR);
     }
@@ -1963,6 +2696,10 @@ static int sys_write(int fd, const void* buf, size_t count, struct syscall_frame
         return err(EBADF);
     }
 
+    if (g_fds[fd].kind == FD_UNIX) {
+        return unix_stream_send_fd(fd, buf, count, frame);
+    }
+
     if (g_fds[fd].kind == FD_FB) {
         struct console_framebuffer_info fb;
         if (!get_fb_info(&fb)) {
@@ -2032,7 +2769,8 @@ static int64_t sys_lseek(int fd, int64_t offset, int whence) {
         return err(EBADF);
     }
 
-    if (g_fds[fd].kind == FD_TTY || g_fds[fd].kind == FD_NULL || g_fds[fd].kind == FD_PIPE_R || g_fds[fd].kind == FD_PIPE_W) {
+    if (g_fds[fd].kind == FD_TTY || g_fds[fd].kind == FD_NULL || g_fds[fd].kind == FD_PIPE_R || g_fds[fd].kind == FD_PIPE_W ||
+        g_fds[fd].kind == FD_UNIX) {
         return err(ESPIPE);
     }
 
@@ -2071,7 +2809,8 @@ static int sys_pread64(int fd, void* buf, size_t count, int64_t offset) {
     if (offset < 0) {
         return err(EINVAL);
     }
-    if (g_fds[fd].kind == FD_TTY || g_fds[fd].kind == FD_NULL || g_fds[fd].kind == FD_PIPE_R || g_fds[fd].kind == FD_PIPE_W) {
+    if (g_fds[fd].kind == FD_TTY || g_fds[fd].kind == FD_NULL || g_fds[fd].kind == FD_PIPE_R || g_fds[fd].kind == FD_PIPE_W ||
+        g_fds[fd].kind == FD_UNIX) {
         return err(ESPIPE);
     }
     if (g_fds[fd].kind == FD_DIR) {
@@ -2311,6 +3050,34 @@ static int sys_ioctl(int fd, uint64_t req, void* argp) {
         return err(EINVAL);
     }
 
+    if (g_fds[fd].kind == FD_UNIX) {
+        if (req != FIONREAD) {
+            return err(ENOTTY);
+        }
+        if (argp == NULL) {
+            return err(EFAULT);
+        }
+
+        int socket_id = g_fds[fd].socket_id;
+        if (socket_id < 0 || socket_id >= MAX_UNIX_SOCKETS || !g_unix_sockets[socket_id].used) {
+            return err(ENOTSOCK);
+        }
+
+        struct unix_socket_state* sock = &g_unix_sockets[socket_id];
+        if (sock->state == UNIX_SOCKET_STATE_LISTENING) {
+            *(int*)(uintptr_t)argp = (int)sock->pending_count;
+            return 0;
+        }
+        if (sock->state != UNIX_SOCKET_STATE_CONNECTED || sock->conn_id < 0 || sock->conn_id >= MAX_UNIX_CONNECTIONS ||
+            !g_unix_connections[sock->conn_id].used) {
+            *(int*)(uintptr_t)argp = 0;
+            return 0;
+        }
+
+        *(int*)(uintptr_t)argp = (int)g_unix_connections[sock->conn_id].inbound[sock->endpoint].size;
+        return 0;
+    }
+
     if (g_fds[fd].kind != FD_TTY) {
         return err(ENOTTY);
     }
@@ -2453,11 +3220,13 @@ static int sys_pipe2(int* pipefd, uint32_t flags) {
 
     g_fds[rfd].kind = FD_DIR;  // temporary reservation until both ends are ready
     g_fds[rfd].pipe_id = -1;
+    g_fds[rfd].socket_id = -1;
 
     int wfd = alloc_fd();
     if (wfd < 0) {
         memset(&g_fds[rfd], 0, sizeof(g_fds[rfd]));
         g_fds[rfd].pipe_id = -1;
+        g_fds[rfd].socket_id = -1;
         return wfd;
     }
 
@@ -2465,6 +3234,7 @@ static int sys_pipe2(int* pipefd, uint32_t flags) {
     if (pipe_id < 0) {
         memset(&g_fds[rfd], 0, sizeof(g_fds[rfd]));
         g_fds[rfd].pipe_id = -1;
+        g_fds[rfd].socket_id = -1;
         return pipe_id;
     }
 
@@ -2473,6 +3243,7 @@ static int sys_pipe2(int* pipefd, uint32_t flags) {
     g_fds[rfd].fd_flags = 0;
     g_fds[rfd].offset = 0;
     g_fds[rfd].pipe_id = pipe_id;
+    g_fds[rfd].socket_id = -1;
     strcpy(g_fds[rfd].path, "pipe:[r]");
 
     g_fds[wfd].kind = FD_PIPE_W;
@@ -2480,12 +3251,485 @@ static int sys_pipe2(int* pipefd, uint32_t flags) {
     g_fds[wfd].fd_flags = 0;
     g_fds[wfd].offset = 0;
     g_fds[wfd].pipe_id = pipe_id;
+    g_fds[wfd].socket_id = -1;
     strcpy(g_fds[wfd].path, "pipe:[w]");
 
     pipefd[0] = rfd;
     pipefd[1] = wfd;
     sync_current_process_runtime();
     return 0;
+}
+
+static int parse_unix_socket_type(int type, int* socktype_out, uint32_t* fd_open_flags_out, uint32_t* fd_flags_out) {
+    if (socktype_out == NULL || fd_open_flags_out == NULL || fd_flags_out == NULL) {
+        return err(EINVAL);
+    }
+    if ((type & ~(SOCK_TYPE_MASK | SOCK_NONBLOCK | SOCK_CLOEXEC)) != 0) {
+        return err(EINVAL);
+    }
+
+    int socktype = type & SOCK_TYPE_MASK;
+    if (socktype != SOCK_STREAM) {
+        return err(EPROTOTYPE);
+    }
+
+    *socktype_out = socktype;
+    *fd_open_flags_out = O_RDWR | ((type & SOCK_NONBLOCK) != 0 ? O_NONBLOCK : 0u);
+    *fd_flags_out = ((type & SOCK_CLOEXEC) != 0) ? FD_CLOEXEC : 0u;
+    return 0;
+}
+
+static int sys_socket(int domain, int type, int protocol) {
+    if (domain != AF_UNIX && domain != AF_LOCAL) {
+        return err(EAFNOSUPPORT);
+    }
+    if (protocol != 0) {
+        return err(EPROTOTYPE);
+    }
+
+    int socktype = 0;
+    uint32_t fd_open_flags = 0;
+    uint32_t fd_flags = 0;
+    int pr = parse_unix_socket_type(type, &socktype, &fd_open_flags, &fd_flags);
+    if (pr != 0) {
+        return pr;
+    }
+
+    int fd = alloc_fd();
+    if (fd < 0) {
+        return fd;
+    }
+    int socket_id = alloc_unix_socket_slot();
+    if (socket_id < 0) {
+        return socket_id;
+    }
+
+    g_unix_sockets[socket_id].type = socktype;
+    g_unix_sockets[socket_id].state = UNIX_SOCKET_STATE_UNBOUND;
+
+    g_fds[fd].kind = FD_UNIX;
+    g_fds[fd].flags = fd_open_flags;
+    g_fds[fd].fd_flags = fd_flags;
+    g_fds[fd].offset = 0;
+    g_fds[fd].pipe_id = -1;
+    g_fds[fd].socket_id = socket_id;
+    memset(&g_fds[fd].entry, 0, sizeof(g_fds[fd].entry));
+    g_fds[fd].path[0] = '\0';
+    sync_current_process_runtime();
+    return fd;
+}
+
+static int sys_socketpair(int domain, int type, int protocol, int* sv) {
+    if (sv == NULL) {
+        return err(EFAULT);
+    }
+    if (domain != AF_UNIX && domain != AF_LOCAL) {
+        return err(EAFNOSUPPORT);
+    }
+    if (protocol != 0) {
+        return err(EPROTOTYPE);
+    }
+
+    int socktype = 0;
+    uint32_t fd_open_flags = 0;
+    uint32_t fd_flags = 0;
+    int pr = parse_unix_socket_type(type, &socktype, &fd_open_flags, &fd_flags);
+    if (pr != 0) {
+        return pr;
+    }
+
+    int fd0 = alloc_fd();
+    if (fd0 < 0) {
+        return fd0;
+    }
+    g_fds[fd0].kind = FD_DIR;
+    g_fds[fd0].pipe_id = -1;
+    g_fds[fd0].socket_id = -1;
+
+    int fd1 = alloc_fd();
+    if (fd1 < 0) {
+        memset(&g_fds[fd0], 0, sizeof(g_fds[fd0]));
+        g_fds[fd0].pipe_id = -1;
+        g_fds[fd0].socket_id = -1;
+        return fd1;
+    }
+
+    int socket0 = alloc_unix_socket_slot();
+    if (socket0 < 0) {
+        memset(&g_fds[fd0], 0, sizeof(g_fds[fd0]));
+        g_fds[fd0].pipe_id = -1;
+        g_fds[fd0].socket_id = -1;
+        return socket0;
+    }
+    int socket1 = alloc_unix_socket_slot();
+    if (socket1 < 0) {
+        memset(&g_unix_sockets[socket0], 0, sizeof(g_unix_sockets[socket0]));
+        g_unix_sockets[socket0].conn_id = -1;
+        memset(&g_fds[fd0], 0, sizeof(g_fds[fd0]));
+        g_fds[fd0].pipe_id = -1;
+        g_fds[fd0].socket_id = -1;
+        return socket1;
+    }
+    int conn_id = alloc_unix_connection_slot();
+    if (conn_id < 0) {
+        memset(&g_unix_sockets[socket0], 0, sizeof(g_unix_sockets[socket0]));
+        g_unix_sockets[socket0].conn_id = -1;
+        memset(&g_unix_sockets[socket1], 0, sizeof(g_unix_sockets[socket1]));
+        g_unix_sockets[socket1].conn_id = -1;
+        memset(&g_fds[fd0], 0, sizeof(g_fds[fd0]));
+        g_fds[fd0].pipe_id = -1;
+        g_fds[fd0].socket_id = -1;
+        return conn_id;
+    }
+
+    g_unix_connections[conn_id].type = socktype;
+
+    g_unix_sockets[socket0].type = socktype;
+    g_unix_sockets[socket0].state = UNIX_SOCKET_STATE_CONNECTED;
+    g_unix_sockets[socket0].conn_id = conn_id;
+    g_unix_sockets[socket0].endpoint = 0u;
+
+    g_unix_sockets[socket1].type = socktype;
+    g_unix_sockets[socket1].state = UNIX_SOCKET_STATE_CONNECTED;
+    g_unix_sockets[socket1].conn_id = conn_id;
+    g_unix_sockets[socket1].endpoint = 1u;
+
+    g_fds[fd0].kind = FD_UNIX;
+    g_fds[fd0].flags = fd_open_flags;
+    g_fds[fd0].fd_flags = fd_flags;
+    g_fds[fd0].offset = 0;
+    g_fds[fd0].pipe_id = -1;
+    g_fds[fd0].socket_id = socket0;
+    memset(&g_fds[fd0].entry, 0, sizeof(g_fds[fd0].entry));
+    g_fds[fd0].path[0] = '\0';
+
+    g_fds[fd1].kind = FD_UNIX;
+    g_fds[fd1].flags = fd_open_flags;
+    g_fds[fd1].fd_flags = fd_flags;
+    g_fds[fd1].offset = 0;
+    g_fds[fd1].pipe_id = -1;
+    g_fds[fd1].socket_id = socket1;
+    memset(&g_fds[fd1].entry, 0, sizeof(g_fds[fd1].entry));
+    g_fds[fd1].path[0] = '\0';
+
+    sv[0] = fd0;
+    sv[1] = fd1;
+    sync_current_process_runtime();
+    return 0;
+}
+
+static int sys_bind(int fd, const void* addr, uint32_t addrlen) {
+    if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
+        return err(EBADF);
+    }
+    if (g_fds[fd].kind != FD_UNIX) {
+        return err(ENOTSOCK);
+    }
+    int socket_id = g_fds[fd].socket_id;
+    if (socket_id < 0 || socket_id >= MAX_UNIX_SOCKETS || !g_unix_sockets[socket_id].used) {
+        return err(ENOTSOCK);
+    }
+
+    struct unix_socket_state* sock = &g_unix_sockets[socket_id];
+    if (sock->state == UNIX_SOCKET_STATE_CONNECTED) {
+        return err(EISCONN);
+    }
+    if (sock->state == UNIX_SOCKET_STATE_BOUND || sock->state == UNIX_SOCKET_STATE_LISTENING) {
+        return err(EINVAL);
+    }
+
+    char path[FS_MAX_PATH];
+    int rr = resolve_unix_socket_address(addr, addrlen, path, sizeof(path));
+    if (rr != 0) {
+        return rr;
+    }
+
+    char parent[FS_MAX_PATH];
+    dirname_of(path, parent, sizeof(parent));
+    uint32_t parent_mode = 0;
+    int pr = path_mode_size(parent, &parent_mode, NULL, NULL);
+    if (pr != 0) {
+        return pr;
+    }
+    if ((parent_mode & S_IFMT) != S_IFDIR) {
+        return err(ENOTDIR);
+    }
+    if (find_bound_unix_socket_by_path(path) >= 0 || path_mode_size(path, NULL, NULL, NULL) == 0) {
+        return err(EADDRINUSE);
+    }
+
+    strncpy(sock->path, path, sizeof(sock->path));
+    sock->path[sizeof(sock->path) - 1] = '\0';
+    sock->state = UNIX_SOCKET_STATE_BOUND;
+    strncpy(g_fds[fd].path, path, sizeof(g_fds[fd].path));
+    g_fds[fd].path[sizeof(g_fds[fd].path) - 1] = '\0';
+    sync_current_process_runtime();
+    return 0;
+}
+
+static int sys_listen(int fd, int backlog) {
+    if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
+        return err(EBADF);
+    }
+    if (g_fds[fd].kind != FD_UNIX) {
+        return err(ENOTSOCK);
+    }
+    int socket_id = g_fds[fd].socket_id;
+    if (socket_id < 0 || socket_id >= MAX_UNIX_SOCKETS || !g_unix_sockets[socket_id].used) {
+        return err(ENOTSOCK);
+    }
+
+    struct unix_socket_state* sock = &g_unix_sockets[socket_id];
+    if (sock->type != SOCK_STREAM) {
+        return err(EOPNOTSUPP);
+    }
+    if (sock->state == UNIX_SOCKET_STATE_CONNECTED) {
+        return err(EISCONN);
+    }
+    if (sock->state == UNIX_SOCKET_STATE_UNBOUND || sock->path[0] == '\0') {
+        return err(EDESTADDRREQ);
+    }
+
+    if (backlog < 1) {
+        backlog = 1;
+    }
+    if (backlog > UNIX_SOCKET_BACKLOG_MAX) {
+        backlog = UNIX_SOCKET_BACKLOG_MAX;
+    }
+
+    sock->state = UNIX_SOCKET_STATE_LISTENING;
+    sock->backlog = (uint16_t)backlog;
+    return 0;
+}
+
+static int sys_connect(int fd, const void* addr, uint32_t addrlen) {
+    if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
+        return err(EBADF);
+    }
+    if (g_fds[fd].kind != FD_UNIX) {
+        return err(ENOTSOCK);
+    }
+    int socket_id = g_fds[fd].socket_id;
+    if (socket_id < 0 || socket_id >= MAX_UNIX_SOCKETS || !g_unix_sockets[socket_id].used) {
+        return err(ENOTSOCK);
+    }
+
+    struct unix_socket_state* sock = &g_unix_sockets[socket_id];
+    if (sock->type != SOCK_STREAM) {
+        return err(EOPNOTSUPP);
+    }
+    if (sock->state == UNIX_SOCKET_STATE_CONNECTED) {
+        return err(EISCONN);
+    }
+    if (sock->state == UNIX_SOCKET_STATE_LISTENING) {
+        return err(EINVAL);
+    }
+
+    char path[FS_MAX_PATH];
+    int rr = resolve_unix_socket_address(addr, addrlen, path, sizeof(path));
+    if (rr != 0) {
+        return rr;
+    }
+
+    int listener_id = find_bound_unix_socket_by_path(path);
+    if (listener_id < 0) {
+        return err(ECONNREFUSED);
+    }
+    struct unix_socket_state* listener = &g_unix_sockets[listener_id];
+    if (!listener->used || listener->state != UNIX_SOCKET_STATE_LISTENING || listener->type != SOCK_STREAM) {
+        return err(ECONNREFUSED);
+    }
+
+    int conn_id = alloc_unix_connection_slot();
+    if (conn_id < 0) {
+        return conn_id;
+    }
+
+    struct unix_connection_state* conn = &g_unix_connections[conn_id];
+    conn->type = SOCK_STREAM;
+    strncpy(conn->local_path[0], sock->path, sizeof(conn->local_path[0]));
+    conn->local_path[0][sizeof(conn->local_path[0]) - 1] = '\0';
+    strncpy(conn->local_path[1], listener->path, sizeof(conn->local_path[1]));
+    conn->local_path[1][sizeof(conn->local_path[1]) - 1] = '\0';
+
+    enum unix_socket_state_kind old_state = sock->state;
+    sock->state = UNIX_SOCKET_STATE_CONNECTED;
+    sock->conn_id = conn_id;
+    sock->endpoint = 0u;
+
+    int qr = unix_socket_enqueue_pending(listener, conn_id);
+    if (qr != 0) {
+        memset(conn, 0, sizeof(*conn));
+        sock->state = old_state;
+        sock->conn_id = -1;
+        sock->endpoint = 0;
+        return qr;
+    }
+
+    return 0;
+}
+
+static int sys_accept4(int fd, void* addr, uint32_t* addrlen, uint32_t flags, struct syscall_frame* frame) {
+    if (addr != NULL && addrlen == NULL) {
+        return err(EFAULT);
+    }
+
+    for (;;) {
+        int r = unix_socket_accept_now(fd, addr, addrlen, flags);
+        if (r != err(EAGAIN)) {
+            return r;
+        }
+        if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
+            return err(EBADF);
+        }
+        if (g_fds[fd].kind != FD_UNIX) {
+            return err(ENOTSOCK);
+        }
+        if (fd_is_nonblocking(fd)) {
+            return err(EAGAIN);
+        }
+        if (frame != NULL && has_other_runnable_process(current_process())) {
+            struct process* proc = current_process();
+            int sr = save_live_process(proc, frame);
+            if (sr != 0) {
+                return sr;
+            }
+            proc->state = PROCESS_BLOCKED;
+            proc->wait.reason = PROCESS_WAIT_UNIX_ACCEPT;
+            proc->wait.fd = fd;
+            proc->wait.aux0 = g_fds[fd].socket_id;
+            proc->wait.aux1 = (int)flags;
+            proc->wait.ptr0 = (uint64_t)(uintptr_t)addr;
+            proc->wait.ptr1 = (uint64_t)(uintptr_t)addrlen;
+            proc->wait.has_timeout = false;
+            return (int)schedule_away(frame);
+        }
+        __asm__ volatile("pause");
+    }
+}
+
+static int sys_getsockname(int fd, void* addr, uint32_t* addrlen) {
+    if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
+        return err(EBADF);
+    }
+    if (g_fds[fd].kind != FD_UNIX) {
+        return err(ENOTSOCK);
+    }
+    if (addr == NULL || addrlen == NULL) {
+        return err(EFAULT);
+    }
+
+    int socket_id = g_fds[fd].socket_id;
+    if (socket_id < 0 || socket_id >= MAX_UNIX_SOCKETS || !g_unix_sockets[socket_id].used) {
+        return err(ENOTSOCK);
+    }
+
+    struct unix_socket_state* sock = &g_unix_sockets[socket_id];
+    const char* path = "";
+    if (sock->state == UNIX_SOCKET_STATE_BOUND || sock->state == UNIX_SOCKET_STATE_LISTENING) {
+        path = sock->path;
+    } else if (sock->state == UNIX_SOCKET_STATE_CONNECTED && sock->conn_id >= 0 && sock->conn_id < MAX_UNIX_CONNECTIONS &&
+               g_unix_connections[sock->conn_id].used) {
+        path = g_unix_connections[sock->conn_id].local_path[sock->endpoint];
+    }
+    return write_unix_socket_address(path, addr, addrlen);
+}
+
+static int sys_getpeername(int fd, void* addr, uint32_t* addrlen) {
+    if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
+        return err(EBADF);
+    }
+    if (g_fds[fd].kind != FD_UNIX) {
+        return err(ENOTSOCK);
+    }
+    if (addr == NULL || addrlen == NULL) {
+        return err(EFAULT);
+    }
+
+    int socket_id = g_fds[fd].socket_id;
+    if (socket_id < 0 || socket_id >= MAX_UNIX_SOCKETS || !g_unix_sockets[socket_id].used) {
+        return err(ENOTSOCK);
+    }
+
+    struct unix_socket_state* sock = &g_unix_sockets[socket_id];
+    if (sock->state != UNIX_SOCKET_STATE_CONNECTED || sock->conn_id < 0 || sock->conn_id >= MAX_UNIX_CONNECTIONS ||
+        !g_unix_connections[sock->conn_id].used) {
+        return err(ENOTCONN);
+    }
+
+    uint8_t peer = (uint8_t)(1u - sock->endpoint);
+    return write_unix_socket_address(g_unix_connections[sock->conn_id].local_path[peer], addr, addrlen);
+}
+
+static int sys_shutdown(int fd, int how) {
+    if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
+        return err(EBADF);
+    }
+    if (g_fds[fd].kind != FD_UNIX) {
+        return err(ENOTSOCK);
+    }
+    if (how < 0 || how > 2) {
+        return err(EINVAL);
+    }
+
+    int socket_id = g_fds[fd].socket_id;
+    if (socket_id < 0 || socket_id >= MAX_UNIX_SOCKETS || !g_unix_sockets[socket_id].used) {
+        return err(ENOTSOCK);
+    }
+
+    struct unix_socket_state* sock = &g_unix_sockets[socket_id];
+    if (sock->state != UNIX_SOCKET_STATE_CONNECTED || sock->conn_id < 0 || sock->conn_id >= MAX_UNIX_CONNECTIONS ||
+        !g_unix_connections[sock->conn_id].used) {
+        return err(ENOTCONN);
+    }
+
+    struct unix_connection_state* conn = &g_unix_connections[sock->conn_id];
+    uint8_t endpoint = sock->endpoint;
+    if (how == 0 || how == 2) {
+        conn->read_open[endpoint] = false;
+        unix_socket_buffer_discard(&conn->inbound[endpoint]);
+    }
+    if (how == 1 || how == 2) {
+        conn->write_open[endpoint] = false;
+    }
+    return 0;
+}
+
+static int sys_sendto(int fd, const void* buf, size_t count, int flags, const void* addr, uint32_t addrlen, struct syscall_frame* frame) {
+    if (flags != 0) {
+        return err(EOPNOTSUPP);
+    }
+    if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
+        return err(EBADF);
+    }
+    if (g_fds[fd].kind != FD_UNIX) {
+        return err(ENOTSOCK);
+    }
+    if (addr != NULL && addrlen != 0u) {
+        return err(EISCONN);
+    }
+    return unix_stream_send_fd(fd, buf, count, frame);
+}
+
+static int sys_recvfrom(int fd, void* buf, size_t count, int flags, void* addr, uint32_t* addrlen, struct syscall_frame* frame) {
+    if (flags != 0) {
+        return err(EOPNOTSUPP);
+    }
+    if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
+        return err(EBADF);
+    }
+    if (g_fds[fd].kind != FD_UNIX) {
+        return err(ENOTSOCK);
+    }
+    if (addr != NULL && addrlen == NULL) {
+        return err(EFAULT);
+    }
+
+    int r = unix_stream_recv_fd(fd, buf, count, frame);
+    if (r < 0 || addr == NULL) {
+        return r;
+    }
+    return sys_getpeername(fd, addr, addrlen) == 0 ? r : r;
 }
 
 static int sys_getcwd(char* buf, size_t size) {
@@ -2585,6 +3829,45 @@ static uint16_t poll_revents_for_fd(const struct linux_pollfd* pfd) {
                 }
             } else {
                 revents |= POLLNVAL;
+            }
+            break;
+        }
+
+        case FD_UNIX:
+        {
+            int socket_id = g_fds[fd].socket_id;
+            if (socket_id < 0 || socket_id >= MAX_UNIX_SOCKETS || !g_unix_sockets[socket_id].used) {
+                revents |= POLLNVAL;
+                break;
+            }
+
+            struct unix_socket_state* sock = &g_unix_sockets[socket_id];
+            if (sock->state == UNIX_SOCKET_STATE_LISTENING) {
+                if ((events & (POLLIN | POLLPRI)) != 0u && sock->pending_count > 0) {
+                    revents |= POLLIN;
+                }
+                break;
+            }
+
+            if (sock->state != UNIX_SOCKET_STATE_CONNECTED || sock->conn_id < 0 || sock->conn_id >= MAX_UNIX_CONNECTIONS ||
+                !g_unix_connections[sock->conn_id].used) {
+                revents |= POLLNVAL;
+                break;
+            }
+
+            struct unix_connection_state* conn = &g_unix_connections[sock->conn_id];
+            uint8_t endpoint = sock->endpoint;
+            uint8_t peer = (uint8_t)(1u - endpoint);
+            if ((events & (POLLIN | POLLPRI)) != 0u && conn->inbound[endpoint].size > 0) {
+                revents |= POLLIN;
+            }
+            if (conn->inbound[endpoint].size == 0 && !conn->write_open[peer]) {
+                revents |= POLLHUP;
+            }
+            if (!conn->read_open[peer]) {
+                revents |= POLLERR;
+            } else if ((events & POLLOUT) != 0u && conn->inbound[peer].size < UNIX_SOCKET_BUFFER_CAPACITY) {
+                revents |= POLLOUT;
             }
             break;
         }
@@ -2776,6 +4059,12 @@ static bool process_block_ready(const struct process* proc) {
             return pipe_id >= 0 && pipe_id < MAX_PIPES &&
                    ((!g_pipes[pipe_id].used) || !pipe_has_reader(pipe_id) || g_pipes[pipe_id].size < PIPE_CAPACITY);
         }
+        case PROCESS_WAIT_UNIX_ACCEPT:
+            return unix_socket_accept_ready(proc->wait.aux0);
+        case PROCESS_WAIT_UNIX_RECV:
+            return unix_socket_read_ready(proc->wait.aux0);
+        case PROCESS_WAIT_UNIX_SEND:
+            return unix_socket_write_ready(proc->wait.aux0);
         case PROCESS_WAIT_WAIT4:
             return find_zombie_for_wait(proc, proc->wait.aux0) >= 0 ||
                    find_waitable_child_event((struct process*)proc, proc->wait.aux0, proc->wait.aux1, NULL) != 0;
@@ -3009,6 +4298,52 @@ static int try_complete_pipe_write(struct process* proc) {
     return 0;
 }
 
+static int try_complete_unix_accept(struct process* proc) {
+    if (proc->pending_count > 0) {
+        (void)process_take_pending_signal(proc);
+        unblock_process(proc, err(EINTR));
+        return 0;
+    }
+
+    int r = unix_socket_accept_now(proc->wait.fd, (void*)(uintptr_t)proc->wait.ptr0, (uint32_t*)(uintptr_t)proc->wait.ptr1,
+                                   (uint32_t)proc->wait.aux1);
+    if (r == err(EAGAIN)) {
+        return err(EAGAIN);
+    }
+    unblock_process(proc, r);
+    return 0;
+}
+
+static int try_complete_unix_recv(struct process* proc) {
+    if (proc->pending_count > 0) {
+        (void)process_take_pending_signal(proc);
+        unblock_process(proc, err(EINTR));
+        return 0;
+    }
+
+    int r = unix_stream_recv_fd(proc->wait.fd, (void*)(uintptr_t)proc->wait.ptr0, (size_t)proc->wait.ptr1, NULL);
+    if (r == err(EAGAIN)) {
+        return err(EAGAIN);
+    }
+    unblock_process(proc, r);
+    return 0;
+}
+
+static int try_complete_unix_send(struct process* proc) {
+    if (proc->pending_count > 0) {
+        (void)process_take_pending_signal(proc);
+        unblock_process(proc, err(EINTR));
+        return 0;
+    }
+
+    int r = unix_stream_send_fd(proc->wait.fd, (const void*)(uintptr_t)proc->wait.ptr0, (size_t)proc->wait.ptr1, NULL);
+    if (r == err(EAGAIN)) {
+        return err(EAGAIN);
+    }
+    unblock_process(proc, r);
+    return 0;
+}
+
 static int try_complete_select(struct process* proc) {
     service_keyboard_signal_for_tty();
     if (g_pending_keyboard_signal != 0) {
@@ -3089,6 +4424,12 @@ static int complete_blocked_process(struct process* proc) {
             return try_complete_pipe_read(proc);
         case PROCESS_WAIT_PIPE_WRITE:
             return try_complete_pipe_write(proc);
+        case PROCESS_WAIT_UNIX_ACCEPT:
+            return try_complete_unix_accept(proc);
+        case PROCESS_WAIT_UNIX_RECV:
+            return try_complete_unix_recv(proc);
+        case PROCESS_WAIT_UNIX_SEND:
+            return try_complete_unix_send(proc);
         case PROCESS_WAIT_WAIT4:
             return try_complete_wait4(proc);
         case PROCESS_WAIT_SELECT:
@@ -3324,6 +4665,8 @@ static int sys_fstat(int fd, struct linux_stat* st) {
         size = fb.size;
     } else if (g_fds[fd].kind == FD_DIR) {
         mode = S_IFDIR | 0755u;
+    } else if (g_fds[fd].kind == FD_UNIX) {
+        mode = S_IFSOCK | 0777u;
     } else if (g_fds[fd].kind == FD_PIPE_R || g_fds[fd].kind == FD_PIPE_W) {
         mode = S_IFIFO | 0600u;
     } else {
@@ -4873,12 +6216,20 @@ void syscall_init(void) {
     memset(g_zombies, 0, sizeof(g_zombies));
     memset(g_sig_actions, 0, sizeof(g_sig_actions));
     memset(g_pending_signals, 0, sizeof(g_pending_signals));
+    memset(g_unix_sockets, 0, sizeof(g_unix_sockets));
+    memset(g_unix_connections, 0, sizeof(g_unix_connections));
+
+    for (int i = 0; i < MAX_FDS; ++i) {
+        g_fds[i].pipe_id = -1;
+        g_fds[i].socket_id = -1;
+    }
 
     for (int i = 0; i < 3; ++i) {
         g_fds[i].kind = FD_TTY;
         g_fds[i].flags = O_RDWR;
         g_fds[i].offset = 0;
         g_fds[i].pipe_id = -1;
+        g_fds[i].socket_id = -1;
         strcpy(g_fds[i].path, "/dev/tty");
     }
 
@@ -5004,6 +6355,30 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
             return (uint64_t)g_current_pid;
         case 40:
             return (uint64_t)sys_sendfile((int)a0, (int)a1, (int64_t*)(uintptr_t)a2, (size_t)a3);
+        case 41:
+            return (uint64_t)sys_socket((int)a0, (int)a1, (int)a2);
+        case 42:
+            return (uint64_t)sys_connect((int)a0, (const void*)(uintptr_t)a1, (uint32_t)a2);
+        case 43:
+            return (uint64_t)sys_accept4((int)a0, (void*)(uintptr_t)a1, (uint32_t*)(uintptr_t)a2, 0, frame);
+        case 44:
+            return (uint64_t)sys_sendto((int)a0, (const void*)(uintptr_t)a1, (size_t)a2, (int)a3, (const void*)(uintptr_t)a4,
+                                        (uint32_t)a5, frame);
+        case 45:
+            return (uint64_t)sys_recvfrom((int)a0, (void*)(uintptr_t)a1, (size_t)a2, (int)a3, (void*)(uintptr_t)a4,
+                                          (uint32_t*)(uintptr_t)a5, frame);
+        case 48:
+            return (uint64_t)sys_shutdown((int)a0, (int)a1);
+        case 49:
+            return (uint64_t)sys_bind((int)a0, (const void*)(uintptr_t)a1, (uint32_t)a2);
+        case 50:
+            return (uint64_t)sys_listen((int)a0, (int)a1);
+        case 51:
+            return (uint64_t)sys_getsockname((int)a0, (void*)(uintptr_t)a1, (uint32_t*)(uintptr_t)a2);
+        case 52:
+            return (uint64_t)sys_getpeername((int)a0, (void*)(uintptr_t)a1, (uint32_t*)(uintptr_t)a2);
+        case 53:
+            return (uint64_t)sys_socketpair((int)a0, (int)a1, (int)a2, (int*)(uintptr_t)a3);
         case 56:
             return (uint64_t)sys_fork_like(frame, a0, a1, a3, a4, true);
         case 57:
@@ -5092,6 +6467,8 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
                                           (const struct linux_pselect_sigmask*)(uintptr_t)a5, frame);
         case 273:
             return 0;
+        case 288:
+            return (uint64_t)sys_accept4((int)a0, (void*)(uintptr_t)a1, (uint32_t*)(uintptr_t)a2, (uint32_t)a3, frame);
         case 292:
             return (uint64_t)sys_dup_common((int)a0, (int)a1, true);
         case 293:

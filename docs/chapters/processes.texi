@@ -81,7 +81,8 @@ Supported descriptor kinds include:
 @item regular file,
 @item directory,
 @item pipe read end, and
-@item pipe write end.
+@item pipe write end, and
+@item Unix-domain socket.
 @end itemize
 
 The descriptor table tracks:
@@ -92,7 +93,8 @@ The descriptor table tracks:
 @item descriptor flags such as @code{FD_CLOEXEC},
 @item current offset,
 @item an attached filesystem entry where relevant, and
-@item a pipe identifier when the descriptor refers to a pipe endpoint.
+@item a pipe identifier or socket identifier when the descriptor refers to a
+kernel IPC object.
 @end itemize
 
 @node Scheduling Model
@@ -123,6 +125,9 @@ The scheduler understands several wait reasons:
 @item TTY reads,
 @item pipe reads,
 @item pipe writes,
+@item Unix-domain socket accepts,
+@item Unix-domain socket receives,
+@item Unix-domain socket sends,
 @item @code{wait4},
 @item @code{select} and @code{pselect6}, and
 @item @code{nanosleep}.

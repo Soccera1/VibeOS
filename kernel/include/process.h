@@ -31,6 +31,9 @@ enum process_wait_reason {
     PROCESS_WAIT_TTY_READ,
     PROCESS_WAIT_PIPE_READ,
     PROCESS_WAIT_PIPE_WRITE,
+    PROCESS_WAIT_UNIX_ACCEPT,
+    PROCESS_WAIT_UNIX_RECV,
+    PROCESS_WAIT_UNIX_SEND,
     PROCESS_WAIT_WAIT4,
     PROCESS_WAIT_SELECT,
     PROCESS_WAIT_NANOSLEEP,
@@ -42,6 +45,7 @@ struct process_fd {
     uint32_t fd_flags;
     uint64_t offset;
     int pipe_id;
+    int socket_id;
     struct fs_entry entry;
     char path[FS_MAX_PATH];
 };

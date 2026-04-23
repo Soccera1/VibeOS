@@ -73,6 +73,8 @@ uint8_t fs_mode_to_dtype(uint32_t mode) {
             return FS_DT_FIFO;
         case FS_S_IFLNK:
             return FS_DT_LNK;
+        case FS_S_IFSOCK:
+            return FS_DT_SOCK;
         default:
             return FS_DT_UNKNOWN;
     }

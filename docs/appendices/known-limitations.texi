@@ -38,8 +38,9 @@ and then the machine halts.
 
 Both filesystem backends are read-only.
 
-The namespace can expose files, directories, symlinks, pipes, TTYs, a null
-device, and possibly a framebuffer device, but it does not yet provide:
+The namespace can expose files, directories, symlinks, pipes, pathname
+Unix-domain socket nodes, TTYs, a null device, and possibly a framebuffer
+device, but it does not yet provide:
 
 @itemize @bullet
 @item writable persistent filesystems,
@@ -63,6 +64,8 @@ Known gaps include:
 @item partial signal semantics,
 @item restricted @code{clone} behavior,
 @item limited @code{statx} behavior,
+@item socket support limited to pathname @code{AF_UNIX}
+@code{SOCK_STREAM} semantics,
 @item no real thread implementation,
 @item no writable shared-library runtime staging, and
 @item synthetic handling of @file{/proc/self/exe}.

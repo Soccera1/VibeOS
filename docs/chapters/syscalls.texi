@@ -52,7 +52,8 @@ The following file and path calls are recognized:
 @headitem Nr @tab Name @tab Notes
 @item 2 @tab @code{open} @tab Implemented as an @code{openat} wrapper using
 @code{AT_FDCWD}.
-@item 3 @tab @code{close} @tab Closes regular descriptors and pipe endpoints.
+@item 3 @tab @code{close} @tab Closes regular descriptors, pipe endpoints, and
+Unix-domain sockets.
 @item 4 @tab @code{stat} @tab Linux-compat stat on a followed path.
 @item 5 @tab @code{fstat} @tab Stat by descriptor.
 @item 6 @tab @code{lstat} @tab Linux-compat stat without following the final
@@ -87,10 +88,10 @@ Descriptor and multiplexing calls include:
 
 @multitable @columnfractions .10 .20 .70
 @headitem Nr @tab Name @tab Notes
-@item 0 @tab @code{read} @tab Supports TTY, framebuffer, pipe, regular-file,
-and null descriptors.
-@item 1 @tab @code{write} @tab Supports TTY, framebuffer, pipe, and null
-descriptors.
+@item 0 @tab @code{read} @tab Supports TTY, framebuffer, pipe, Unix-domain
+socket, regular-file, and null descriptors.
+@item 1 @tab @code{write} @tab Supports TTY, framebuffer, pipe, Unix-domain
+socket, and null descriptors.
 @item 7 @tab @code{poll} @tab Busy-wait implementation without a timer source.
 @item 16 @tab @code{ioctl} @tab TTY and framebuffer-specific commands.
 @item 19 @tab @code{readv} @tab Built on repeated @code{read}.
@@ -101,17 +102,42 @@ multiplexing.
 @item 32 @tab @code{dup} @tab Duplicate descriptor.
 @item 33 @tab @code{dup2} @tab Duplicate to an exact descriptor.
 @item 40 @tab @code{sendfile} @tab File-to-descriptor copy helper.
+@item 41 @tab @code{socket} @tab Supports pathname @code{AF_UNIX}
+@code{SOCK_STREAM} sockets.
+@item 42 @tab @code{connect} @tab Connects a Unix-domain stream socket to a
+listening pathname endpoint.
+@item 43 @tab @code{accept} @tab Accepts pending Unix-domain stream
+connections.
+@item 44 @tab @code{sendto} @tab Connected-socket send path for Unix-domain
+stream sockets.
+@item 45 @tab @code{recvfrom} @tab Connected-socket receive path for
+Unix-domain stream sockets.
+@item 48 @tab @code{shutdown} @tab Read-side and write-side shutdown for
+connected Unix-domain stream sockets.
+@item 49 @tab @code{bind} @tab Binds a Unix-domain stream socket to a pathname
+in the synthetic namespace.
+@item 50 @tab @code{listen} @tab Marks a bound Unix-domain stream socket as a
+listener with a bounded pending queue.
+@item 51 @tab @code{getsockname} @tab Reports the bound or connected local
+Unix-domain pathname.
+@item 52 @tab @code{getpeername} @tab Reports the connected peer pathname where
+available.
+@item 53 @tab @code{socketpair} @tab Builds a connected Unix-domain stream
+pair.
 @item 72 @tab @code{fcntl} @tab Limited support for duplication and flag
 queries or updates.
 @item 270 @tab @code{pselect6} @tab Same scan model as @code{select}.
+@item 288 @tab @code{accept4} @tab Accept path with nonblocking and
+close-on-exec flags.
 @item 292 @tab @code{dup3} @tab Implemented like exact descriptor duplication.
 @item 293 @tab @code{pipe2} @tab Main pipe constructor; flags are currently
 restricted.
 @end multitable
 
 The kernel understands TTY descriptors, @file{/dev/null}, a framebuffer
-descriptor, directories, regular files, and pipes.  That is enough to support a
-small shell environment with redirection and pipelines.
+descriptor, directories, regular files, pipes, and pathname
+@code{AF_UNIX}/@code{SOCK_STREAM} sockets.  That is enough to support a small
+shell environment with redirection, pipelines, and local stream IPC.
 
 @node Process and Signal Calls
 @section Process and Signal Calls
@@ -219,4 +245,6 @@ timer interrupt or high-quality wall clock.
 @item @code{/proc} and @code{/sys} are not real filesystems.
 @item @code{mprotect}, @code{futex}, and related compatibility calls are not
 full implementations.
+@item Socket support is currently limited to pathname Unix-domain stream
+sockets; there is no Internet stack or datagram socket support.
 @end itemize
