@@ -9,6 +9,7 @@
 #include "initramfs.h"
 #include "kmalloc.h"
 #include "string.h"
+#include "virtio_scsi.h"
 
 #define EINVAL 22
 #define ENOENT 2
@@ -411,6 +412,7 @@ enum boot_ext2_source {
     BOOT_EXT2_SOURCE_IMAGE,
     BOOT_EXT2_SOURCE_FILE,
     BOOT_EXT2_SOURCE_ATA_SECONDARY,
+    BOOT_EXT2_SOURCE_SCSI,
 };
 
 struct boot_ext2_mount {
@@ -456,7 +458,7 @@ void fs_init(const uint8_t* usrfs_start, size_t usrfs_size) {
         {
             .mount_path = "/home",
             .read_only = false,
-            .source = BOOT_EXT2_SOURCE_ATA_SECONDARY,
+            .source = BOOT_EXT2_SOURCE_SCSI,
             .image = NULL,
             .size = 0u,
             .file_path = NULL,
@@ -476,6 +478,15 @@ void fs_init(const uint8_t* usrfs_start, size_t usrfs_size) {
                 if (ata_secondary_present()) {
                     r = fs_mount_ext2_storage(mounts[i].mount_path, ata_secondary_storage_ops(), ata_secondary_storage_ctx(),
                                               ata_secondary_size(), mounts[i].read_only);
+                }
+                break;
+            case BOOT_EXT2_SOURCE_SCSI:
+                if (virtio_scsi_present()) {
+                    r = fs_mount_ext2_storage(mounts[i].mount_path, virtio_scsi_storage_ops(), virtio_scsi_storage_ctx(),
+                                              virtio_scsi_size(), mounts[i].read_only);
+                } else if (ata_scsi_present()) {
+                    r = fs_mount_ext2_storage(mounts[i].mount_path, ata_scsi_storage_ops(), ata_scsi_storage_ctx(),
+                                              ata_scsi_size(), mounts[i].read_only);
                 }
                 break;
         }

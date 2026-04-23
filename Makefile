@@ -184,10 +184,12 @@ disk: check-toolchain $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT3) $(HOME_EXT3)
 
 run: disk
 	qemu-system-x86_64 \
-		-machine pc,accel=kvm:tcg \
+		-machine q35,accel=kvm:tcg \
 		-m 1G \
 		-drive format=raw,file=$(DISK_IMAGE),if=ide,index=0 \
-		-drive format=raw,file=$(HOME_EXT3),if=ide,index=1 \
+		-device virtio-scsi-pci-transitional,id=scsi0 \
+		-drive format=raw,file=$(HOME_EXT3),if=none,id=home \
+		-device scsi-hd,drive=home,bus=scsi0.0 \
 		-serial stdio
 
 docs: $(DOCS_SRC) | $(DOCS_OUT)

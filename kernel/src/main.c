@@ -14,6 +14,7 @@
 #include "string.h"
 #include "syscall.h"
 #include "userland.h"
+#include "virtio_scsi.h"
 #include "vm.h"
 
 uint64_t kernel_exit_stack_top;
@@ -81,6 +82,7 @@ void kernel_main(uint64_t mb2_info) {
     power_init(mb2_info);
     kmalloc_init();
     ata_init();
+    virtio_scsi_init();
 
     const struct mb2_tag_module* initramfs_module = mb2_find_module(mb2_info, 0);
     if (initramfs_module == NULL) {
@@ -115,11 +117,17 @@ void kernel_main(uint64_t mb2_info) {
         }
     }
     if (fs_home_mount_ready()) {
-        console_write("/home: ext3 disk mounted read-write\n");
+        console_write("/home: ext3 SCSI disk mounted read-write\n");
     } else if (fs_home_ramdisk_ready()) {
         console_write("/home: ramdisk mounted read-write\n");
     } else {
         console_write("/home: no writable ext3 disk attached\n");
+    }
+    if (ata_scsi_present()) {
+        console_printf("scsi: ATA PACKET device present (%u bytes)\n", (unsigned)ata_scsi_size());
+    }
+    if (virtio_scsi_present()) {
+        console_printf("scsi: virtio-scsi disk present (%u bytes)\n", (unsigned)virtio_scsi_size());
     }
 
     kernel_exit_stack_top = (uint64_t)(uintptr_t)(&post_user_stack[sizeof(post_user_stack)]);

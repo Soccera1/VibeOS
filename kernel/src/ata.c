@@ -4,6 +4,8 @@
 #include <stdint.h>
 
 #include "io.h"
+#include "scsi.h"
+#include "string.h"
 
 #define ATA_REG_DATA 0u
 #define ATA_REG_ERROR 1u
@@ -11,6 +13,9 @@
 #define ATA_REG_LBA0 3u
 #define ATA_REG_LBA1 4u
 #define ATA_REG_LBA2 5u
+#define ATA_REG_FEATURES 1u
+#define ATA_REG_BYTEL 4u
+#define ATA_REG_BYTEH 5u
 #define ATA_REG_HDDEVSEL 6u
 #define ATA_REG_COMMAND 7u
 #define ATA_REG_STATUS 7u
@@ -28,8 +33,11 @@
 #define ATA_CMD_WRITE_PIO 0x30u
 #define ATA_CMD_CACHE_FLUSH 0xE7u
 #define ATA_CMD_IDENTIFY 0xECu
+#define ATA_CMD_IDENTIFY_PACKET 0xA1u
+#define ATA_CMD_PACKET 0xA0u
 
 #define ATA_SECTOR_SIZE 512u
+#define ATAPI_MAX_TRANSFER 4096u
 
 struct ata_device {
     bool present;
@@ -40,6 +48,8 @@ struct ata_device {
 };
 
 static struct ata_device g_home_dev;
+static struct ata_device g_scsi_packet_dev;
+static struct scsi_disk g_scsi_disk;
 static bool g_ata_initialized;
 
 static uint8_t ata_status(const struct ata_device* dev) {
@@ -119,6 +129,73 @@ static int ata_identify_device(struct ata_device* dev) {
     dev->present = dev->sector_count != 0u;
     return dev->present ? 0 : -1;
 }
+
+static int ata_identify_packet_device(struct ata_device* dev) {
+    uint16_t identify[256];
+
+    ata_select_drive(dev, 0u);
+    outb((uint16_t)(dev->io_base + ATA_REG_SECCOUNT0), 0u);
+    outb((uint16_t)(dev->io_base + ATA_REG_LBA0), 0u);
+    outb((uint16_t)(dev->io_base + ATA_REG_LBA1), 0u);
+    outb((uint16_t)(dev->io_base + ATA_REG_LBA2), 0u);
+    outb((uint16_t)(dev->io_base + ATA_REG_COMMAND), ATA_CMD_IDENTIFY_PACKET);
+
+    if (ata_status(dev) == 0u || ata_wait_not_busy(dev) != 0 || ata_wait_drq(dev) != 0) {
+        return -1;
+    }
+
+    insw((uint16_t)(dev->io_base + ATA_REG_DATA), identify, 256u);
+    dev->sector_count = 0u;
+    dev->present = true;
+    return 0;
+}
+
+static int atapi_packet_command(void* ctx, const uint8_t* cdb, size_t cdb_len, void* data, size_t data_len, bool data_in) {
+    struct ata_device* dev = (struct ata_device*)ctx;
+    uint8_t packet[12];
+
+    if (dev == NULL || !dev->present || cdb == NULL || cdb_len > sizeof(packet) || data_len > ATAPI_MAX_TRANSFER ||
+        (!data_in && data_len != 0u)) {
+        return -1;
+    }
+
+    memset(packet, 0, sizeof(packet));
+    memcpy(packet, cdb, cdb_len);
+
+    ata_select_drive(dev, 0u);
+    outb((uint16_t)(dev->io_base + ATA_REG_FEATURES), 0u);
+    outb((uint16_t)(dev->io_base + ATA_REG_BYTEL), (uint8_t)(data_len & 0xFFu));
+    outb((uint16_t)(dev->io_base + ATA_REG_BYTEH), (uint8_t)((data_len >> 8) & 0xFFu));
+    outb((uint16_t)(dev->io_base + ATA_REG_COMMAND), ATA_CMD_PACKET);
+    if (ata_wait_drq(dev) != 0) {
+        return -1;
+    }
+
+    outsw((uint16_t)(dev->io_base + ATA_REG_DATA), packet, sizeof(packet) / sizeof(uint16_t));
+    if (data_len == 0u) {
+        return ata_wait_not_busy(dev);
+    }
+    if (ata_wait_drq(dev) != 0) {
+        return -1;
+    }
+
+    size_t transfer = (size_t)inb((uint16_t)(dev->io_base + ATA_REG_BYTEL)) |
+                      ((size_t)inb((uint16_t)(dev->io_base + ATA_REG_BYTEH)) << 8);
+    if (transfer > data_len) {
+        return -1;
+    }
+    if ((transfer & 1u) != 0u) {
+        return -1;
+    }
+    if (transfer != 0u) {
+        insw((uint16_t)(dev->io_base + ATA_REG_DATA), data, (uint32_t)(transfer / sizeof(uint16_t)));
+    }
+    return ata_wait_not_busy(dev);
+}
+
+static const struct scsi_transport g_atapi_transport = {
+    .command = atapi_packet_command,
+};
 
 static int ata_read_sector(const struct ata_device* dev, uint32_t lba, void* buf) {
     if (dev == NULL || !dev->present || buf == NULL || lba >= dev->sector_count) {
@@ -278,8 +355,22 @@ void ata_init(void) {
         dev.ctrl_base = candidates[i].ctrl_base;
         dev.slave = candidates[i].slave;
         dev.sector_count = 0u;
-        if (ata_identify_device(&dev) == 0) {
+        if (!g_home_dev.present && ata_identify_device(&dev) == 0) {
             g_home_dev = dev;
+        }
+    }
+
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
+        struct ata_device dev;
+        dev.present = false;
+        dev.io_base = candidates[i].io_base;
+        dev.ctrl_base = candidates[i].ctrl_base;
+        dev.slave = candidates[i].slave;
+        dev.sector_count = 0u;
+        if (ata_identify_packet_device(&dev) == 0 &&
+            scsi_disk_probe(&g_scsi_disk, &g_atapi_transport, &dev, false) == 0) {
+            g_scsi_packet_dev = dev;
+            g_scsi_disk.transport_ctx = &g_scsi_packet_dev;
             return;
         }
     }
@@ -299,4 +390,20 @@ const struct ext2_storage_ops* ata_secondary_storage_ops(void) {
 
 void* ata_secondary_storage_ctx(void) {
     return &g_home_dev;
+}
+
+bool ata_scsi_present(void) {
+    return g_scsi_disk.present;
+}
+
+size_t ata_scsi_size(void) {
+    return scsi_disk_size(&g_scsi_disk);
+}
+
+const struct ext2_storage_ops* ata_scsi_storage_ops(void) {
+    return scsi_disk_storage_ops();
+}
+
+void* ata_scsi_storage_ctx(void) {
+    return &g_scsi_disk;
 }
