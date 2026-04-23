@@ -105,8 +105,8 @@ simpler access helpers.
 @end multitable
 
 The shipped @file{/usr} mount is read-only, so mutating filesystem calls
-currently fail there with @code{EROFS}; the ext2 backend and VFS paths are
-implemented for read-write ext2 mounts.
+currently fail there with @code{EROFS}; the ext2/ext3 backend and VFS paths are
+implemented for read-write ext2 or ext3 mounts.
 
 @node Descriptors and Devices
 @section Descriptors, Polling, and Devices
