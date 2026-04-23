@@ -30,7 +30,7 @@ for a full OS build:
 @item @code{strip} or a compatible replacement when stripping is enabled,
 @item @code{grub-mkrescue},
 @item @code{grub-install},
-@item @code{mkfs.ext2}, and
+@item @code{mkfs.ext3}, and
 @item @code{qemu-system-x86_64}.
 @end itemize
 
@@ -40,7 +40,7 @@ In practice, userspace builds also depend heavily on:
 @item @code{zig},
 @item typical Autoconf host tools,
 @item @code{readelf} for validation, and
-@item utilities used by GRUB and ext2 image generation.
+@item utilities used by GRUB and ext3 image generation.
 @end itemize
 
 The documentation target depends on the Texinfo tools:
@@ -60,7 +60,7 @@ The main targets exposed by the root @file{Makefile} are:
 Alias for @code{disk}.
 
 @item iso
-Build the kernel, initramfs, and @file{/usr} ext2 image, then package them into
+Build the kernel, initramfs, and @file{/usr} ext3 image, then package them into
 @file{build/vibeos.iso}.
 
 @item disk
@@ -144,8 +144,8 @@ The linked kernel.
 @item build/initramfs.cpio
 The root filesystem image loaded as Multiboot module 0.
 
-@item build/usr.ext2
-The ext2 image loaded as Multiboot module 1 and mounted at @file{/usr}.
+@item build/usr.ext3
+The ext3 image loaded as Multiboot module 1 and mounted at @file{/usr}.
 @end table
 
 The split between root and @file{/usr} is deliberate.
@@ -161,7 +161,7 @@ The initramfs contains the minimum system needed to come up:
 @item an empty @file{/usr} mount point.
 @end itemize
 
-The ext2 image contains the larger optional userspace:
+The ext3 image contains the larger optional userspace:
 
 @itemize @bullet
 @item Bash,

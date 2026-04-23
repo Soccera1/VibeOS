@@ -28,6 +28,32 @@
 #define EXT2_TIND_BLOCK 14u
 #define EXT2_NAME_LEN 255u
 #define EXT2_VALID_FS 0x0001u
+#define EXT2_FEATURE_COMPAT_DIR_PREALLOC 0x0001u
+#define EXT2_FEATURE_COMPAT_IMAGIC_INODES 0x0002u
+#define EXT2_FEATURE_COMPAT_HAS_JOURNAL 0x0004u
+#define EXT2_FEATURE_COMPAT_EXT_ATTR 0x0008u
+#define EXT2_FEATURE_COMPAT_RESIZE_INO 0x0010u
+#define EXT2_FEATURE_COMPAT_DIR_INDEX 0x0020u
+#define EXT2_FEATURE_INCOMPAT_COMPRESSION 0x0001u
+#define EXT2_FEATURE_INCOMPAT_FILETYPE 0x0002u
+#define EXT2_FEATURE_INCOMPAT_RECOVER 0x0004u
+#define EXT2_FEATURE_INCOMPAT_JOURNAL_DEV 0x0008u
+#define EXT2_FEATURE_INCOMPAT_META_BG 0x0010u
+#define EXT2_FEATURE_RO_COMPAT_SPARSE_SUPER 0x0001u
+#define EXT2_FEATURE_RO_COMPAT_LARGE_FILE 0x0002u
+#define EXT2_FEATURE_RO_COMPAT_BTREE_DIR 0x0004u
+#define EXT2_INDEX_FL 0x00001000u
+
+#define EXT3_JOURNAL_MAGIC 0xC03B3998u
+#define EXT3_JOURNAL_DESCRIPTOR_BLOCK 1u
+#define EXT3_JOURNAL_COMMIT_BLOCK 2u
+#define EXT3_JOURNAL_SUPERBLOCK_V1 3u
+#define EXT3_JOURNAL_SUPERBLOCK_V2 4u
+#define EXT3_JOURNAL_REVOKE_BLOCK 5u
+#define EXT3_JOURNAL_FLAG_ESCAPE 0x0001u
+#define EXT3_JOURNAL_FLAG_SAME_UUID 0x0002u
+#define EXT3_JOURNAL_FLAG_DELETED 0x0004u
+#define EXT3_JOURNAL_FLAG_LAST_TAG 0x0008u
 
 #define EXT2_FT_UNKNOWN 0u
 #define EXT2_FT_REG_FILE 1u
@@ -76,6 +102,13 @@ struct ext2_superblock {
     char s_volume_name[16];
     char s_last_mounted[64];
     uint32_t s_algorithm_usage_bitmap;
+    uint8_t s_prealloc_blocks;
+    uint8_t s_prealloc_dir_blocks;
+    uint16_t s_reserved_gdt_blocks;
+    uint8_t s_journal_uuid[16];
+    uint32_t s_journal_inum;
+    uint32_t s_journal_dev;
+    uint32_t s_last_orphan;
 } __attribute__((packed));
 
 struct ext2_group_desc {
@@ -117,6 +150,74 @@ struct ext2_dirent_head {
     uint8_t file_type;
 } __attribute__((packed));
 
+struct ext3_journal_header {
+    uint32_t h_magic;
+    uint32_t h_blocktype;
+    uint32_t h_sequence;
+} __attribute__((packed));
+
+struct ext3_journal_block_tag {
+    uint32_t t_blocknr;
+    uint16_t t_checksum;
+    uint16_t t_flags;
+} __attribute__((packed));
+
+struct ext3_journal_superblock {
+    struct ext3_journal_header s_header;
+    uint32_t s_blocksize;
+    uint32_t s_maxlen;
+    uint32_t s_first;
+    uint32_t s_sequence;
+    uint32_t s_start;
+    uint32_t s_errno;
+    uint32_t s_feature_compat;
+    uint32_t s_feature_incompat;
+    uint32_t s_feature_ro_compat;
+    uint8_t s_uuid[16];
+    uint32_t s_nr_users;
+    uint32_t s_dynsuper;
+    uint32_t s_max_transaction;
+    uint32_t s_max_trans_data;
+} __attribute__((packed));
+
+struct ext3_tx_block {
+    uint32_t block_num;
+    uint8_t* data;
+};
+
+struct ext3_revoke_entry {
+    uint32_t block_num;
+    uint32_t sequence;
+};
+
+struct ext2_dir_record {
+    uint32_t inode;
+    uint8_t file_type;
+    char name[EXT2_NAME_LEN + 1u];
+};
+
+struct ext3_journal_state {
+    bool loaded;
+    bool needs_replay;
+    uint32_t inode_num;
+    uint32_t maxlen;
+    uint32_t first;
+    uint32_t sequence;
+    uint32_t start;
+    uint32_t max_transaction;
+    uint32_t max_trans_data;
+    struct ext2_inode inode;
+    struct ext3_journal_superblock superblock;
+    uint32_t* block_map;
+    size_t block_map_count;
+    size_t tx_depth;
+    bool tx_failed;
+    int tx_error;
+    struct ext3_tx_block* tx_blocks;
+    size_t tx_block_count;
+    size_t tx_block_cap;
+};
+
 struct ext2_mount;
 
 struct ext2_file_storage_ctx {
@@ -127,6 +228,13 @@ struct ext2_file_storage_ctx {
 struct ext2_mount {
     bool mounted;
     bool read_only;
+    bool has_journal;
+    bool has_external_journal;
+    bool needs_recovery;
+    bool has_ext_attr;
+    bool has_resize_inode;
+    bool uses_dir_index;
+    bool uses_btree_dir;
     char mount_path[FS_MAX_PATH];
     size_t mount_path_len;
     const struct ext2_storage_ops* ops;
@@ -142,6 +250,13 @@ struct ext2_mount {
     uint32_t first_ino;
     uint32_t inode_size;
     uint32_t group_count;
+    uint32_t feature_compat;
+    uint32_t feature_incompat;
+    uint32_t feature_ro_compat;
+    uint32_t journal_inode;
+    uint32_t journal_device;
+    uint32_t last_orphan;
+    struct ext3_journal_state journal;
     uint64_t cache_clock;
     struct {
         bool valid;
@@ -159,6 +274,31 @@ static struct ext2_mount* g_ext2_current = &g_ext2_mounts[0];
 
 static int min_int(int a, int b) {
     return (a < b) ? a : b;
+}
+
+static uint16_t ext2_bswap16(uint16_t value) {
+    return (uint16_t)((value >> 8) | (value << 8));
+}
+
+static uint32_t ext2_bswap32(uint32_t value) {
+    return ((value & 0x000000FFu) << 24) | ((value & 0x0000FF00u) << 8) | ((value & 0x00FF0000u) >> 8) |
+           ((value & 0xFF000000u) >> 24);
+}
+
+static uint16_t ext2_cpu_to_be16(uint16_t value) {
+    return ext2_bswap16(value);
+}
+
+static uint16_t ext2_be16_to_cpu(uint16_t value) {
+    return ext2_bswap16(value);
+}
+
+static uint32_t ext2_cpu_to_be32(uint32_t value) {
+    return ext2_bswap32(value);
+}
+
+static uint32_t ext2_be32_to_cpu(uint32_t value) {
+    return ext2_bswap32(value);
 }
 
 static uint16_t ext2_dir_rec_len(size_t name_len) {
@@ -311,6 +451,33 @@ static const struct ext2_storage_ops g_ext2_file_ops = {
 };
 
 static int flush_block_cache(void);
+static int ext2_stage_tx_block(uint32_t block_num, const uint8_t* data);
+static int ext2_collect_dirty_tx_blocks(void);
+static void ext2_discard_tx_blocks(void);
+static int ext3_journal_sync_superblock(void);
+static const uint8_t* block_ptr(uint32_t block_num);
+static uint8_t* block_ptr_mut(uint32_t block_num);
+
+static size_t ext2_tx_block_index(uint32_t block_num) {
+    for (size_t i = 0; i < g_ext2.journal.tx_block_count; ++i) {
+        if (g_ext2.journal.tx_blocks[i].block_num == block_num) {
+            return i;
+        }
+    }
+    return g_ext2.journal.tx_block_count;
+}
+
+static bool ext2_tx_active(void) {
+    return g_ext2.journal.tx_depth != 0u;
+}
+
+static uint32_t ext2_superblock_block_num(void) {
+    return (g_ext2.block_size == 1024u) ? 1u : 0u;
+}
+
+static size_t ext2_superblock_block_offset(void) {
+    return (g_ext2.block_size == 1024u) ? 0u : 1024u;
+}
 
 static int storage_read(uint64_t offset, void* buf, size_t len) {
     if (!g_ext2.mounted || g_ext2.ops == NULL || g_ext2.ops->read == NULL || buf == NULL) {
@@ -332,8 +499,68 @@ static int storage_write(uint64_t offset, const void* buf, size_t len) {
     return g_ext2.ops->write(g_ext2.storage_ctx, offset, buf, len);
 }
 
+static int storage_read_block(uint32_t block_num, void* buf) {
+    if (buf == NULL) {
+        return -EINVAL;
+    }
+    return storage_read((uint64_t)block_num * g_ext2.block_size, buf, g_ext2.block_size);
+}
+
+static int storage_write_block(uint32_t block_num, const void* buf) {
+    if (buf == NULL) {
+        return -EINVAL;
+    }
+    return storage_write((uint64_t)block_num * g_ext2.block_size, buf, g_ext2.block_size);
+}
+
+static int ext2_access_fs_bytes(uint64_t offset, void* buf, size_t len, bool write) {
+    if (buf == NULL) {
+        return -EINVAL;
+    }
+    if (offset + len < offset || offset + len > g_ext2.size) {
+        return -EINVAL;
+    }
+
+    size_t done = 0;
+    while (done < len) {
+        uint64_t current = offset + done;
+        uint32_t block_num = (uint32_t)(current / g_ext2.block_size);
+        size_t block_off = (size_t)(current % g_ext2.block_size);
+        size_t chunk = len - done;
+        size_t remain = g_ext2.block_size - block_off;
+        if (chunk > remain) {
+            chunk = remain;
+        }
+
+        uint8_t* block = write ? block_ptr_mut(block_num) : (uint8_t*)block_ptr(block_num);
+        if (block == NULL) {
+            return -EINVAL;
+        }
+
+        if (write) {
+            memcpy(block + block_off, (const uint8_t*)buf + done, chunk);
+        } else {
+            memcpy((uint8_t*)buf + done, block + block_off, chunk);
+        }
+        done += chunk;
+    }
+
+    return 0;
+}
+
+static int ext2_reload_superblock_from_disk(void) {
+    return storage_read(1024u, &g_ext2.superblock, sizeof(g_ext2.superblock));
+}
+
 static int write_superblock(void) {
-    return storage_write(1024u, &g_ext2.superblock, sizeof(g_ext2.superblock));
+    uint32_t block_num = ext2_superblock_block_num();
+    size_t block_off = ext2_superblock_block_offset();
+    uint8_t* block = block_ptr_mut(block_num);
+    if (block == NULL || block_off + sizeof(g_ext2.superblock) > g_ext2.block_size) {
+        return -EINVAL;
+    }
+    memcpy(block + block_off, &g_ext2.superblock, sizeof(g_ext2.superblock));
+    return 0;
 }
 
 static int ext2_sync_current(bool clean_unmount) {
@@ -347,8 +574,21 @@ static int ext2_sync_current(bool clean_unmount) {
     }
 
     if (!g_ext2.read_only && clean_unmount) {
+        if (g_ext2.has_journal) {
+            g_ext2.journal.start = 0u;
+            g_ext2.journal.needs_replay = false;
+            r = ext3_journal_sync_superblock();
+            if (r != 0) {
+                return r;
+            }
+            g_ext2.superblock.s_feature_incompat &= ~EXT2_FEATURE_INCOMPAT_RECOVER;
+        }
         g_ext2.superblock.s_state |= EXT2_VALID_FS;
         r = write_superblock();
+        if (r != 0) {
+            return r;
+        }
+        r = flush_block_cache();
         if (r != 0) {
             return r;
         }
@@ -357,8 +597,89 @@ static int ext2_sync_current(bool clean_unmount) {
     return 0;
 }
 
+static int ext2_stage_tx_block(uint32_t block_num, const uint8_t* data) {
+    if (data == NULL) {
+        return -EINVAL;
+    }
+
+    size_t index = ext2_tx_block_index(block_num);
+    if (index == g_ext2.journal.tx_block_count) {
+        if (g_ext2.journal.tx_block_count == g_ext2.journal.tx_block_cap) {
+            size_t new_cap = (g_ext2.journal.tx_block_cap == 0u) ? 16u : g_ext2.journal.tx_block_cap * 2u;
+            struct ext3_tx_block* new_blocks = kmalloc(new_cap * sizeof(*new_blocks));
+            if (new_blocks == NULL) {
+                return -ENOMEM;
+            }
+            if (g_ext2.journal.tx_blocks != NULL) {
+                memcpy(new_blocks, g_ext2.journal.tx_blocks, g_ext2.journal.tx_block_count * sizeof(*new_blocks));
+                kfree(g_ext2.journal.tx_blocks);
+            }
+            g_ext2.journal.tx_blocks = new_blocks;
+            g_ext2.journal.tx_block_cap = new_cap;
+        }
+
+        index = g_ext2.journal.tx_block_count++;
+        g_ext2.journal.tx_blocks[index].block_num = block_num;
+        g_ext2.journal.tx_blocks[index].data = kmalloc(g_ext2.block_size);
+        if (g_ext2.journal.tx_blocks[index].data == NULL) {
+            g_ext2.journal.tx_block_count--;
+            return -ENOMEM;
+        }
+    }
+
+    memcpy(g_ext2.journal.tx_blocks[index].data, data, g_ext2.block_size);
+    return 0;
+}
+
+static void ext2_discard_tx_blocks(void) {
+    for (size_t i = 0; i < g_ext2.journal.tx_block_count; ++i) {
+        if (g_ext2.journal.tx_blocks[i].data != NULL) {
+            kfree(g_ext2.journal.tx_blocks[i].data);
+            g_ext2.journal.tx_blocks[i].data = NULL;
+        }
+    }
+    g_ext2.journal.tx_block_count = 0;
+    g_ext2.journal.tx_failed = false;
+    g_ext2.journal.tx_error = 0;
+}
+
+static void ext2_discard_dirty_cache(void) {
+    for (size_t i = 0; i < EXT2_CACHE_SLOTS; ++i) {
+        g_ext2.cache[i].valid = false;
+        g_ext2.cache[i].dirty = false;
+        g_ext2.cache[i].block_num = 0;
+        g_ext2.cache[i].last_use = 0;
+    }
+}
+
+static int ext2_collect_dirty_tx_blocks(void) {
+    for (size_t i = 0; i < EXT2_CACHE_SLOTS; ++i) {
+        if (!g_ext2.cache[i].valid || !g_ext2.cache[i].dirty) {
+            continue;
+        }
+        int r = ext2_stage_tx_block(g_ext2.cache[i].block_num, g_ext2.cache[i].data);
+        if (r != 0) {
+            return r;
+        }
+        g_ext2.cache[i].dirty = false;
+    }
+    return 0;
+}
+
 static int flush_cache_slot(size_t slot) {
     if (slot >= EXT2_CACHE_SLOTS || !g_ext2.cache[slot].valid || !g_ext2.cache[slot].dirty) {
+        return 0;
+    }
+
+    if (ext2_tx_active()) {
+        int sr = ext2_stage_tx_block(g_ext2.cache[slot].block_num, g_ext2.cache[slot].data);
+        if (sr != 0) {
+            return sr;
+        }
+        g_ext2.cache[slot].dirty = false;
+        g_ext2.cache[slot].valid = false;
+        g_ext2.cache[slot].block_num = 0;
+        g_ext2.cache[slot].last_use = 0;
         return 0;
     }
 
@@ -381,9 +702,6 @@ static int flush_block_cache(void) {
 }
 
 static uint8_t* cache_block_ptr(uint32_t block_num, bool writable) {
-    if (block_num == 0) {
-        return NULL;
-    }
     uint64_t offset = (uint64_t)block_num * g_ext2.block_size;
     if (offset + g_ext2.block_size > g_ext2.size) {
         return NULL;
@@ -418,7 +736,10 @@ static uint8_t* cache_block_ptr(uint32_t block_num, bool writable) {
     if (g_ext2.cache[victim].data == NULL) {
         return NULL;
     }
-    if (storage_read(offset, g_ext2.cache[victim].data, g_ext2.block_size) != 0) {
+    size_t tx_index = ext2_tx_block_index(block_num);
+    if (tx_index < g_ext2.journal.tx_block_count) {
+        memcpy(g_ext2.cache[victim].data, g_ext2.journal.tx_blocks[tx_index].data, g_ext2.block_size);
+    } else if (storage_read(offset, g_ext2.cache[victim].data, g_ext2.block_size) != 0) {
         return NULL;
     }
 
@@ -481,7 +802,7 @@ static int read_group_desc(uint32_t group, struct ext2_group_desc* out) {
         return -EINVAL;
     }
 
-    return storage_read(offset, out, sizeof(*out));
+    return ext2_access_fs_bytes(offset, out, sizeof(*out), false);
 }
 
 static int write_group_desc(uint32_t group, const struct ext2_group_desc* desc) {
@@ -495,7 +816,7 @@ static int write_group_desc(uint32_t group, const struct ext2_group_desc* desc) 
         return -EINVAL;
     }
 
-    return storage_write(offset, desc, sizeof(*desc));
+    return ext2_access_fs_bytes(offset, (void*)desc, sizeof(*desc), true);
 }
 
 static bool bitmap_test(const uint8_t* bitmap, uint32_t index) {
@@ -764,7 +1085,7 @@ static int read_inode(uint32_t inode_num, struct ext2_inode* out) {
     }
 
     memset(out, 0, sizeof(*out));
-    return storage_read(inode_off, out, min_int((int)sizeof(*out), (int)g_ext2.inode_size));
+    return ext2_access_fs_bytes(inode_off, out, (size_t)min_int((int)sizeof(*out), (int)g_ext2.inode_size), false);
 }
 
 static int write_inode(uint32_t inode_num, const struct ext2_inode* inode) {
@@ -778,7 +1099,7 @@ static int write_inode(uint32_t inode_num, const struct ext2_inode* inode) {
         return or;
     }
 
-    return storage_write(inode_off, inode, min_int((int)sizeof(*inode), (int)g_ext2.inode_size));
+    return ext2_access_fs_bytes(inode_off, (void*)inode, (size_t)min_int((int)sizeof(*inode), (int)g_ext2.inode_size), true);
 }
 
 static int read_indirect_ptr(uint32_t block_num, uint32_t index, uint32_t* out) {
@@ -1379,11 +1700,717 @@ static void set_inode_file_size(struct ext2_inode* inode, uint64_t size) {
     }
 }
 
+static uint32_t ext3_journal_usable_blocks(void) {
+    return (g_ext2.journal.maxlen > g_ext2.journal.first) ? (g_ext2.journal.maxlen - g_ext2.journal.first) : 0u;
+}
+
+static uint32_t ext3_journal_next_log_block(uint32_t log_block) {
+    if (log_block + 1u >= g_ext2.journal.maxlen) {
+        return g_ext2.journal.first;
+    }
+    return log_block + 1u;
+}
+
+static size_t ext3_journal_tag_bytes(void) {
+    return sizeof(struct ext3_journal_block_tag);
+}
+
+static int ext3_journal_log_to_fs_block(uint32_t log_block, uint32_t* fs_block_out) {
+    if (!g_ext2.journal.loaded || fs_block_out == NULL || log_block >= g_ext2.journal.block_map_count) {
+        return -EINVAL;
+    }
+    uint32_t fs_block = g_ext2.journal.block_map[log_block];
+    if (fs_block == 0u) {
+        return -EINVAL;
+    }
+    *fs_block_out = fs_block;
+    return 0;
+}
+
+static int ext3_journal_read_block(uint32_t log_block, void* buf) {
+    uint32_t fs_block = 0;
+    int r = ext3_journal_log_to_fs_block(log_block, &fs_block);
+    if (r != 0) {
+        return r;
+    }
+    return storage_read_block(fs_block, buf);
+}
+
+static int ext3_journal_write_block(uint32_t log_block, const void* buf) {
+    uint32_t fs_block = 0;
+    int r = ext3_journal_log_to_fs_block(log_block, &fs_block);
+    if (r != 0) {
+        return r;
+    }
+    return storage_write_block(fs_block, buf);
+}
+
+static int ext3_journal_sync_superblock(void) {
+    uint8_t* block = kmalloc(g_ext2.block_size);
+    if (block == NULL) {
+        return -ENOMEM;
+    }
+    memset(block, 0, g_ext2.block_size);
+    g_ext2.journal.superblock.s_sequence = ext2_cpu_to_be32(g_ext2.journal.sequence);
+    g_ext2.journal.superblock.s_start = ext2_cpu_to_be32(g_ext2.journal.start);
+    memcpy(block, &g_ext2.journal.superblock, sizeof(g_ext2.journal.superblock));
+    int r = ext3_journal_write_block(0u, block);
+    kfree(block);
+    return r;
+}
+
+static bool ext3_journal_block_needs_escape(const uint8_t* data) {
+    uint32_t magic = ext2_cpu_to_be32(EXT3_JOURNAL_MAGIC);
+    return data != NULL && memcmp(data, &magic, sizeof(magic)) == 0;
+}
+
+static size_t ext3_journal_descriptor_count(size_t tx_block_count) {
+    size_t remaining = tx_block_count;
+    size_t count = 0;
+    size_t tag_bytes = ext3_journal_tag_bytes();
+
+    while (remaining != 0u) {
+        size_t space = g_ext2.block_size - sizeof(struct ext3_journal_header);
+        size_t in_desc = 0;
+
+        while (remaining != 0u) {
+            size_t need = tag_bytes;
+            if (in_desc == 0u) {
+                need += sizeof(g_ext2.superblock.s_uuid);
+            }
+            if (need > space) {
+                break;
+            }
+            space -= need;
+            remaining--;
+            in_desc++;
+        }
+
+        if (in_desc == 0u) {
+            return 0u;
+        }
+        count++;
+    }
+
+    return count;
+}
+
+static int ext3_replay_append_block(struct ext3_tx_block** blocks_out, size_t* count_out, size_t* cap_out, uint32_t block_num,
+                                    const uint8_t* data) {
+    if (blocks_out == NULL || count_out == NULL || cap_out == NULL || data == NULL) {
+        return -EINVAL;
+    }
+
+    for (size_t i = 0; i < *count_out; ++i) {
+        if ((*blocks_out)[i].block_num == block_num) {
+            memcpy((*blocks_out)[i].data, data, g_ext2.block_size);
+            return 0;
+        }
+    }
+
+    if (*count_out == *cap_out) {
+        size_t new_cap = (*cap_out == 0u) ? 16u : *cap_out * 2u;
+        struct ext3_tx_block* new_blocks = kmalloc(new_cap * sizeof(*new_blocks));
+        if (new_blocks == NULL) {
+            return -ENOMEM;
+        }
+        if (*blocks_out != NULL) {
+            memcpy(new_blocks, *blocks_out, *count_out * sizeof(*new_blocks));
+            kfree(*blocks_out);
+        }
+        *blocks_out = new_blocks;
+        *cap_out = new_cap;
+    }
+
+    (*blocks_out)[*count_out].block_num = block_num;
+    (*blocks_out)[*count_out].data = kmalloc(g_ext2.block_size);
+    if ((*blocks_out)[*count_out].data == NULL) {
+        return -ENOMEM;
+    }
+    memcpy((*blocks_out)[*count_out].data, data, g_ext2.block_size);
+    (*count_out)++;
+    return 0;
+}
+
+static void ext3_replay_free_blocks(struct ext3_tx_block* blocks, size_t count) {
+    if (blocks == NULL) {
+        return;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        if (blocks[i].data != NULL) {
+            kfree(blocks[i].data);
+        }
+    }
+    kfree(blocks);
+}
+
+static bool ext3_replay_block_revoked_after(const struct ext3_revoke_entry* revoked, size_t revoked_count, uint32_t block_num,
+                                            uint32_t sequence) {
+    for (size_t i = 0; i < revoked_count; ++i) {
+        if (revoked[i].block_num == block_num && revoked[i].sequence > sequence) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static int ext3_replay_append_revoke(struct ext3_revoke_entry** revoked_out, size_t* count_out, size_t* cap_out, uint32_t block_num,
+                                     uint32_t sequence) {
+    if (revoked_out == NULL || count_out == NULL || cap_out == NULL) {
+        return -EINVAL;
+    }
+
+    for (size_t i = 0; i < *count_out; ++i) {
+        if ((*revoked_out)[i].block_num == block_num) {
+            if ((*revoked_out)[i].sequence < sequence) {
+                (*revoked_out)[i].sequence = sequence;
+            }
+            return 0;
+        }
+    }
+
+    if (*count_out == *cap_out) {
+        size_t new_cap = (*cap_out == 0u) ? 16u : *cap_out * 2u;
+        struct ext3_revoke_entry* new_revoked = kmalloc(new_cap * sizeof(*new_revoked));
+        if (new_revoked == NULL) {
+            return -ENOMEM;
+        }
+        if (*revoked_out != NULL) {
+            memcpy(new_revoked, *revoked_out, *count_out * sizeof(*new_revoked));
+            kfree(*revoked_out);
+        }
+        *revoked_out = new_revoked;
+        *cap_out = new_cap;
+    }
+
+    (*revoked_out)[*count_out].block_num = block_num;
+    (*revoked_out)[*count_out].sequence = sequence;
+    (*count_out)++;
+    return 0;
+}
+
+static int ext2_checkpoint_tx_blocks(void) {
+    int r = ext2_collect_dirty_tx_blocks();
+    if (r != 0) {
+        return r;
+    }
+
+    for (size_t i = 0; i < g_ext2.journal.tx_block_count; ++i) {
+        r = storage_write_block(g_ext2.journal.tx_blocks[i].block_num, g_ext2.journal.tx_blocks[i].data);
+        if (r != 0) {
+            return r;
+        }
+    }
+
+    ext2_discard_dirty_cache();
+    ext2_discard_tx_blocks();
+    return 0;
+}
+
+static void ext2_abort_mutation(void) {
+    ext2_discard_dirty_cache();
+    ext2_discard_tx_blocks();
+    g_ext2.journal.tx_depth = 0;
+    (void)ext2_reload_superblock_from_disk();
+}
+
+static int ext3_journal_replay(void) {
+    if (!g_ext2.journal.loaded || !g_ext2.journal.needs_replay) {
+        return 0;
+    }
+
+    uint8_t* block = kmalloc(g_ext2.block_size);
+    uint8_t* data = kmalloc(g_ext2.block_size);
+    int r = 0;
+    if (block == NULL || data == NULL) {
+        r = -ENOMEM;
+        goto out;
+    }
+
+    uint32_t log_block = g_ext2.journal.start;
+    uint32_t sequence = g_ext2.journal.sequence;
+    uint32_t replay_limit = sequence;
+    struct ext3_tx_block* replay_blocks = NULL;
+    size_t replay_count = 0;
+    size_t replay_cap = 0;
+    struct ext3_revoke_entry* revoked = NULL;
+    size_t revoked_count = 0;
+    size_t revoked_cap = 0;
+
+    /* First pass records revoke intent across committed transactions. */
+    while (log_block != 0u) {
+        r = ext3_journal_read_block(log_block, block);
+        if (r != 0) {
+            goto out_replay;
+        }
+
+        struct ext3_journal_header* header = (struct ext3_journal_header*)block;
+        if (ext2_be32_to_cpu(header->h_magic) != EXT3_JOURNAL_MAGIC ||
+            ext2_be32_to_cpu(header->h_sequence) != replay_limit) {
+            r = 0;
+            break;
+        }
+
+        uint32_t type = ext2_be32_to_cpu(header->h_blocktype);
+        if (type == EXT3_JOURNAL_DESCRIPTOR_BLOCK) {
+            size_t tag_bytes = ext3_journal_tag_bytes();
+            size_t tag_off = sizeof(*header);
+
+            while (tag_off + tag_bytes <= g_ext2.block_size) {
+                struct ext3_journal_block_tag tag;
+                memcpy(&tag, block + tag_off, sizeof(tag));
+
+                uint16_t flags = ext2_be16_to_cpu(tag.t_flags);
+                uint32_t target = ext2_be32_to_cpu(tag.t_blocknr);
+                if (target == 0u) {
+                    r = -EINVAL;
+                    goto out_replay;
+                }
+
+                tag_off += tag_bytes;
+                if ((flags & EXT3_JOURNAL_FLAG_SAME_UUID) == 0u) {
+                    tag_off += sizeof(g_ext2.superblock.s_uuid);
+                }
+                if (tag_off > g_ext2.block_size) {
+                    r = -EINVAL;
+                    goto out_replay;
+                }
+
+                log_block = ext3_journal_next_log_block(log_block);
+                if ((flags & EXT3_JOURNAL_FLAG_LAST_TAG) != 0u) {
+                    break;
+                }
+            }
+            log_block = ext3_journal_next_log_block(log_block);
+            continue;
+        }
+
+        if (type == EXT3_JOURNAL_REVOKE_BLOCK) {
+            uint32_t used = ext2_be32_to_cpu(((struct {
+                struct ext3_journal_header header;
+                uint32_t count;
+            } __attribute__((packed))*)block)->count);
+            if (used < sizeof(struct ext3_journal_header) + sizeof(uint32_t) || used > g_ext2.block_size) {
+                r = -EINVAL;
+                goto out_replay;
+            }
+
+            for (size_t off = sizeof(struct ext3_journal_header) + sizeof(uint32_t); off + sizeof(uint32_t) <= used;
+                 off += sizeof(uint32_t)) {
+                uint32_t block_num = 0;
+                memcpy(&block_num, block + off, sizeof(block_num));
+                r = ext3_replay_append_revoke(&revoked, &revoked_count, &revoked_cap, ext2_be32_to_cpu(block_num), replay_limit);
+                if (r != 0) {
+                    goto out_replay;
+                }
+            }
+            log_block = ext3_journal_next_log_block(log_block);
+            continue;
+        }
+
+        if (type == EXT3_JOURNAL_COMMIT_BLOCK) {
+            replay_limit++;
+            log_block = ext3_journal_next_log_block(log_block);
+            continue;
+        }
+
+        r = 0;
+        break;
+    }
+
+    /* Second pass replays committed data blocks, skipping anything revoked later. */
+    log_block = g_ext2.journal.start;
+    while (log_block != 0u) {
+        if (sequence >= replay_limit) {
+            break;
+        }
+        r = ext3_journal_read_block(log_block, block);
+        if (r != 0) {
+            goto out_replay;
+        }
+
+        struct ext3_journal_header* header = (struct ext3_journal_header*)block;
+        if (ext2_be32_to_cpu(header->h_magic) != EXT3_JOURNAL_MAGIC ||
+            ext2_be32_to_cpu(header->h_sequence) != sequence) {
+            r = 0;
+            break;
+        }
+
+        uint32_t type = ext2_be32_to_cpu(header->h_blocktype);
+        if (type == EXT3_JOURNAL_DESCRIPTOR_BLOCK) {
+            size_t tag_bytes = ext3_journal_tag_bytes();
+            size_t tag_off = sizeof(*header);
+
+            while (tag_off + tag_bytes <= g_ext2.block_size) {
+                struct ext3_journal_block_tag tag;
+                memcpy(&tag, block + tag_off, sizeof(tag));
+
+                uint16_t flags = ext2_be16_to_cpu(tag.t_flags);
+                uint32_t target = ext2_be32_to_cpu(tag.t_blocknr);
+                if (target == 0u) {
+                    r = -EINVAL;
+                    goto out_replay;
+                }
+
+                tag_off += tag_bytes;
+                if ((flags & EXT3_JOURNAL_FLAG_SAME_UUID) == 0u) {
+                    tag_off += sizeof(g_ext2.superblock.s_uuid);
+                }
+                if (tag_off > g_ext2.block_size) {
+                    r = -EINVAL;
+                    goto out_replay;
+                }
+
+                log_block = ext3_journal_next_log_block(log_block);
+                r = ext3_journal_read_block(log_block, data);
+                if (r != 0) {
+                    goto out_replay;
+                }
+                if ((flags & EXT3_JOURNAL_FLAG_ESCAPE) != 0u) {
+                    uint32_t magic = ext2_cpu_to_be32(EXT3_JOURNAL_MAGIC);
+                    memcpy(data, &magic, sizeof(magic));
+                }
+                if ((flags & EXT3_JOURNAL_FLAG_DELETED) == 0u) {
+                    r = ext3_replay_append_block(&replay_blocks, &replay_count, &replay_cap, target, data);
+                    if (r != 0) {
+                        goto out_replay;
+                    }
+                }
+                if ((flags & EXT3_JOURNAL_FLAG_LAST_TAG) != 0u) {
+                    break;
+                }
+            }
+            log_block = ext3_journal_next_log_block(log_block);
+            continue;
+        }
+
+        if (type == EXT3_JOURNAL_REVOKE_BLOCK) {
+            log_block = ext3_journal_next_log_block(log_block);
+            continue;
+        }
+
+        if (type == EXT3_JOURNAL_COMMIT_BLOCK) {
+            for (size_t i = 0; i < replay_count; ++i) {
+                if (ext3_replay_block_revoked_after(revoked, revoked_count, replay_blocks[i].block_num, sequence)) {
+                    continue;
+                }
+                r = storage_write_block(replay_blocks[i].block_num, replay_blocks[i].data);
+                if (r != 0) {
+                    goto out_replay;
+                }
+            }
+            sequence++;
+            log_block = ext3_journal_next_log_block(log_block);
+            ext3_replay_free_blocks(replay_blocks, replay_count);
+            replay_blocks = NULL;
+            replay_count = 0;
+            replay_cap = 0;
+            continue;
+        }
+
+        r = 0;
+        break;
+    }
+
+    g_ext2.journal.start = 0u;
+    g_ext2.journal.sequence = sequence;
+    g_ext2.journal.needs_replay = false;
+    r = ext3_journal_sync_superblock();
+
+out_replay:
+    ext3_replay_free_blocks(replay_blocks, replay_count);
+    if (revoked != NULL) {
+        kfree(revoked);
+    }
+
+out:
+    kfree(data);
+    kfree(block);
+    return r;
+}
+
+static int ext3_journal_commit(void) {
+    int r = ext2_collect_dirty_tx_blocks();
+    if (r != 0) {
+        return r;
+    }
+    if (g_ext2.journal.tx_block_count == 0u) {
+        ext2_discard_tx_blocks();
+        return 0;
+    }
+    if (!g_ext2.journal.loaded) {
+        return ext2_checkpoint_tx_blocks();
+    }
+
+    size_t descriptor_count = ext3_journal_descriptor_count(g_ext2.journal.tx_block_count);
+    size_t required_blocks = g_ext2.journal.tx_block_count + descriptor_count + 1u;
+    if (descriptor_count == 0u || required_blocks > ext3_journal_usable_blocks()) {
+        return -ENOSPC;
+    }
+
+    uint8_t* block = kmalloc(g_ext2.block_size);
+    uint8_t* data = kmalloc(g_ext2.block_size);
+    if (block == NULL || data == NULL) {
+        if (block != NULL) {
+            kfree(block);
+        }
+        if (data != NULL) {
+            kfree(data);
+        }
+        return -ENOMEM;
+    }
+
+    g_ext2.journal.start = g_ext2.journal.first;
+    r = ext3_journal_sync_superblock();
+    if (r != 0) {
+        goto out;
+    }
+
+    uint32_t log_block = g_ext2.journal.first;
+    size_t tx_index = 0;
+    while (tx_index < g_ext2.journal.tx_block_count) {
+        memset(block, 0, g_ext2.block_size);
+        struct ext3_journal_header* header = (struct ext3_journal_header*)block;
+        header->h_magic = ext2_cpu_to_be32(EXT3_JOURNAL_MAGIC);
+        header->h_blocktype = ext2_cpu_to_be32(EXT3_JOURNAL_DESCRIPTOR_BLOCK);
+        header->h_sequence = ext2_cpu_to_be32(g_ext2.journal.sequence);
+
+        size_t tag_off = sizeof(*header);
+        size_t desc_start = tx_index;
+        while (tx_index < g_ext2.journal.tx_block_count) {
+            struct ext3_journal_block_tag tag;
+            uint16_t flags = 0u;
+            size_t need = sizeof(tag);
+            if (tx_index == desc_start) {
+                need += sizeof(g_ext2.superblock.s_uuid);
+            } else {
+                flags |= EXT3_JOURNAL_FLAG_SAME_UUID;
+            }
+            if (tag_off + need > g_ext2.block_size) {
+                break;
+            }
+
+            if (ext3_journal_block_needs_escape(g_ext2.journal.tx_blocks[tx_index].data)) {
+                flags |= EXT3_JOURNAL_FLAG_ESCAPE;
+            }
+
+            tag.t_blocknr = ext2_cpu_to_be32(g_ext2.journal.tx_blocks[tx_index].block_num);
+            tag.t_checksum = 0u;
+            tag.t_flags = 0u;
+            memcpy(block + tag_off, &tag, sizeof(tag));
+            tag_off += sizeof(tag);
+            if ((flags & EXT3_JOURNAL_FLAG_SAME_UUID) == 0u) {
+                memcpy(block + tag_off, g_ext2.superblock.s_uuid, sizeof(g_ext2.superblock.s_uuid));
+                tag_off += sizeof(g_ext2.superblock.s_uuid);
+            }
+
+            tx_index++;
+            if (tx_index == g_ext2.journal.tx_block_count || tag_off + sizeof(tag) > g_ext2.block_size) {
+                flags |= EXT3_JOURNAL_FLAG_LAST_TAG;
+            }
+
+            tag.t_flags = ext2_cpu_to_be16(flags);
+            memcpy(block + tag_off - (((flags & EXT3_JOURNAL_FLAG_SAME_UUID) == 0u) ? (sizeof(tag) + sizeof(g_ext2.superblock.s_uuid))
+                                                                                     : sizeof(tag)),
+                   &tag, sizeof(tag));
+        }
+
+        r = ext3_journal_write_block(log_block, block);
+        if (r != 0) {
+            goto out;
+        }
+        log_block = ext3_journal_next_log_block(log_block);
+
+        for (size_t i = desc_start; i < tx_index; ++i) {
+            memcpy(data, g_ext2.journal.tx_blocks[i].data, g_ext2.block_size);
+            if (ext3_journal_block_needs_escape(data)) {
+                memset(data, 0, sizeof(uint32_t));
+            }
+            r = ext3_journal_write_block(log_block, data);
+            if (r != 0) {
+                goto out;
+            }
+            log_block = ext3_journal_next_log_block(log_block);
+        }
+    }
+
+    memset(block, 0, g_ext2.block_size);
+    struct ext3_journal_header* header = (struct ext3_journal_header*)block;
+    header->h_magic = ext2_cpu_to_be32(EXT3_JOURNAL_MAGIC);
+    header->h_blocktype = ext2_cpu_to_be32(EXT3_JOURNAL_COMMIT_BLOCK);
+    header->h_sequence = ext2_cpu_to_be32(g_ext2.journal.sequence);
+    r = ext3_journal_write_block(log_block, block);
+    if (r != 0) {
+        goto out;
+    }
+
+    r = ext2_checkpoint_tx_blocks();
+    if (r != 0) {
+        goto out;
+    }
+
+    g_ext2.journal.start = 0u;
+    g_ext2.journal.sequence++;
+    r = ext3_journal_sync_superblock();
+
+out:
+    kfree(data);
+    kfree(block);
+    return r;
+}
+
+static void ext3_journal_unload(struct ext3_journal_state* journal) {
+    if (journal == NULL) {
+        return;
+    }
+
+    for (size_t i = 0; i < journal->tx_block_count; ++i) {
+        if (journal->tx_blocks[i].data != NULL) {
+            kfree(journal->tx_blocks[i].data);
+            journal->tx_blocks[i].data = NULL;
+        }
+    }
+    if (journal->tx_blocks != NULL) {
+        kfree(journal->tx_blocks);
+        journal->tx_blocks = NULL;
+    }
+    journal->tx_block_count = 0;
+    journal->tx_block_cap = 0;
+    journal->tx_failed = false;
+    journal->tx_error = 0;
+
+    if (journal->block_map != NULL) {
+        kfree(journal->block_map);
+        journal->block_map = NULL;
+    }
+    journal->block_map_count = 0;
+    journal->loaded = false;
+    journal->needs_replay = false;
+    journal->tx_depth = 0;
+}
+
+static int ext3_journal_load(void) {
+    ext3_journal_unload(&g_ext2.journal);
+
+    if (!g_ext2.has_journal) {
+        return 0;
+    }
+    if (g_ext2.has_external_journal || g_ext2.journal_inode == 0u) {
+        return -ENOTSUP;
+    }
+
+    int r = read_inode(g_ext2.journal_inode, &g_ext2.journal.inode);
+    if (r != 0) {
+        return r;
+    }
+
+    size_t journal_blocks = (size_t)(inode_file_size(&g_ext2.journal.inode) / g_ext2.block_size);
+    if (journal_blocks < 2u) {
+        return -EINVAL;
+    }
+
+    g_ext2.journal.block_map = kmalloc(journal_blocks * sizeof(*g_ext2.journal.block_map));
+    if (g_ext2.journal.block_map == NULL) {
+        return -ENOMEM;
+    }
+    g_ext2.journal.block_map_count = journal_blocks;
+
+    for (size_t i = 0; i < journal_blocks; ++i) {
+        uint32_t phys = 0;
+        r = inode_block_number(&g_ext2.journal.inode, (uint32_t)i, &phys);
+        if (r != 0 || phys == 0u) {
+            ext3_journal_unload(&g_ext2.journal);
+            return (r != 0) ? r : -EINVAL;
+        }
+        g_ext2.journal.block_map[i] = phys;
+    }
+
+    g_ext2.journal.loaded = true;
+
+    uint8_t* block = kmalloc(g_ext2.block_size);
+    if (block == NULL) {
+        ext3_journal_unload(&g_ext2.journal);
+        return -ENOMEM;
+    }
+
+    r = ext3_journal_read_block(0u, block);
+    if (r != 0) {
+        kfree(block);
+        ext3_journal_unload(&g_ext2.journal);
+        return r;
+    }
+    memset(&g_ext2.journal.superblock, 0, sizeof(g_ext2.journal.superblock));
+    memcpy(&g_ext2.journal.superblock, block, sizeof(g_ext2.journal.superblock));
+    kfree(block);
+
+    uint32_t magic = ext2_be32_to_cpu(g_ext2.journal.superblock.s_header.h_magic);
+    uint32_t type = ext2_be32_to_cpu(g_ext2.journal.superblock.s_header.h_blocktype);
+    if (magic != EXT3_JOURNAL_MAGIC || (type != EXT3_JOURNAL_SUPERBLOCK_V1 && type != EXT3_JOURNAL_SUPERBLOCK_V2)) {
+        ext3_journal_unload(&g_ext2.journal);
+        return -EINVAL;
+    }
+
+    g_ext2.journal.inode_num = g_ext2.journal_inode;
+    g_ext2.journal.maxlen = ext2_be32_to_cpu(g_ext2.journal.superblock.s_maxlen);
+    g_ext2.journal.first = ext2_be32_to_cpu(g_ext2.journal.superblock.s_first);
+    g_ext2.journal.sequence = ext2_be32_to_cpu(g_ext2.journal.superblock.s_sequence);
+    g_ext2.journal.start = ext2_be32_to_cpu(g_ext2.journal.superblock.s_start);
+    g_ext2.journal.max_transaction = ext2_be32_to_cpu(g_ext2.journal.superblock.s_max_transaction);
+    g_ext2.journal.max_trans_data = ext2_be32_to_cpu(g_ext2.journal.superblock.s_max_trans_data);
+    g_ext2.journal.needs_replay = g_ext2.journal.start != 0u || g_ext2.needs_recovery;
+
+    if (g_ext2.journal.maxlen == 0u || g_ext2.journal.maxlen > journal_blocks || g_ext2.journal.first == 0u ||
+        g_ext2.journal.first >= g_ext2.journal.maxlen) {
+        ext3_journal_unload(&g_ext2.journal);
+        return -EINVAL;
+    }
+
+    return 0;
+}
+
+static int ext2_begin_mutation(void) {
+    if (g_ext2.read_only) {
+        return -EROFS;
+    }
+    if (g_ext2.journal.tx_depth == 0u) {
+        ext2_discard_tx_blocks();
+    }
+    g_ext2.journal.tx_depth++;
+    return 0;
+}
+
 static int finish_mutation(int result) {
-    if (result != 0) {
+    if (!ext2_tx_active()) {
+        if (result != 0) {
+            return result;
+        }
+        return flush_block_cache();
+    }
+
+    if (result != 0 && !g_ext2.journal.tx_failed) {
+        g_ext2.journal.tx_failed = true;
+        g_ext2.journal.tx_error = result;
+    }
+
+    if (g_ext2.journal.tx_depth > 1u) {
+        g_ext2.journal.tx_depth--;
         return result;
     }
-    return flush_block_cache();
+
+    g_ext2.journal.tx_depth = 0u;
+    if (g_ext2.journal.tx_failed) {
+        int error = g_ext2.journal.tx_error;
+        ext2_abort_mutation();
+        return error;
+    }
+
+    int r = g_ext2.has_journal ? ext3_journal_commit() : ext2_checkpoint_tx_blocks();
+    if (r != 0) {
+        ext2_abort_mutation();
+        return r;
+    }
+
+    return result;
 }
 
 static uint8_t ext2_ft_to_dtype(uint8_t file_type, uint32_t mode) {
@@ -1544,6 +2571,167 @@ static int write_dirent(struct ext2_inode* dir, size_t offset, uint32_t inode_nu
     return 0;
 }
 
+static int ext2_append_dir_record(struct ext2_dir_record** records_out, size_t* count_out, size_t* cap_out, uint32_t inode_num,
+                                  const char* name, uint8_t file_type) {
+    if (records_out == NULL || count_out == NULL || cap_out == NULL || name == NULL || name[0] == '\0' ||
+        strlen(name) > EXT2_NAME_LEN) {
+        return -EINVAL;
+    }
+
+    if (*count_out == *cap_out) {
+        size_t new_cap = (*cap_out == 0u) ? 16u : *cap_out * 2u;
+        struct ext2_dir_record* new_records = kmalloc(new_cap * sizeof(*new_records));
+        if (new_records == NULL) {
+            return -ENOMEM;
+        }
+        if (*records_out != NULL) {
+            memcpy(new_records, *records_out, *count_out * sizeof(*new_records));
+            kfree(*records_out);
+        }
+        *records_out = new_records;
+        *cap_out = new_cap;
+    }
+
+    (*records_out)[*count_out].inode = inode_num;
+    (*records_out)[*count_out].file_type = file_type;
+    strcpy((*records_out)[*count_out].name, name);
+    (*count_out)++;
+    return 0;
+}
+
+static int ext2_collect_dir_records(const struct ext2_inode* dir_inode, struct ext2_dir_record** records_out, size_t* count_out) {
+    if (dir_inode == NULL || records_out == NULL || count_out == NULL) {
+        return -EINVAL;
+    }
+
+    *records_out = NULL;
+    *count_out = 0;
+
+    size_t cap = 0;
+    size_t dir_size = (size_t)inode_file_size(dir_inode);
+    size_t offset = 0;
+    while (offset + sizeof(struct ext2_dirent_head) <= dir_size) {
+        struct ext2_dirent_head head;
+        int rr = read_inode_bytes(dir_inode, dir_size, offset, &head, sizeof(head));
+        if (rr < (int)sizeof(head) || head.rec_len < sizeof(head) || offset + head.rec_len > dir_size) {
+            if (*records_out != NULL) {
+                kfree(*records_out);
+            }
+            *records_out = NULL;
+            *count_out = 0;
+            return -EINVAL;
+        }
+
+        if (head.inode != 0 && head.name_len != 0 && head.name_len <= head.rec_len - sizeof(head)) {
+            char name[EXT2_NAME_LEN + 1u];
+            rr = read_inode_bytes(dir_inode, dir_size, offset + sizeof(head), name, head.name_len);
+            if (rr < 0) {
+                if (*records_out != NULL) {
+                    kfree(*records_out);
+                }
+                *records_out = NULL;
+                *count_out = 0;
+                return rr;
+            }
+            name[head.name_len] = '\0';
+            rr = ext2_append_dir_record(records_out, count_out, &cap, head.inode, name, head.file_type);
+            if (rr != 0) {
+                if (*records_out != NULL) {
+                    kfree(*records_out);
+                }
+                *records_out = NULL;
+                *count_out = 0;
+                return rr;
+            }
+        }
+
+        offset += head.rec_len;
+    }
+
+    return 0;
+}
+
+static int ext2_write_directory_records(struct ext2_inode* dir_inode, const struct ext2_dir_record* records, size_t count) {
+    if (dir_inode == NULL || (records == NULL && count != 0u)) {
+        return -EINVAL;
+    }
+
+    size_t offset = 0;
+    size_t index = 0;
+    while (index < count) {
+        size_t block_start = offset;
+        size_t block_first = index;
+        size_t used = 0;
+
+        while (index < count) {
+            size_t need = ext2_dir_rec_len(strlen(records[index].name));
+            if (need > g_ext2.block_size) {
+                return -EINVAL;
+            }
+            if (used != 0u && used + need > g_ext2.block_size) {
+                break;
+            }
+            used += need;
+            index++;
+        }
+
+        for (size_t i = block_first; i < index; ++i) {
+            uint16_t rec_len = (uint16_t)ext2_dir_rec_len(strlen(records[i].name));
+            if (i + 1u == index) {
+                rec_len = (uint16_t)(g_ext2.block_size - (offset - block_start));
+            }
+            int wr = write_dirent(dir_inode, offset, records[i].inode, rec_len, records[i].name, records[i].file_type);
+            if (wr != 0) {
+                return wr;
+            }
+            offset += rec_len;
+        }
+
+        offset = block_start + g_ext2.block_size;
+    }
+
+    set_inode_file_size(dir_inode, offset);
+    return 0;
+}
+
+static int ext2_deindex_directory(uint32_t dir_ino) {
+    struct ext2_inode dir_inode;
+    int r = read_inode(dir_ino, &dir_inode);
+    if (r != 0) {
+        return r;
+    }
+    if ((dir_inode.i_mode & FS_S_IFMT) != FS_S_IFDIR) {
+        return -ENOTDIR;
+    }
+    if ((dir_inode.i_flags & EXT2_INDEX_FL) == 0u) {
+        return 0;
+    }
+
+    /* Rewrite indexed directories into a linear layout before mutating them. */
+    struct ext2_dir_record* records = NULL;
+    size_t count = 0;
+    r = ext2_collect_dir_records(&dir_inode, &records, &count);
+    if (r != 0) {
+        return r;
+    }
+
+    size_t old_size = (size_t)inode_file_size(&dir_inode);
+    r = free_inode_blocks_from(&dir_inode, old_size, 0u);
+    if (r == 0) {
+        set_inode_file_size(&dir_inode, 0u);
+        dir_inode.i_flags &= ~EXT2_INDEX_FL;
+        r = ext2_write_directory_records(&dir_inode, records, count);
+    }
+    if (r == 0) {
+        r = write_inode(dir_ino, &dir_inode);
+    }
+
+    if (records != NULL) {
+        kfree(records);
+    }
+    return r;
+}
+
 static int find_dirent(uint32_t dir_ino, const char* name, size_t* offset_out, struct ext2_dirent_head* head_out,
                        size_t* prev_offset_out, struct ext2_dirent_head* prev_head_out) {
     struct ext2_inode dir_inode;
@@ -1611,6 +2799,10 @@ static int add_dirent(uint32_t dir_ino, const char* name, uint32_t child_ino, ui
     if (find_child_inode(dir_ino, name, NULL, NULL) == 0) {
         return -EEXIST;
     }
+    int dr = ext2_deindex_directory(dir_ino);
+    if (dr != 0) {
+        return dr;
+    }
 
     struct ext2_inode dir_inode;
     int ir = read_inode(dir_ino, &dir_inode);
@@ -1672,6 +2864,14 @@ static int remove_dirent(uint32_t dir_ino, const char* name, uint32_t* child_out
     struct ext2_dirent_head head;
     struct ext2_dirent_head prev_head;
     int r = find_dirent(dir_ino, name, &offset, &head, &prev_offset, &prev_head);
+    if (r != 0) {
+        return r;
+    }
+    r = ext2_deindex_directory(dir_ino);
+    if (r != 0) {
+        return r;
+    }
+    r = find_dirent(dir_ino, name, &offset, &head, &prev_offset, &prev_head);
     if (r != 0) {
         return r;
     }
@@ -1764,6 +2964,40 @@ static void release_block_cache(void) {
     release_mount_cache(&g_ext2);
 }
 
+static int ext2_validate_mount_features(const struct ext2_superblock* superblock, bool read_only) {
+    if (superblock == NULL) {
+        return -EINVAL;
+    }
+    (void)read_only;
+
+    const uint32_t supported_compat = EXT2_FEATURE_COMPAT_DIR_PREALLOC | EXT2_FEATURE_COMPAT_IMAGIC_INODES |
+                                      EXT2_FEATURE_COMPAT_HAS_JOURNAL | EXT2_FEATURE_COMPAT_EXT_ATTR |
+                                      EXT2_FEATURE_COMPAT_RESIZE_INO | EXT2_FEATURE_COMPAT_DIR_INDEX;
+    const uint32_t supported_incompat = EXT2_FEATURE_INCOMPAT_COMPRESSION | EXT2_FEATURE_INCOMPAT_FILETYPE |
+                                        EXT2_FEATURE_INCOMPAT_RECOVER | EXT2_FEATURE_INCOMPAT_JOURNAL_DEV |
+                                        EXT2_FEATURE_INCOMPAT_META_BG;
+    const uint32_t supported_ro_compat = EXT2_FEATURE_RO_COMPAT_SPARSE_SUPER | EXT2_FEATURE_RO_COMPAT_LARGE_FILE |
+                                         EXT2_FEATURE_RO_COMPAT_BTREE_DIR;
+
+    if ((superblock->s_feature_compat & ~supported_compat) != 0u) {
+        return -ENOTSUP;
+    }
+    if ((superblock->s_feature_incompat & ~supported_incompat) != 0u) {
+        return -ENOTSUP;
+    }
+    if ((superblock->s_feature_ro_compat & ~supported_ro_compat) != 0u) {
+        return -ENOTSUP;
+    }
+    if ((superblock->s_feature_incompat & EXT2_FEATURE_INCOMPAT_COMPRESSION) != 0u) {
+        return -ENOTSUP;
+    }
+    if ((superblock->s_feature_incompat & EXT2_FEATURE_INCOMPAT_META_BG) != 0u) {
+        return -ENOTSUP;
+    }
+
+    return 0;
+}
+
 static int ext2_build_mount(struct ext2_mount* mount, const char* mount_path, const struct ext2_storage_ops* ops, void* ctx,
                             size_t size, bool read_only) {
     if (mount == NULL || mount_path == NULL || mount_path[0] != '/' || ops == NULL || ops->read == NULL || size < 2048u) {
@@ -1789,6 +3023,12 @@ static int ext2_build_mount(struct ext2_mount* mount, const char* mount_path, co
         return -EINVAL;
     }
 
+    int vr = ext2_validate_mount_features(&mount->superblock, read_only);
+    if (vr != 0) {
+        memset(mount, 0, sizeof(*mount));
+        return vr;
+    }
+
     mount->block_size = 1024u << mount->superblock.s_log_block_size;
     mount->inodes_count = mount->superblock.s_inodes_count;
     mount->blocks_count = mount->superblock.s_blocks_count;
@@ -1799,6 +3039,19 @@ static int ext2_build_mount(struct ext2_mount* mount, const char* mount_path, co
     mount->inode_size = (mount->superblock.s_inode_size >= sizeof(struct ext2_inode)) ? mount->superblock.s_inode_size
                                                                                        : sizeof(struct ext2_inode);
     mount->group_count = (mount->blocks_count + mount->blocks_per_group - 1u) / mount->blocks_per_group;
+    mount->feature_compat = mount->superblock.s_feature_compat;
+    mount->feature_incompat = mount->superblock.s_feature_incompat;
+    mount->feature_ro_compat = mount->superblock.s_feature_ro_compat;
+    mount->has_journal = (mount->feature_compat & EXT2_FEATURE_COMPAT_HAS_JOURNAL) != 0u;
+    mount->has_external_journal = (mount->feature_incompat & EXT2_FEATURE_INCOMPAT_JOURNAL_DEV) != 0u;
+    mount->needs_recovery = (mount->feature_incompat & EXT2_FEATURE_INCOMPAT_RECOVER) != 0u;
+    mount->has_ext_attr = (mount->feature_compat & EXT2_FEATURE_COMPAT_EXT_ATTR) != 0u;
+    mount->has_resize_inode = (mount->feature_compat & EXT2_FEATURE_COMPAT_RESIZE_INO) != 0u;
+    mount->uses_dir_index = (mount->feature_compat & EXT2_FEATURE_COMPAT_DIR_INDEX) != 0u;
+    mount->uses_btree_dir = (mount->feature_ro_compat & EXT2_FEATURE_RO_COMPAT_BTREE_DIR) != 0u;
+    mount->journal_inode = mount->superblock.s_journal_inum;
+    mount->journal_device = mount->superblock.s_journal_dev;
+    mount->last_orphan = mount->superblock.s_last_orphan;
     mount->mounted = (mount->block_size >= 1024u && mount->group_count != 0u && mount->inodes_per_group != 0u);
     if (!mount->mounted) {
         memset(mount, 0, sizeof(*mount));
@@ -1814,15 +3067,50 @@ static int ext2_build_mount(struct ext2_mount* mount, const char* mount_path, co
         }
     }
 
-    if (!read_only && (mount->superblock.s_state & EXT2_VALID_FS) != 0u) {
+    struct ext2_mount* saved = g_ext2_current;
+    g_ext2_current = mount;
+
+    int jr = ext3_journal_load();
+    if (jr != 0) {
+        g_ext2_current = saved;
+        ext3_journal_unload(&mount->journal);
+        release_mount_cache(mount);
+        memset(mount, 0, sizeof(*mount));
+        return jr;
+    }
+    if (mount->journal.needs_replay) {
+        if (read_only) {
+            g_ext2_current = saved;
+            ext3_journal_unload(&mount->journal);
+            release_mount_cache(mount);
+            memset(mount, 0, sizeof(*mount));
+            return -EROFS;
+        }
+        jr = ext3_journal_replay();
+        if (jr != 0) {
+            g_ext2_current = saved;
+            ext3_journal_unload(&mount->journal);
+            release_mount_cache(mount);
+            memset(mount, 0, sizeof(*mount));
+            return jr;
+        }
+    }
+
+    if (!read_only) {
         mount->superblock.s_state &= (uint16_t)~EXT2_VALID_FS;
-        if (ops->write == NULL || ops->write(ctx, 1024u, &mount->superblock, sizeof(mount->superblock)) != 0) {
+        if (mount->has_journal) {
+            mount->superblock.s_feature_incompat |= EXT2_FEATURE_INCOMPAT_RECOVER;
+        }
+        if (write_superblock() != 0 || flush_block_cache() != 0) {
+            g_ext2_current = saved;
+            ext3_journal_unload(&mount->journal);
             release_mount_cache(mount);
             memset(mount, 0, sizeof(*mount));
             return -EINVAL;
         }
     }
 
+    g_ext2_current = saved;
     return 0;
 }
 
@@ -1835,6 +3123,7 @@ static void ext2_destroy_mount(struct ext2_mount* mount) {
     g_ext2_current = mount;
     (void)ext2_sync_current(true);
     release_block_cache();
+    ext3_journal_unload(&mount->journal);
     g_ext2_current = saved;
     if (mount->ops == &g_ext2_file_ops) {
         memset(&mount->file_storage, 0, sizeof(mount->file_storage));
@@ -2112,44 +3401,57 @@ int ext2_write(struct fs_entry* entry, size_t offset, const void* buf, size_t co
         return -EINVAL;
     }
 
+    int mr = ext2_begin_mutation();
+    if (mr != 0) {
+        ext2_pop_mount(saved);
+        return mr;
+    }
+
     struct ext2_inode inode;
     int ir = read_inode(entry->inode, &inode);
     if (ir != 0) {
+        int r = finish_mutation(ir);
         ext2_pop_mount(saved);
-        return ir;
+        return r;
     }
     if ((inode.i_mode & FS_S_IFMT) != FS_S_IFREG) {
+        int r = finish_mutation(-EINVAL);
         ext2_pop_mount(saved);
-        return -EINVAL;
+        return r;
     }
 
     size_t file_size = (size_t)inode_file_size(&inode);
     if (offset > file_size) {
         int zr = zero_inode_span(&inode, file_size, offset - file_size);
         if (zr < 0) {
+            int r = finish_mutation(zr);
             ext2_pop_mount(saved);
-            return zr;
+            return r;
         }
     }
 
     int wr = write_inode_span(&inode, offset, buf, count);
     if (wr < 0) {
+        int r = finish_mutation(wr);
         ext2_pop_mount(saved);
-        return wr;
+        return r;
     }
 
     size_t end = offset + (size_t)wr;
     if (end > file_size) {
         set_inode_file_size(&inode, end);
-        entry->size = end;
     }
 
     int iw = write_inode(entry->inode, &inode);
     if (iw != 0) {
+        int r = finish_mutation(iw);
         ext2_pop_mount(saved);
-        return iw;
+        return r;
     }
     int r = finish_mutation(wr);
+    if (r >= 0 && end > file_size) {
+        entry->size = end;
+    }
     ext2_pop_mount(saved);
     return r;
 }
@@ -2168,40 +3470,53 @@ int ext2_truncate(struct fs_entry* entry, size_t size) {
         return -EROFS;
     }
 
+    int mr = ext2_begin_mutation();
+    if (mr != 0) {
+        ext2_pop_mount(saved);
+        return mr;
+    }
+
     struct ext2_inode inode;
     int ir = read_inode(entry->inode, &inode);
     if (ir != 0) {
+        int r = finish_mutation(ir);
         ext2_pop_mount(saved);
-        return ir;
+        return r;
     }
     if ((inode.i_mode & FS_S_IFMT) != FS_S_IFREG) {
+        int r = finish_mutation(-EINVAL);
         ext2_pop_mount(saved);
-        return -EINVAL;
+        return r;
     }
 
     size_t old_size = (size_t)inode_file_size(&inode);
     if (size > old_size) {
         int zr = zero_inode_span(&inode, old_size, size - old_size);
         if (zr < 0) {
+            int r = finish_mutation(zr);
             ext2_pop_mount(saved);
-            return zr;
+            return r;
         }
     } else if (size < old_size) {
         int fr = free_inode_blocks_from(&inode, old_size, size);
         if (fr != 0) {
+            int r = finish_mutation(fr);
             ext2_pop_mount(saved);
-            return fr;
+            return r;
         }
     }
 
     set_inode_file_size(&inode, size);
     int iw = write_inode(entry->inode, &inode);
     if (iw != 0) {
+        int r = finish_mutation(iw);
         ext2_pop_mount(saved);
-        return iw;
+        return r;
     }
-    entry->size = size;
     int r = finish_mutation(0);
+    if (r == 0) {
+        entry->size = size;
+    }
     ext2_pop_mount(saved);
     return r;
 }
@@ -2272,25 +3587,33 @@ int ext2_create(const char* path, uint32_t mode, struct fs_entry* out) {
         ext2_pop_mount(saved);
         return -EROFS;
     }
+    int mr = ext2_begin_mutation();
+    if (mr != 0) {
+        ext2_pop_mount(saved);
+        return mr;
+    }
 
     char name[EXT2_NAME_LEN + 1u];
     uint32_t parent_ino = 0;
     int pr = lookup_parent_inode(path, &parent_ino, name, sizeof(name));
     if (pr != 0) {
+        int r = finish_mutation(pr);
         ext2_pop_mount(saved);
-        return pr;
+        return r;
     }
     if (find_child_inode(parent_ino, name, NULL, NULL) == 0) {
+        int r = finish_mutation(-EEXIST);
         ext2_pop_mount(saved);
-        return -EEXIST;
+        return r;
     }
 
     uint32_t file_mode = (mode & FS_S_IFMT) == 0u ? (FS_S_IFREG | (mode & 07777u)) : mode;
     uint32_t inode_num = 0;
     int cr = create_inode_with_mode(file_mode, 0, 0, 1, 0, &inode_num, NULL);
     if (cr != 0) {
+        int r = finish_mutation(cr);
         ext2_pop_mount(saved);
-        return cr;
+        return r;
     }
     int ar = add_dirent(parent_ino, name, inode_num, ext2_mode_to_file_type(file_mode));
     if (ar != 0) {
@@ -2298,8 +3621,9 @@ int ext2_create(const char* path, uint32_t mode, struct fs_entry* out) {
         if (read_inode(inode_num, &inode) == 0) {
             (void)free_inode_contents(inode_num, &inode);
         }
+        int r = finish_mutation(ar);
         ext2_pop_mount(saved);
-        return ar;
+        return r;
     }
 
     int r = finish_mutation(fill_entry(path, inode_num, out));
@@ -2317,30 +3641,39 @@ int ext2_mknod(const char* path, uint32_t mode, uint32_t rdev, struct fs_entry* 
         ext2_pop_mount(saved);
         return -EROFS;
     }
+    int mr = ext2_begin_mutation();
+    if (mr != 0) {
+        ext2_pop_mount(saved);
+        return mr;
+    }
 
     uint32_t type = mode & FS_S_IFMT;
     if (type != FS_S_IFREG && type != FS_S_IFCHR && type != FS_S_IFBLK && type != FS_S_IFIFO && type != FS_S_IFSOCK) {
+        int r = finish_mutation(-EINVAL);
         ext2_pop_mount(saved);
-        return -EINVAL;
+        return r;
     }
 
     char name[EXT2_NAME_LEN + 1u];
     uint32_t parent_ino = 0;
     int pr = lookup_parent_inode(path, &parent_ino, name, sizeof(name));
     if (pr != 0) {
+        int r = finish_mutation(pr);
         ext2_pop_mount(saved);
-        return pr;
+        return r;
     }
     if (find_child_inode(parent_ino, name, NULL, NULL) == 0) {
+        int r = finish_mutation(-EEXIST);
         ext2_pop_mount(saved);
-        return -EEXIST;
+        return r;
     }
 
     uint32_t inode_num = 0;
     int cr = create_inode_with_mode(mode, 0, 0, 1, rdev, &inode_num, NULL);
     if (cr != 0) {
+        int r = finish_mutation(cr);
         ext2_pop_mount(saved);
-        return cr;
+        return r;
     }
     int ar = add_dirent(parent_ino, name, inode_num, ext2_mode_to_file_type(mode));
     if (ar != 0) {
@@ -2348,8 +3681,9 @@ int ext2_mknod(const char* path, uint32_t mode, uint32_t rdev, struct fs_entry* 
         if (read_inode(inode_num, &inode) == 0) {
             (void)free_inode_contents(inode_num, &inode);
         }
+        int r = finish_mutation(ar);
         ext2_pop_mount(saved);
-        return ar;
+        return r;
     }
 
     int r = finish_mutation(fill_entry(path, inode_num, out));
@@ -2367,17 +3701,24 @@ int ext2_mkdir(const char* path, uint32_t mode, struct fs_entry* out) {
         ext2_pop_mount(saved);
         return -EROFS;
     }
+    int mr = ext2_begin_mutation();
+    if (mr != 0) {
+        ext2_pop_mount(saved);
+        return mr;
+    }
 
     char name[EXT2_NAME_LEN + 1u];
     uint32_t parent_ino = 0;
     int pr = lookup_parent_inode(path, &parent_ino, name, sizeof(name));
     if (pr != 0) {
+        int r = finish_mutation(pr);
         ext2_pop_mount(saved);
-        return pr;
+        return r;
     }
     if (find_child_inode(parent_ino, name, NULL, NULL) == 0) {
+        int r = finish_mutation(-EEXIST);
         ext2_pop_mount(saved);
-        return -EEXIST;
+        return r;
     }
 
     uint32_t inode_num = 0;
@@ -2385,8 +3726,9 @@ int ext2_mkdir(const char* path, uint32_t mode, struct fs_entry* out) {
     uint32_t dir_mode = FS_S_IFDIR | (mode & 07777u);
     int cr = create_inode_with_mode(dir_mode, 0, 0, 2, 0, &inode_num, &inode);
     if (cr != 0) {
+        int r = finish_mutation(cr);
         ext2_pop_mount(saved);
-        return cr;
+        return r;
     }
 
     int wr = write_dirent(&inode, 0, inode_num, ext2_dir_rec_len(1), ".", EXT2_FT_DIR);
@@ -2400,15 +3742,17 @@ int ext2_mkdir(const char* path, uint32_t mode, struct fs_entry* out) {
     }
     if (wr != 0) {
         (void)free_inode_contents(inode_num, &inode);
+        int r = finish_mutation(wr);
         ext2_pop_mount(saved);
-        return wr;
+        return r;
     }
 
     int ar = add_dirent(parent_ino, name, inode_num, EXT2_FT_DIR);
     if (ar != 0) {
         (void)free_inode_contents(inode_num, &inode);
+        int r = finish_mutation(ar);
         ext2_pop_mount(saved);
-        return ar;
+        return r;
     }
 
     struct ext2_inode parent;
@@ -2435,25 +3779,33 @@ int ext2_symlink(const char* target, const char* linkpath, struct fs_entry* out)
         ext2_pop_mount(saved);
         return -EROFS;
     }
+    int mr = ext2_begin_mutation();
+    if (mr != 0) {
+        ext2_pop_mount(saved);
+        return mr;
+    }
 
     char name[EXT2_NAME_LEN + 1u];
     uint32_t parent_ino = 0;
     int pr = lookup_parent_inode(linkpath, &parent_ino, name, sizeof(name));
     if (pr != 0) {
+        int r = finish_mutation(pr);
         ext2_pop_mount(saved);
-        return pr;
+        return r;
     }
     if (find_child_inode(parent_ino, name, NULL, NULL) == 0) {
+        int r = finish_mutation(-EEXIST);
         ext2_pop_mount(saved);
-        return -EEXIST;
+        return r;
     }
 
     uint32_t inode_num = 0;
     struct ext2_inode inode;
     int cr = create_inode_with_mode(FS_S_IFLNK | 0777u, 0, 0, 1, 0, &inode_num, &inode);
     if (cr != 0) {
+        int r = finish_mutation(cr);
         ext2_pop_mount(saved);
-        return cr;
+        return r;
     }
 
     size_t target_len = strlen(target);
@@ -2464,8 +3816,9 @@ int ext2_symlink(const char* target, const char* linkpath, struct fs_entry* out)
         int wr = write_inode_span(&inode, 0, target, target_len);
         if (wr < (int)target_len) {
             (void)free_inode_contents(inode_num, &inode);
+            int r = finish_mutation(wr < 0 ? wr : -ENOSPC);
             ext2_pop_mount(saved);
-            return wr < 0 ? wr : -ENOSPC;
+            return r;
         }
         set_inode_file_size(&inode, target_len);
     }
@@ -2473,14 +3826,16 @@ int ext2_symlink(const char* target, const char* linkpath, struct fs_entry* out)
     int wr = write_inode(inode_num, &inode);
     if (wr != 0) {
         (void)free_inode_contents(inode_num, &inode);
+        int r = finish_mutation(wr);
         ext2_pop_mount(saved);
-        return wr;
+        return r;
     }
     int ar = add_dirent(parent_ino, name, inode_num, EXT2_FT_SYMLINK);
     if (ar != 0) {
         (void)free_inode_contents(inode_num, &inode);
+        int r = finish_mutation(ar);
         ext2_pop_mount(saved);
-        return ar;
+        return r;
     }
 
     int r = finish_mutation(fill_entry(linkpath, inode_num, out));
@@ -2502,35 +3857,45 @@ int ext2_link(const char* existing, const char* newpath) {
         ext2_pop_mount(saved);
         return -EROFS;
     }
+    int mr = ext2_begin_mutation();
+    if (mr != 0) {
+        ext2_pop_mount(saved);
+        return mr;
+    }
 
     uint32_t old_ino = 0;
     int lr = lookup_inode_number(existing, &old_ino);
     if (lr != 0) {
+        int r = finish_mutation(lr);
         ext2_pop_mount(saved);
-        return lr;
+        return r;
     }
     struct ext2_inode old_inode;
     lr = read_inode(old_ino, &old_inode);
     if (lr != 0) {
+        int r = finish_mutation(lr);
         ext2_pop_mount(saved);
-        return lr;
+        return r;
     }
     if ((old_inode.i_mode & FS_S_IFMT) == FS_S_IFDIR) {
+        int r = finish_mutation(-EISDIR);
         ext2_pop_mount(saved);
-        return -EISDIR;
+        return r;
     }
 
     char name[EXT2_NAME_LEN + 1u];
     uint32_t parent_ino = 0;
     int pr = lookup_parent_inode(newpath, &parent_ino, name, sizeof(name));
     if (pr != 0) {
+        int r = finish_mutation(pr);
         ext2_pop_mount(saved);
-        return pr;
+        return r;
     }
     int ar = add_dirent(parent_ino, name, old_ino, ext2_mode_to_file_type(old_inode.i_mode));
     if (ar != 0) {
+        int r = finish_mutation(ar);
         ext2_pop_mount(saved);
-        return ar;
+        return r;
     }
     old_inode.i_links_count++;
     int r = finish_mutation(write_inode(old_ino, &old_inode));
@@ -2548,32 +3913,41 @@ int ext2_unlink(const char* path) {
         ext2_pop_mount(saved);
         return -EROFS;
     }
+    int mr = ext2_begin_mutation();
+    if (mr != 0) {
+        ext2_pop_mount(saved);
+        return mr;
+    }
 
     char name[EXT2_NAME_LEN + 1u];
     uint32_t parent_ino = 0;
     int pr = lookup_parent_inode(path, &parent_ino, name, sizeof(name));
     if (pr != 0) {
+        int r = finish_mutation(pr);
         ext2_pop_mount(saved);
-        return pr;
+        return r;
     }
 
     uint32_t child_ino = 0;
     int rr = remove_dirent(parent_ino, name, &child_ino, NULL);
     if (rr != 0) {
+        int r = finish_mutation(rr);
         ext2_pop_mount(saved);
-        return rr;
+        return r;
     }
 
     struct ext2_inode child;
     rr = read_inode(child_ino, &child);
     if (rr != 0) {
+        int r = finish_mutation(rr);
         ext2_pop_mount(saved);
-        return rr;
+        return r;
     }
     if ((child.i_mode & FS_S_IFMT) == FS_S_IFDIR) {
         (void)add_dirent(parent_ino, name, child_ino, EXT2_FT_DIR);
+        int r = finish_mutation(-EISDIR);
         ext2_pop_mount(saved);
-        return -EISDIR;
+        return r;
     }
     if (child.i_links_count > 0u) {
         child.i_links_count--;
@@ -2598,44 +3972,56 @@ int ext2_rmdir(const char* path) {
         ext2_pop_mount(saved);
         return -EROFS;
     }
+    int mr = ext2_begin_mutation();
+    if (mr != 0) {
+        ext2_pop_mount(saved);
+        return mr;
+    }
 
     uint32_t dir_ino = 0;
     int lr = lookup_inode_number(path, &dir_ino);
     if (lr != 0) {
+        int r = finish_mutation(lr);
         ext2_pop_mount(saved);
-        return lr;
+        return r;
     }
     if (dir_ino == EXT2_ROOT_INO) {
+        int r = finish_mutation(-EINVAL);
         ext2_pop_mount(saved);
-        return -EINVAL;
+        return r;
     }
     struct ext2_inode dir_inode;
     lr = read_inode(dir_ino, &dir_inode);
     if (lr != 0) {
+        int r = finish_mutation(lr);
         ext2_pop_mount(saved);
-        return lr;
+        return r;
     }
     if ((dir_inode.i_mode & FS_S_IFMT) != FS_S_IFDIR) {
+        int r = finish_mutation(-ENOTDIR);
         ext2_pop_mount(saved);
-        return -ENOTDIR;
+        return r;
     }
     if (!dir_is_empty(dir_ino)) {
+        int r = finish_mutation(-ENOTEMPTY);
         ext2_pop_mount(saved);
-        return -ENOTEMPTY;
+        return r;
     }
 
     char name[EXT2_NAME_LEN + 1u];
     uint32_t parent_ino = 0;
     int pr = lookup_parent_inode(path, &parent_ino, name, sizeof(name));
     if (pr != 0) {
+        int r = finish_mutation(pr);
         ext2_pop_mount(saved);
-        return pr;
+        return r;
     }
     uint32_t removed = 0;
     int rr = remove_dirent(parent_ino, name, &removed, NULL);
     if (rr != 0) {
+        int r = finish_mutation(rr);
         ext2_pop_mount(saved);
-        return rr;
+        return r;
     }
 
     struct ext2_inode parent;
@@ -2658,18 +4044,25 @@ int ext2_chmod(const char* path, uint32_t mode) {
         ext2_pop_mount(saved);
         return -EROFS;
     }
+    int mr = ext2_begin_mutation();
+    if (mr != 0) {
+        ext2_pop_mount(saved);
+        return mr;
+    }
 
     uint32_t inode_num = 0;
     int r = lookup_inode_number(path, &inode_num);
     if (r != 0) {
+        int fr = finish_mutation(r);
         ext2_pop_mount(saved);
-        return r;
+        return fr;
     }
     struct ext2_inode inode;
     r = read_inode(inode_num, &inode);
     if (r != 0) {
+        int fr = finish_mutation(r);
         ext2_pop_mount(saved);
-        return r;
+        return fr;
     }
     inode.i_mode = (uint16_t)((inode.i_mode & FS_S_IFMT) | (mode & 07777u));
     r = finish_mutation(write_inode(inode_num, &inode));
@@ -2687,18 +4080,25 @@ int ext2_chown(const char* path, uint32_t uid, uint32_t gid) {
         ext2_pop_mount(saved);
         return -EROFS;
     }
+    int mr = ext2_begin_mutation();
+    if (mr != 0) {
+        ext2_pop_mount(saved);
+        return mr;
+    }
 
     uint32_t inode_num = 0;
     int r = lookup_inode_number(path, &inode_num);
     if (r != 0) {
+        int fr = finish_mutation(r);
         ext2_pop_mount(saved);
-        return r;
+        return fr;
     }
     struct ext2_inode inode;
     r = read_inode(inode_num, &inode);
     if (r != 0) {
+        int fr = finish_mutation(r);
         ext2_pop_mount(saved);
-        return r;
+        return fr;
     }
     if (uid != UINT32_MAX) {
         inode.i_uid = (uint16_t)uid;
@@ -2725,32 +4125,41 @@ int ext2_rename(const char* oldpath, const char* newpath) {
         ext2_pop_mount(saved);
         return -EROFS;
     }
+    int mr = ext2_begin_mutation();
+    if (mr != 0) {
+        ext2_pop_mount(saved);
+        return mr;
+    }
 
     char old_name[EXT2_NAME_LEN + 1u];
     uint32_t old_parent = 0;
     int pr = lookup_parent_inode(oldpath, &old_parent, old_name, sizeof(old_name));
     if (pr != 0) {
+        int r = finish_mutation(pr);
         ext2_pop_mount(saved);
-        return pr;
+        return r;
     }
     uint32_t old_ino = 0;
     uint8_t old_type = EXT2_FT_UNKNOWN;
     int fr = find_child_inode(old_parent, old_name, &old_ino, &old_type);
     if (fr != 0) {
+        int r = finish_mutation(fr);
         ext2_pop_mount(saved);
-        return fr;
+        return r;
     }
 
     char new_name[EXT2_NAME_LEN + 1u];
     uint32_t new_parent = 0;
     pr = lookup_parent_inode(newpath, &new_parent, new_name, sizeof(new_name));
     if (pr != 0) {
+        int r = finish_mutation(pr);
         ext2_pop_mount(saved);
-        return pr;
+        return r;
     }
     if (old_parent == new_parent && strcmp(old_name, new_name) == 0) {
+        int r = finish_mutation(0);
         ext2_pop_mount(saved);
-        return 0;
+        return r;
     }
 
     uint32_t existing = 0;
@@ -2758,8 +4167,9 @@ int ext2_rename(const char* oldpath, const char* newpath) {
         struct ext2_inode existing_inode;
         int er = read_inode(existing, &existing_inode);
         if (er != 0) {
+            int r = finish_mutation(er);
             ext2_pop_mount(saved);
-            return er;
+            return r;
         }
         if ((existing_inode.i_mode & FS_S_IFMT) == FS_S_IFDIR) {
             er = ext2_rmdir(newpath);
@@ -2767,22 +4177,25 @@ int ext2_rename(const char* oldpath, const char* newpath) {
             er = ext2_unlink(newpath);
         }
         if (er != 0) {
+            int r = finish_mutation(er);
             ext2_pop_mount(saved);
-            return er;
+            return r;
         }
     }
 
     int ar = add_dirent(new_parent, new_name, old_ino, old_type);
     if (ar != 0) {
+        int r = finish_mutation(ar);
         ext2_pop_mount(saved);
-        return ar;
+        return r;
     }
     uint32_t removed = 0;
     ar = remove_dirent(old_parent, old_name, &removed, NULL);
     if (ar != 0) {
         (void)remove_dirent(new_parent, new_name, NULL, NULL);
+        int r = finish_mutation(ar);
         ext2_pop_mount(saved);
-        return ar;
+        return r;
     }
 
     struct ext2_inode moved;

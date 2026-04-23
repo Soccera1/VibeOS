@@ -2,14 +2,14 @@
 set -euo pipefail
 
 if [[ $# -ne 4 ]]; then
-  echo "usage: $0 <output.img> <kernel.bin> <initramfs.cpio> <usr.ext2>" >&2
+  echo "usage: $0 <output.img> <kernel.bin> <initramfs.cpio> <usr.ext3>" >&2
   exit 1
 fi
 
 OUT_IMG="$1"
 KERNEL_BIN="$2"
 INITRAMFS="$3"
-USR_EXT2="$4"
+USR_EXT3="$4"
 
 if [[ $EUID -eq 0 ]]; then
   SUDO=""
@@ -40,17 +40,17 @@ truncate -s 128M "$OUT_IMG"
 parted -s "$OUT_IMG" mklabel gpt
 parted -s "$OUT_IMG" mkpart BIOSGRUB 1MiB 3MiB
 parted -s "$OUT_IMG" set 1 bios_grub on
-parted -s "$OUT_IMG" mkpart VIBEOS ext2 3MiB 100%
+parted -s "$OUT_IMG" mkpart VIBEOS ext3 3MiB 100%
 
 LOOPDEV="$($SUDO losetup --find --show --partscan "$OUT_IMG")"
 
-$SUDO mkfs.ext2 -q -L VIBEOS "${LOOPDEV}p2"
+$SUDO mkfs.ext3 -q -O ^dir_index -L VIBEOS "${LOOPDEV}p2"
 $SUDO mount "${LOOPDEV}p2" "$MNT"
 
 $SUDO mkdir -p "$MNT/boot/grub"
 $SUDO cp "$KERNEL_BIN" "$MNT/boot/vibeos-kernel.bin"
 $SUDO cp "$INITRAMFS" "$MNT/boot/initramfs.cpio"
-$SUDO cp "$USR_EXT2" "$MNT/boot/usr.ext2"
+$SUDO cp "$USR_EXT3" "$MNT/boot/usr.ext3"
 
 cat <<'CFG' | $SUDO tee "$MNT/boot/grub/grub.cfg" >/dev/null
 set timeout=0
@@ -63,7 +63,7 @@ set gfxpayload=keep
 menuentry "VibeOS" {
     multiboot2 /boot/vibeos-kernel.bin
     module2 /boot/initramfs.cpio
-    module2 /boot/usr.ext2
+    module2 /boot/usr.ext3
     boot
 }
 CFG
