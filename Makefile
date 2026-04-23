@@ -54,6 +54,7 @@ USER_LIBPIPELINE := $(BUILD_DIR)/userspace/libpipeline
 USER_GDBM := $(BUILD_DIR)/userspace/gdbm
 USER_GROFF := $(BUILD_DIR)/userspace/groff
 USER_MAN_DB := $(BUILD_DIR)/userspace/man-db
+USER_TESTS := $(BUILD_DIR)/userspace/kernel-tests-root
 BASH_SRC := external/bash-src
 NCURSES_SRC := external/ncurses-src
 NCURSES_BUILD := $(NCURSES_SRC)/build-musl
@@ -67,6 +68,7 @@ GROFF_SRC := external/groff-src
 MAN_DB_SRC := external/man-db-src
 USER_SL := $(BUILD_DIR)/userspace/sl
 HELP_SRC := userspace/help.c
+TESTS_SRC := $(shell find tests -type f | sort)
 
 export STRIP_BINARIES ?= 1
 export STRIP
@@ -160,11 +162,14 @@ $(USER_GROFF): | $(BUILD_DIR)
 $(USER_MAN_DB): $(USER_LIBPIPELINE) $(USER_GDBM) $(USER_GROFF) | $(BUILD_DIR)
 	./tools/build_man_db.sh $@ "$(MAN_DB_SRC)" "$(USER_LIBPIPELINE)" "$(USER_GDBM)" "$(USER_GROFF)"
 
+$(USER_TESTS): $(TESTS_SRC) tools/build_kernel_tests.sh | $(BUILD_DIR)
+	./tools/build_kernel_tests.sh $@ tests
+
 $(INITRAMFS): tools/make_initramfs.sh $(USER_BUSYBOX) $(USER_HELP) $(USER_COREUTILS) $(USER_COREUTILS_PROGS)
 	./tools/make_initramfs.sh $@ $(USER_BUSYBOX) $(USER_HELP) $(USER_COREUTILS) $(USER_COREUTILS_PROGS)
 
-$(USR_EXT2): tools/make_usr_ext2.sh $(USER_BASH) $(USER_HELP) $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO) $(USER_COREUTILS) $(USER_COREUTILS_PROGS) $(USER_MAN_PAGES) $(USER_GROFF) $(USER_MAN_DB)
-	./tools/make_usr_ext2.sh $@ $(USER_BASH) $(USER_HELP) $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO) $(USER_COREUTILS) $(USER_COREUTILS_PROGS) $(USER_MAN_PAGES) $(USER_GROFF) $(USER_MAN_DB)
+$(USR_EXT2): tools/make_usr_ext2.sh $(USER_BASH) $(USER_HELP) $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO) $(USER_COREUTILS) $(USER_COREUTILS_PROGS) $(USER_MAN_PAGES) $(USER_GROFF) $(USER_MAN_DB) $(USER_TESTS)
+	./tools/make_usr_ext2.sh $@ $(USER_BASH) $(USER_HELP) $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO) $(USER_COREUTILS) $(USER_COREUTILS_PROGS) $(USER_MAN_PAGES) $(USER_GROFF) $(USER_MAN_DB) $(USER_TESTS)
 
 iso: check-toolchain $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT2)
 	./tools/make_iso.sh $(ISO_IMAGE) $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT2)
