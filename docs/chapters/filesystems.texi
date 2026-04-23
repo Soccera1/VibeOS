@@ -4,6 +4,7 @@
 @cindex filesystem
 @cindex initramfs
 @cindex ext2
+@cindex ext3
 @cindex VFS
 @cindex namespace
 @findex fs_lookup
@@ -15,7 +16,7 @@
 @menu
 * Filesystem Design Summary::
 * Initramfs Backend::
-* ext2 Backend for /usr::
+* ext2/ext3 Backend for /usr::
 * VFS Routing Rules::
 * Synthetic Directories and Devices::
 * Path Resolution and Symlink Semantics::
@@ -30,7 +31,7 @@ read-only backends and a dispatcher:
 
 @itemize @bullet
 @item the initramfs backend for the root filesystem, and
-@item the ext2 backend for @file{/usr}.
+@item the ext2/ext3 backend for @file{/usr}.
 @end itemize
 
 The VFS layer in @file{kernel/src/fs.c} decides which backend owns a path and
@@ -62,10 +63,13 @@ Important implementation details:
 This backend is intentionally simple because the root image is built by the
 VibeOS scripts and loaded as an immutable module.
 
-@node ext2 Backend for /usr
-@section ext2 Backend for /usr
+@node ext2/ext3 Backend for /usr
+@section ext2/ext3 Backend for /usr
 
-The ext2 implementation is a read-only in-memory mount.
+The ext2/ext3 implementation is the secondary filesystem backend used for
+@file{/usr}.  In the shipped boot configuration it mounts a read-only
+filesystem image, but the kernel backend itself supports both non-journaled
+ext2 and journaled ext3 filesystems.
 
 It supports:
 
@@ -81,8 +85,8 @@ resolution,
 @item directory child collection for user-visible directory enumeration.
 @end itemize
 
-The ext2 backend only claims paths rooted at @file{/usr}.  A mounted ext2 image
-therefore augments the root namespace without replacing it.
+The ext2/ext3 backend only claims paths rooted at @file{/usr}.  A mounted ext2
+or ext3 image therefore augments the root namespace without replacing it.
 
 @node VFS Routing Rules
 @section VFS Routing Rules
@@ -93,8 +97,8 @@ therefore augments the root namespace without replacing it.
 The routing rule is intentionally small:
 
 @itemize @bullet
-@item If the ext2 image is mounted and the path belongs to @file{/usr}, use the
-ext2 backend.
+@item If the ext2/ext3 image is mounted and the path belongs to @file{/usr},
+use the ext2/ext3 backend.
 @item Otherwise use the initramfs backend.
 @end itemize
 
@@ -108,7 +112,7 @@ This affects:
 @end itemize
 
 The root directory behaves like a merged view.  It can expose initramfs entries
-plus @file{/usr} when the ext2 backend is mounted.
+plus @file{/usr} when the ext2/ext3 backend is mounted.
 
 @node Synthetic Directories and Devices
 @section Synthetic Directories and Devices
@@ -181,9 +185,9 @@ You can:
 @item access synthetic device-like paths.
 @end itemize
 
-The ext2 backend has read-write support for regular-file data, block and inode
-allocation and freeing, truncate, file creation, special-file creation,
+The ext2/ext3 backend has read-write support for regular-file data, block and
+inode allocation and freeing, truncate, file creation, special-file creation,
 directories, symlinks, hard links, unlink, rmdir, rename, chmod, and chown.
-Those paths are exposed through VFS helpers and Linux-compatible syscall
-entry points, but the shipped @file{/usr} image is still mounted read-only, so
+Those paths are exposed through VFS helpers and Linux-compatible syscall entry
+points, but the shipped @file{/usr} image is still mounted read-only, so
 mutation attempts there fail with @code{EROFS}.

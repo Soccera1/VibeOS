@@ -43,8 +43,9 @@ policy, staging, and compatibility behavior around them.
 
 VibeOS is an amd64 monolithic kernel prototype that boots through Multiboot2,
 switches itself into long mode, mounts a read-only initramfs root and a
-read-only ext2 @file{/usr} image, and runs a Linux-ABI userspace built mostly
-from static musl binaries.
+read-only @code{ext2}/@code{ext3} @file{/usr} image, and runs a Linux-ABI
+userspace built mostly from static musl binaries.  The shipped boot artifacts
+currently use @code{ext3} for @file{/usr} and @file{/home}.
 
 The repository has two standing policy constraints that shape almost every part
 of the system:

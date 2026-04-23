@@ -27,7 +27,8 @@ The implemented design is intentionally conservative:
 @item One architecture: amd64.
 @item One boot protocol: Multiboot2.
 @item One read-only root filesystem format: @code{cpio newc}.
-@item One read-only secondary filesystem format: ext2 for @file{/usr}.
+@item One read-only secondary filesystem backend: ext2/ext3 for @file{/usr},
+with ext3 used by the shipped images.
 @item One primary userspace ABI target: Linux-compatible amd64 syscalls.
 @item One preferred binary model: static, non-PIE, musl-linked executables.
 @end itemize

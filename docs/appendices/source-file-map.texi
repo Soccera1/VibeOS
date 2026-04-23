@@ -63,7 +63,8 @@ Console API and framebuffer information structure.
 Built-in console font dimensions and glyph table declaration.
 
 @item kernel/include/ext2.h
-Public interface of the ext2 backend.
+Public interface of the ext2/ext3 backend.  The file keeps its historical name
+even though the implementation now supports both formats.
 
 @item kernel/include/fs.h
 VFS-level path, mode, backend, and lookup interfaces.
@@ -164,10 +165,12 @@ Kernel and per-process page-table management.
 Read-only initramfs parser and entry indexer.
 
 @item kernel/src/ext2.c
-Ext2 filesystem implementation used for the @file{/usr} mount.
+Ext2/ext3 filesystem implementation used for the @file{/usr} mount.  The file
+keeps its historical name even though the implementation now supports both
+formats.
 
 @item kernel/src/fs.c
-VFS dispatcher over initramfs and ext2.
+VFS dispatcher over initramfs and the ext2/ext3 backend.
 
 @item kernel/src/process.c
 Process table allocator, lookup, and pending-signal bookkeeping.
