@@ -136,7 +136,7 @@ long_mode_entry:
     mov ss, ax
 
     mov rsp, boot_stack_top64
-    mov rdi, [mb2_info_ptr]
+    mov rdi, [rel mb2_info_ptr]
     call kernel_main
 
 .halt64:
@@ -156,16 +156,18 @@ gdt64_ptr:
     dd gdt64
 
 section .bss
-align 16
+alignb 16
 mb2_info_ptr: resq 1
-align 4096
+alignb 4096
 pml4_table: resb 4096
 pdpt_table: resb 4096
 pd_table0:  resb 4096
 pd_table1:  resb 4096
 pd_table2:  resb 4096
 pd_table3:  resb 4096
-align 16
+alignb 16
 boot_stack_bottom: resb 16384
 boot_stack_top32:
 boot_stack_top64:
+
+section .note.GNU-stack noalloc noexec nowrite progbits
