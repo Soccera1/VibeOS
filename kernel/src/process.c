@@ -26,6 +26,7 @@ void process_init(void) {
     for (int i = 0; i < PROCESS_MAX_FDS; ++i) {
         g_processes[0].fds[i].kind = 0;
         g_processes[0].fds[i].pipe_id = -1;
+        g_processes[0].fds[i].socket_id = -1;
     }
     if (vm_space_init(&g_processes[0].vm) != 0) {
         for (;;) {
@@ -65,6 +66,7 @@ struct process* process_alloc(void) {
             proc->umask = 022u;
             for (int j = 0; j < PROCESS_MAX_FDS; ++j) {
                 proc->fds[j].pipe_id = -1;
+                proc->fds[j].socket_id = -1;
             }
             if (vm_space_init(&proc->vm) != 0) {
                 memset(proc, 0, sizeof(*proc));

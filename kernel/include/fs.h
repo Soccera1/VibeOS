@@ -13,6 +13,7 @@
 #define FS_S_IFDIR 0040000u
 #define FS_S_IFREG 0100000u
 #define FS_S_IFLNK 0120000u
+#define FS_S_IFSOCK 0140000u
 
 #define FS_DT_UNKNOWN 0
 #define FS_DT_FIFO 1
@@ -20,6 +21,7 @@
 #define FS_DT_DIR 4
 #define FS_DT_REG 8
 #define FS_DT_LNK 10
+#define FS_DT_SOCK 12
 
 enum fs_backend {
     FS_BACKEND_NONE = 0,
