@@ -116,6 +116,8 @@ void kernel_main(uint64_t mb2_info) {
     }
     if (fs_home_mount_ready()) {
         console_write("/home: ext3 disk mounted read-write\n");
+    } else if (fs_home_ramdisk_ready()) {
+        console_write("/home: ramdisk mounted read-write\n");
     } else {
         console_write("/home: no writable ext3 disk attached\n");
     }
