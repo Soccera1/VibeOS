@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "ata.h"
 #include "ext2.h"
 #include "initramfs.h"
 #include "string.h"
@@ -49,16 +50,106 @@ static int child_index_of(char names[][FS_MAX_NAME], size_t count, const char* n
     return -1;
 }
 
-static bool path_in_usr_mount(const char* path) {
+static bool path_in_ext2_mount(const char* path) {
     return ext2_is_mounted() && ext2_owns_path(path);
 }
 
+enum boot_ext2_source {
+    BOOT_EXT2_SOURCE_IMAGE,
+    BOOT_EXT2_SOURCE_FILE,
+    BOOT_EXT2_SOURCE_ATA_SECONDARY,
+};
+
+struct boot_ext2_mount {
+    const char* mount_path;
+    bool read_only;
+    enum boot_ext2_source source;
+    const uint8_t* image;
+    size_t size;
+    const char* file_path;
+};
+
+bool fs_mount_ready(const char* mount_path) {
+    return ext2_is_mounted_at(mount_path);
+}
+
+int fs_mount_ext2_image(const char* mount_path, const uint8_t* image, size_t size, bool read_only) {
+    return ext2_mount_image_at(mount_path, image, size, read_only);
+}
+
+int fs_mount_ext2_file(const char* mount_path, const char* path, bool read_only) {
+    struct fs_entry entry;
+    int lr = fs_lookup(path, &entry);
+    if (lr != 0) {
+        return lr;
+    }
+    return ext2_mount_file_at(mount_path, &entry, read_only);
+}
+
+int fs_mount_ext2_storage(const char* mount_path, const struct ext2_storage_ops* ops, void* ctx, size_t size, bool read_only) {
+    return ext2_mount_storage_at(mount_path, ops, ctx, size, read_only);
+}
+
 void fs_init(const uint8_t* usrfs_start, size_t usrfs_size) {
-    ext2_mount_image(usrfs_start, usrfs_size);
+    struct boot_ext2_mount mounts[] = {
+        {
+            .mount_path = "/usr",
+            .read_only = true,
+            .source = (usrfs_start != NULL && usrfs_size != 0u) ? BOOT_EXT2_SOURCE_IMAGE : BOOT_EXT2_SOURCE_FILE,
+            .image = usrfs_start,
+            .size = usrfs_size,
+            .file_path = "/boot/usr.ext2",
+        },
+        {
+            .mount_path = "/home",
+            .read_only = false,
+            .source = BOOT_EXT2_SOURCE_ATA_SECONDARY,
+            .image = NULL,
+            .size = 0u,
+            .file_path = NULL,
+        },
+    };
+
+    for (size_t i = 0; i < sizeof(mounts) / sizeof(mounts[0]); ++i) {
+        int r = -1;
+        switch (mounts[i].source) {
+            case BOOT_EXT2_SOURCE_IMAGE:
+                r = fs_mount_ext2_image(mounts[i].mount_path, mounts[i].image, mounts[i].size, mounts[i].read_only);
+                break;
+            case BOOT_EXT2_SOURCE_FILE:
+                r = fs_mount_ext2_file(mounts[i].mount_path, mounts[i].file_path, mounts[i].read_only);
+                break;
+            case BOOT_EXT2_SOURCE_ATA_SECONDARY:
+                if (ata_secondary_present()) {
+                    r = fs_mount_ext2_storage(mounts[i].mount_path, ata_secondary_storage_ops(), ata_secondary_storage_ctx(),
+                                              ata_secondary_size(), mounts[i].read_only);
+                }
+                break;
+        }
+        if (r != 0) {
+            (void)fs_mount_ext2_image(mounts[i].mount_path, NULL, 0, mounts[i].read_only);
+        }
+    }
 }
 
 bool fs_usr_mount_ready(void) {
-    return ext2_is_mounted();
+    return fs_mount_ready("/usr");
+}
+
+bool fs_home_mount_ready(void) {
+    return fs_mount_ready("/home");
+}
+
+int fs_sync(void) {
+    return ext2_sync_all();
+}
+
+int fs_shutdown(void) {
+    return ext2_shutdown_all();
+}
+
+int fs_mount_usr_from_file(const char* path, bool read_only) {
+    return fs_mount_ext2_file("/usr", path, read_only);
 }
 
 uint8_t fs_mode_to_dtype(uint32_t mode) {
@@ -69,6 +160,8 @@ uint8_t fs_mode_to_dtype(uint32_t mode) {
             return FS_DT_DIR;
         case FS_S_IFCHR:
             return FS_DT_CHR;
+        case FS_S_IFBLK:
+            return FS_DT_BLK;
         case FS_S_IFIFO:
             return FS_DT_FIFO;
         case FS_S_IFLNK:
@@ -85,7 +178,7 @@ int fs_lookup(const char* path, struct fs_entry* out) {
         return -22;
     }
 
-    if (path_in_usr_mount(path)) {
+    if (path_in_ext2_mount(path)) {
         return ext2_lookup(path, out);
     }
 
@@ -103,6 +196,7 @@ int fs_lookup(const char* path, struct fs_entry* out) {
         out->mode = entry.mode;
         out->inode = 0;
         out->backend = FS_BACKEND_INITRAMFS;
+        out->read_only = true;
     }
 
     return 0;
@@ -130,6 +224,36 @@ int fs_read(const struct fs_entry* entry, size_t offset, void* buf, size_t count
     return -22;
 }
 
+int fs_write(struct fs_entry* entry, size_t offset, const void* buf, size_t count) {
+    if (entry == NULL || (buf == NULL && count != 0)) {
+        return -22;
+    }
+    if (entry->read_only) {
+        return -30;
+    }
+
+    if (entry->backend == FS_BACKEND_EXT2) {
+        return ext2_write(entry, offset, buf, count);
+    }
+
+    return -30;
+}
+
+int fs_truncate(struct fs_entry* entry, size_t size) {
+    if (entry == NULL) {
+        return -22;
+    }
+    if (entry->read_only) {
+        return -30;
+    }
+
+    if (entry->backend == FS_BACKEND_EXT2) {
+        return ext2_truncate(entry, size);
+    }
+
+    return -30;
+}
+
 int fs_readlink(const struct fs_entry* entry, char* out, size_t bufsz) {
     if (entry == NULL || out == NULL) {
         return -22;
@@ -153,12 +277,99 @@ int fs_readlink(const struct fs_entry* entry, char* out, size_t bufsz) {
     return -22;
 }
 
+bool fs_is_read_only_path(const char* path) {
+    if (path == NULL) {
+        return true;
+    }
+
+    if (path_in_ext2_mount(path)) {
+        return ext2_is_read_only_path(path);
+    }
+
+    struct fs_entry entry;
+    if (fs_lookup(path, &entry) == 0) {
+        return entry.read_only;
+    }
+
+    return false;
+}
+
+int fs_create(const char* path, uint32_t mode, struct fs_entry* out) {
+    if (path_in_ext2_mount(path)) {
+        return ext2_create(path, mode, out);
+    }
+    return -30;
+}
+
+int fs_mknod(const char* path, uint32_t mode, uint32_t rdev, struct fs_entry* out) {
+    if (path_in_ext2_mount(path)) {
+        return ext2_mknod(path, mode, rdev, out);
+    }
+    return -30;
+}
+
+int fs_mkdir(const char* path, uint32_t mode, struct fs_entry* out) {
+    if (path_in_ext2_mount(path)) {
+        return ext2_mkdir(path, mode, out);
+    }
+    return -30;
+}
+
+int fs_symlink(const char* target, const char* linkpath, struct fs_entry* out) {
+    if (path_in_ext2_mount(linkpath)) {
+        return ext2_symlink(target, linkpath, out);
+    }
+    return -30;
+}
+
+int fs_link(const char* existing, const char* newpath) {
+    if (path_in_ext2_mount(existing) && path_in_ext2_mount(newpath)) {
+        return ext2_link(existing, newpath);
+    }
+    return -30;
+}
+
+int fs_unlink(const char* path) {
+    if (path_in_ext2_mount(path)) {
+        return ext2_unlink(path);
+    }
+    return -30;
+}
+
+int fs_rmdir(const char* path) {
+    if (path_in_ext2_mount(path)) {
+        return ext2_rmdir(path);
+    }
+    return -30;
+}
+
+int fs_rename(const char* oldpath, const char* newpath) {
+    if (path_in_ext2_mount(oldpath) && path_in_ext2_mount(newpath)) {
+        return ext2_rename(oldpath, newpath);
+    }
+    return -30;
+}
+
+int fs_chmod(const char* path, uint32_t mode) {
+    if (path_in_ext2_mount(path)) {
+        return ext2_chmod(path, mode);
+    }
+    return -30;
+}
+
+int fs_chown(const char* path, uint32_t uid, uint32_t gid) {
+    if (path_in_ext2_mount(path)) {
+        return ext2_chown(path, uid, gid);
+    }
+    return -30;
+}
+
 bool fs_path_has_child(const char* dir) {
     if (dir == NULL) {
         return false;
     }
 
-    if (path_in_usr_mount(dir)) {
+    if (path_in_ext2_mount(dir)) {
         return ext2_path_has_child(dir);
     }
 
@@ -171,7 +382,7 @@ bool fs_path_has_child(const char* dir) {
         if (entry == NULL) {
             continue;
         }
-        if (path_in_usr_mount(entry->path)) {
+        if (path_in_ext2_mount(entry->path)) {
             continue;
         }
         if (strcmp(dir, "/") == 0) {
@@ -197,13 +408,13 @@ size_t fs_collect_children(const char* dir, char names[][FS_MAX_NAME], uint8_t t
         return 0;
     }
 
-    if (!path_in_usr_mount(dir)) {
+    if (!path_in_ext2_mount(dir)) {
         for (size_t i = 0; i < initramfs_entry_count(); ++i) {
             const struct initramfs_entry* entry = initramfs_entry_at(i);
             if (entry == NULL) {
                 continue;
             }
-            if (path_in_usr_mount(entry->path)) {
+            if (path_in_ext2_mount(entry->path)) {
                 continue;
             }
 
@@ -230,11 +441,6 @@ size_t fs_collect_children(const char* dir, char names[][FS_MAX_NAME], uint8_t t
             ++count;
         }
 
-        if (strcmp(dir, "/") == 0 && ext2_is_mounted() && child_index_of(names, count, "usr") < 0 && count < max_children) {
-            strcpy(names[count], "usr");
-            types[count] = FS_DT_DIR;
-            ++count;
-        }
     }
 
     if (ext2_is_mounted()) {

@@ -227,6 +227,7 @@ static void test_identity_and_paths(void) {
 
 static void test_file_io_and_mmap(void) {
     int fd = -1;
+    int rofd = -1;
     int dirfd = -1;
     int pipefd[2] = { -1, -1 };
     unsigned char elf[8];
@@ -239,6 +240,28 @@ static void test_file_io_and_mmap(void) {
 
     fd = open(k_helper_path, O_RDONLY);
     REQUIRE(fd >= 0, "open(%s) failed: %s", k_helper_path, strerror(errno));
+
+    errno = 0;
+    rofd = open(k_helper_path, O_WRONLY);
+    REQUIRE(rofd < 0 && errno == EROFS, "write-open on read-only /usr returned fd=%d errno=%d", rofd, errno);
+
+    errno = 0;
+    rofd = open("/usr/share/kernel-tests/ext2-write-probe", O_WRONLY | O_CREAT, 0644);
+    REQUIRE(rofd < 0 && errno == EROFS, "create on read-only /usr returned fd=%d errno=%d", rofd, errno);
+
+    errno = 0;
+    REQUIRE(mkdir("/usr/share/kernel-tests/ext2-write-dir", 0755) < 0 && errno == EROFS,
+            "mkdir on read-only /usr errno=%d", errno);
+
+    errno = 0;
+    REQUIRE(symlink("kernel-test-helper", "/usr/share/kernel-tests/ext2-write-link") < 0 && errno == EROFS,
+            "symlink on read-only /usr errno=%d", errno);
+
+    errno = 0;
+    REQUIRE(truncate(k_helper_path, 0) < 0 && errno == EROFS, "truncate on read-only /usr errno=%d", errno);
+
+    errno = 0;
+    REQUIRE(unlink(k_helper_link) < 0 && errno == EROFS, "unlink on read-only /usr errno=%d", errno);
 
     memset(elf, 0, sizeof(elf));
     REQUIRE(pread(fd, elf, sizeof(elf), 0) == (ssize_t)sizeof(elf), "pread helper ELF header failed: %s", strerror(errno));
@@ -301,6 +324,9 @@ static void test_file_io_and_mmap(void) {
     }
     if (dirfd >= 0) {
         close(dirfd);
+    }
+    if (rofd >= 0) {
+        close(rofd);
     }
     if (fd >= 0) {
         close(fd);

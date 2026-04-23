@@ -167,7 +167,8 @@ link object itself.
 @node Read-Only Nature of the Filesystems
 @section Read-Only Nature of the Filesystems
 
-The read-only nature of both backends is fundamental to the current OS.
+The shipped root initramfs and @file{/usr} mount are read-only in the current
+boot configuration.
 
 You can:
 
@@ -180,6 +181,9 @@ You can:
 @item access synthetic device-like paths.
 @end itemize
 
-You cannot perform general persistent filesystem mutations.  There are no
-in-kernel implementations for normal file creation, unlink, rename, chmod,
-chown, truncate, or buffered writeback into initramfs or ext2.
+The ext2 backend has read-write support for regular-file data, block and inode
+allocation and freeing, truncate, file creation, special-file creation,
+directories, symlinks, hard links, unlink, rmdir, rename, chmod, and chown.
+Those paths are exposed through VFS helpers and Linux-compatible syscall
+entry points, but the shipped @file{/usr} image is still mounted read-only, so
+mutation attempts there fail with @code{EROFS}.

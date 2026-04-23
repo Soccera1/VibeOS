@@ -62,24 +62,51 @@ symlink.
 framebuffers where meaningful.
 @item 17 @tab @code{pread64} @tab Position-based reads without updating the
 normal file offset.
+@item 18 @tab @code{pwrite64} @tab Position-based writes for writable regular
+files and framebuffers.
 @item 21 @tab @code{access} @tab Existence-style check built on path lookup.
+@item 76 @tab @code{truncate} @tab VFS truncate for writable regular files.
+@item 77 @tab @code{ftruncate} @tab Descriptor-based regular-file truncate.
 @item 79 @tab @code{getcwd} @tab Returns the kernel-tracked current directory.
 @item 80 @tab @code{chdir} @tab Changes the kernel-tracked current directory.
+@item 82 @tab @code{rename} @tab Implemented through @code{renameat}.
+@item 83 @tab @code{mkdir} @tab Implemented through @code{mkdirat}.
+@item 84 @tab @code{rmdir} @tab Implemented through @code{unlinkat} with
+@code{AT_REMOVEDIR}.
+@item 85 @tab @code{creat} @tab Implemented through @code{openat}.
+@item 86 @tab @code{link} @tab Implemented through @code{linkat}.
+@item 87 @tab @code{unlink} @tab Implemented through @code{unlinkat}.
+@item 88 @tab @code{symlink} @tab Implemented through @code{symlinkat}.
 @item 89 @tab @code{readlink} @tab Implemented through @code{readlinkat}.
+@item 90 @tab @code{chmod} @tab Implemented through the VFS chmod helper.
+@item 91 @tab @code{fchmod} @tab Descriptor-based chmod.
+@item 92 @tab @code{chown} @tab Implemented through the VFS chown helper.
+@item 93 @tab @code{fchown} @tab Descriptor-based chown.
+@item 94 @tab @code{lchown} @tab Non-following final-symlink chown.
 @item 217 @tab @code{getdents64} @tab Directory enumeration over the merged
 namespace.
 @item 257 @tab @code{openat} @tab Main path-open primitive.
+@item 258 @tab @code{mkdirat} @tab VFS directory creation.
+@item 259 @tab @code{mknodat} @tab VFS regular and special-file creation.
+@item 260 @tab @code{fchownat} @tab Path chown relative to a directory fd.
 @item 262 @tab @code{newfstatat} @tab Followed-path stat.
+@item 263 @tab @code{unlinkat} @tab VFS unlink/rmdir.
+@item 264 @tab @code{renameat} @tab VFS rename.
+@item 265 @tab @code{linkat} @tab VFS hard-link creation.
+@item 266 @tab @code{symlinkat} @tab VFS symlink creation.
 @item 267 @tab @code{readlinkat} @tab Non-following symlink read.
+@item 268 @tab @code{fchmodat} @tab Path chmod relative to a directory fd.
 @item 269 @tab @code{faccessat} @tab Same general existence semantics as
 @code{access}.
+@item 316 @tab @code{renameat2} @tab Supported with zero flags.
 @item 332 @tab @code{statx} @tab Partial compatibility implementation.
 @item 439 @tab @code{faccessat2} @tab Same path existence behavior as the
 simpler access helpers.
 @end multitable
 
-The namespace is read-only, so these calls let programs inspect and traverse
-the tree but not persistently change it.
+The shipped @file{/usr} mount is read-only, so mutating filesystem calls
+currently fail there with @code{EROFS}; the ext2 backend and VFS paths are
+implemented for read-write ext2 mounts.
 
 @node Descriptors and Devices
 @section Descriptors, Polling, and Devices

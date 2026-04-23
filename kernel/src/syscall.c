@@ -25,11 +25,18 @@
 #define EFER_SCE (1ull << 0)
 
 #define AT_FDCWD (-100)
+#define AT_SYMLINK_NOFOLLOW 0x100u
+#define AT_REMOVEDIR 0x200u
+#define AT_SYMLINK_FOLLOW 0x400u
 
 #define O_RDONLY 0u
 #define O_WRONLY 1u
 #define O_RDWR 2u
+#define O_ACCMODE 3u
 #define O_CREAT 0x40u
+#define O_EXCL 0x80u
+#define O_TRUNC 0x200u
+#define O_APPEND 0x400u
 #define O_NONBLOCK 0x800u
 #define O_CLOEXEC 0x80000u
 #define O_DIRECTORY 0x10000u
@@ -44,6 +51,7 @@
 #define S_IFIFO 0010000u
 #define S_IFCHR 0020000u
 #define S_IFDIR 0040000u
+#define S_IFBLK 0060000u
 #define S_IFREG 0100000u
 #define S_IFLNK 0120000u
 #define S_IFSOCK 0140000u
@@ -52,6 +60,7 @@
 #define DT_FIFO 1
 #define DT_CHR 2
 #define DT_DIR 4
+#define DT_BLK 6
 #define DT_REG 8
 #define DT_LNK 10
 #define DT_SOCK 12
@@ -109,6 +118,7 @@
 #define MAP_FIXED_NOREPLACE 0x100000u
 
 #define ENOSYS 38
+#define EIO 5
 #define ENXIO 6
 #define ENOENT 2
 #define EINTR 4
@@ -748,6 +758,49 @@ static void service_keyboard_signal_for_tty(void) {
 
 static bool fd_is_nonblocking(int fd) {
     return (g_fds[fd].flags & O_NONBLOCK) != 0u;
+}
+
+static bool open_flags_can_read(uint32_t flags) {
+    return (flags & O_ACCMODE) != O_WRONLY;
+}
+
+static bool open_flags_can_write(uint32_t flags) {
+    uint32_t accmode = flags & O_ACCMODE;
+    return accmode == O_WRONLY || accmode == O_RDWR;
+}
+
+static bool same_fs_file(const struct fs_entry* a, const struct fs_entry* b) {
+    if (a == NULL || b == NULL || a->backend == FS_BACKEND_NONE || a->backend != b->backend) {
+        return false;
+    }
+    if (a->backend == FS_BACKEND_EXT2) {
+        return a->inode == b->inode;
+    }
+    return strcmp(a->path, b->path) == 0;
+}
+
+static void refresh_open_file_sizes(const struct fs_entry* entry) {
+    if (entry == NULL) {
+        return;
+    }
+
+    for (int fd = 0; fd < MAX_FDS; ++fd) {
+        if ((g_fds[fd].kind == FD_FILE || g_fds[fd].kind == FD_DIR) && same_fs_file(&g_fds[fd].entry, entry)) {
+            g_fds[fd].entry.size = entry->size;
+        }
+    }
+
+    for (int i = 0; i < MAX_PROCESSES; ++i) {
+        struct process* proc = process_at(i);
+        if (proc == NULL || proc == current_process() || proc->state == PROCESS_FREE || proc->state == PROCESS_ZOMBIE) {
+            continue;
+        }
+        for (int fd = 0; fd < PROCESS_MAX_FDS; ++fd) {
+            if ((proc->fds[fd].kind == FD_FILE || proc->fds[fd].kind == FD_DIR) && same_fs_file(&proc->fds[fd].entry, entry)) {
+                proc->fds[fd].entry.size = entry->size;
+            }
+        }
+    }
 }
 
 static bool tty_input_ready(void) {
@@ -2256,7 +2309,7 @@ static void fill_stat(struct linux_stat* st, uint32_t mode, size_t size) {
     st->st_rdev = 1;
 }
 
-static int sys_openat(int dirfd, const char* path_user, uint32_t flags) {
+static int sys_openat(int dirfd, const char* path_user, uint32_t flags, uint32_t mode_arg) {
     char path_input[128];
     if (copy_user_string(path_user, path_input, sizeof(path_input)) != 0) {
         return err(EINVAL);
@@ -2349,14 +2402,47 @@ static int sys_openat(int dirfd, const char* path_user, uint32_t flags) {
             sync_current_process_runtime();
             return fd;
         }
-        return r;
+        if ((flags & O_CREAT) != 0u) {
+            if ((flags & O_DIRECTORY) != 0u) {
+                return err(EINVAL);
+            }
+            uint32_t create_mode = S_IFREG | (mode_arg & 07777u & ~g_umask);
+            int cr = fs_create(path, create_mode, &e);
+            if (cr != 0) {
+                return cr;
+            }
+            mode = e.mode;
+            size = e.size;
+            r = 0;
+        } else {
+            return r;
+        }
     }
 
+    if ((flags & (O_CREAT | O_EXCL)) == (O_CREAT | O_EXCL)) {
+        return err(EEXIST);
+    }
+
+    bool wants_write = open_flags_can_write(flags) || (flags & O_TRUNC) != 0u;
     if (((flags & O_DIRECTORY) != 0u) && ((mode & S_IFMT) != S_IFDIR)) {
         return err(ENOTDIR);
     }
+    if (wants_write && ((mode & S_IFMT) == S_IFDIR)) {
+        return err(EISDIR);
+    }
     if ((mode & S_IFMT) == S_IFSOCK) {
         return err(ENXIO);
+    }
+    if (wants_write && e.backend != FS_BACKEND_NONE && e.read_only) {
+        return err(EROFS);
+    }
+    if ((flags & O_TRUNC) != 0u && ((mode & S_IFMT) == S_IFREG)) {
+        int tr = fs_truncate(&e, 0);
+        if (tr != 0) {
+            return tr;
+        }
+        refresh_open_file_sizes(&e);
+        size = 0;
     }
 
     int fd = alloc_fd();
@@ -2750,6 +2836,10 @@ static int sys_read(int fd, void* buf, size_t count, struct syscall_frame* frame
         return err(EISDIR);
     }
 
+    if (g_fds[fd].kind == FD_FILE && !open_flags_can_read(g_fds[fd].flags)) {
+        return err(EBADF);
+    }
+
     size_t size = g_fds[fd].entry.size;
     size_t off = g_fds[fd].offset;
     if (off >= size) {
@@ -2847,6 +2937,21 @@ static int sys_write(int fd, const void* buf, size_t count, struct syscall_frame
         memcpy((void*)(uintptr_t)(fb.phys_addr + off), buf, n);
         g_fds[fd].offset += n;
         return (int)n;
+    }
+
+    if (g_fds[fd].kind == FD_FILE) {
+        if (!open_flags_can_write(g_fds[fd].flags)) {
+            return err(EBADF);
+        }
+        if ((g_fds[fd].flags & O_APPEND) != 0u) {
+            g_fds[fd].offset = g_fds[fd].entry.size;
+        }
+        int n = fs_write(&g_fds[fd].entry, g_fds[fd].offset, buf, count);
+        if (n > 0) {
+            g_fds[fd].offset += (size_t)n;
+            refresh_open_file_sizes(&g_fds[fd].entry);
+        }
+        return n;
     }
 
     if (g_fds[fd].kind != FD_TTY) {
@@ -2947,6 +3052,9 @@ static int sys_pread64(int fd, void* buf, size_t count, int64_t offset) {
     if (g_fds[fd].kind == FD_DIR) {
         return err(EISDIR);
     }
+    if (g_fds[fd].kind == FD_FILE && !open_flags_can_read(g_fds[fd].flags)) {
+        return err(EBADF);
+    }
 
     if (g_fds[fd].kind == FD_FB) {
         struct console_framebuffer_info fb;
@@ -2972,6 +3080,52 @@ static int sys_pread64(int fd, void* buf, size_t count, int64_t offset) {
     }
 
     return fs_read(&g_fds[fd].entry, off, buf, count);
+}
+
+static int sys_pwrite64(int fd, const void* buf, size_t count, int64_t offset) {
+    if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
+        return err(EBADF);
+    }
+    if (offset < 0) {
+        return err(EINVAL);
+    }
+    if (g_fds[fd].kind == FD_TTY || g_fds[fd].kind == FD_NULL || g_fds[fd].kind == FD_PIPE_R || g_fds[fd].kind == FD_PIPE_W ||
+        g_fds[fd].kind == FD_UNIX) {
+        return err(ESPIPE);
+    }
+    if (g_fds[fd].kind == FD_DIR) {
+        return err(EISDIR);
+    }
+
+    if (g_fds[fd].kind == FD_FB) {
+        struct console_framebuffer_info fb;
+        if (!get_fb_info(&fb)) {
+            return err(ENODEV);
+        }
+        size_t off = (size_t)offset;
+        if (off >= fb.size) {
+            return 0;
+        }
+        size_t n = count;
+        if (n > fb.size - off) {
+            n = fb.size - off;
+        }
+        memcpy((void*)(uintptr_t)(fb.phys_addr + off), buf, n);
+        return (int)n;
+    }
+
+    if (g_fds[fd].kind != FD_FILE) {
+        return err(EBADF);
+    }
+    if (!open_flags_can_write(g_fds[fd].flags)) {
+        return err(EBADF);
+    }
+
+    int n = fs_write(&g_fds[fd].entry, (size_t)offset, buf, count);
+    if (n > 0) {
+        refresh_open_file_sizes(&g_fds[fd].entry);
+    }
+    return n;
 }
 
 static int sys_getdents64(int fd, void* dirp, size_t count) {
@@ -4766,6 +4920,177 @@ static int sys_access_like(int dirfd, const char* path_user) {
     return path_mode_size(path, NULL, NULL, NULL);
 }
 
+static int sys_mkdirat(int dirfd, const char* path_user, uint32_t mode) {
+    char path[128];
+    int r = resolve_user_path(dirfd, path_user, false, path, sizeof(path));
+    if (r != 0) {
+        return r;
+    }
+    return fs_mkdir(path, mode & 07777u & ~g_umask, NULL);
+}
+
+static int sys_mknodat(int dirfd, const char* path_user, uint32_t mode, uint32_t rdev) {
+    char path[128];
+    int r = resolve_user_path(dirfd, path_user, false, path, sizeof(path));
+    if (r != 0) {
+        return r;
+    }
+    return fs_mknod(path, mode, rdev, NULL);
+}
+
+static int sys_unlinkat(int dirfd, const char* path_user, uint32_t flags) {
+    if ((flags & ~AT_REMOVEDIR) != 0u) {
+        return err(EINVAL);
+    }
+
+    char path[128];
+    int r = resolve_user_path(dirfd, path_user, false, path, sizeof(path));
+    if (r != 0) {
+        return r;
+    }
+    return ((flags & AT_REMOVEDIR) != 0u) ? fs_rmdir(path) : fs_unlink(path);
+}
+
+static int sys_renameat(int olddirfd, const char* old_user, int newdirfd, const char* new_user) {
+    char oldpath[128];
+    int r = resolve_user_path(olddirfd, old_user, false, oldpath, sizeof(oldpath));
+    if (r != 0) {
+        return r;
+    }
+
+    char newpath[128];
+    r = resolve_user_path(newdirfd, new_user, false, newpath, sizeof(newpath));
+    if (r != 0) {
+        return r;
+    }
+    return fs_rename(oldpath, newpath);
+}
+
+static int sys_renameat2(int olddirfd, const char* old_user, int newdirfd, const char* new_user, uint32_t flags) {
+    if (flags != 0u) {
+        return err(EINVAL);
+    }
+    return sys_renameat(olddirfd, old_user, newdirfd, new_user);
+}
+
+static int sys_symlinkat(const char* target_user, int newdirfd, const char* link_user) {
+    char target[128];
+    int r = copy_user_string(target_user, target, sizeof(target));
+    if (r != 0) {
+        return r;
+    }
+
+    char linkpath[128];
+    r = resolve_user_path(newdirfd, link_user, false, linkpath, sizeof(linkpath));
+    if (r != 0) {
+        return r;
+    }
+    return fs_symlink(target, linkpath, NULL);
+}
+
+static int sys_linkat(int olddirfd, const char* old_user, int newdirfd, const char* new_user, uint32_t flags) {
+    if ((flags & ~(AT_SYMLINK_FOLLOW | AT_SYMLINK_NOFOLLOW)) != 0u) {
+        return err(EINVAL);
+    }
+
+    char oldpath[128];
+    int r = resolve_user_path(olddirfd, old_user, (flags & AT_SYMLINK_FOLLOW) != 0u, oldpath, sizeof(oldpath));
+    if (r != 0) {
+        return r;
+    }
+
+    char newpath[128];
+    r = resolve_user_path(newdirfd, new_user, false, newpath, sizeof(newpath));
+    if (r != 0) {
+        return r;
+    }
+    return fs_link(oldpath, newpath);
+}
+
+static int sys_chmodat(int dirfd, const char* path_user, uint32_t mode, uint32_t flags) {
+    if ((flags & ~AT_SYMLINK_NOFOLLOW) != 0u) {
+        return err(EINVAL);
+    }
+
+    char path[128];
+    int r = resolve_user_path(dirfd, path_user, (flags & AT_SYMLINK_NOFOLLOW) == 0u, path, sizeof(path));
+    if (r != 0) {
+        return r;
+    }
+    return fs_chmod(path, mode);
+}
+
+static int sys_chownat(int dirfd, const char* path_user, uint32_t uid, uint32_t gid, uint32_t flags) {
+    if ((flags & ~AT_SYMLINK_NOFOLLOW) != 0u) {
+        return err(EINVAL);
+    }
+
+    char path[128];
+    int r = resolve_user_path(dirfd, path_user, (flags & AT_SYMLINK_NOFOLLOW) == 0u, path, sizeof(path));
+    if (r != 0) {
+        return r;
+    }
+    return fs_chown(path, uid, gid);
+}
+
+static int sys_truncate_path(const char* path_user, int64_t len) {
+    if (len < 0) {
+        return err(EINVAL);
+    }
+    char path[128];
+    int r = resolve_user_path(AT_FDCWD, path_user, true, path, sizeof(path));
+    if (r != 0) {
+        return r;
+    }
+    struct fs_entry entry;
+    r = fs_lookup(path, &entry);
+    if (r != 0) {
+        return r;
+    }
+    return fs_truncate(&entry, (size_t)len);
+}
+
+static int sys_ftruncate(int fd, int64_t len) {
+    if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
+        return err(EBADF);
+    }
+    if (len < 0) {
+        return err(EINVAL);
+    }
+    if (g_fds[fd].kind != FD_FILE) {
+        return err(EINVAL);
+    }
+    if (!open_flags_can_write(g_fds[fd].flags)) {
+        return err(EBADF);
+    }
+
+    int r = fs_truncate(&g_fds[fd].entry, (size_t)len);
+    if (r == 0) {
+        refresh_open_file_sizes(&g_fds[fd].entry);
+    }
+    return r;
+}
+
+static int sys_fchmod(int fd, uint32_t mode) {
+    if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
+        return err(EBADF);
+    }
+    if (g_fds[fd].kind != FD_FILE && g_fds[fd].kind != FD_DIR) {
+        return err(EINVAL);
+    }
+    return fs_chmod(g_fds[fd].entry.path, mode);
+}
+
+static int sys_fchown(int fd, uint32_t uid, uint32_t gid) {
+    if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
+        return err(EBADF);
+    }
+    if (g_fds[fd].kind != FD_FILE && g_fds[fd].kind != FD_DIR) {
+        return err(EINVAL);
+    }
+    return fs_chown(g_fds[fd].entry.path, uid, gid);
+}
+
 static int sys_readlinkat(int dirfd, const char* path_user, char* out, size_t bufsz) {
     char path[128];
     int r = resolve_user_path(dirfd, path_user, false, path, sizeof(path));
@@ -6533,6 +6858,10 @@ __attribute__((noreturn)) static void do_reboot(void) {
     power_reboot();
 }
 
+static int sys_sync(void) {
+    return (fs_sync() == 0) ? 0 : err(EIO);
+}
+
 static int sys_reboot(int magic1, int magic2, uint64_t cmd) {
     if (magic1 != (int)0xfee1dead || magic2 != 672274793) {
         return err(EINVAL);
@@ -6760,7 +7089,7 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
         case 1:
             return (uint64_t)sys_write((int)a0, (const void*)(uintptr_t)a1, (size_t)a2, frame);
         case 2:
-            return (uint64_t)sys_openat(AT_FDCWD, (const char*)(uintptr_t)a0, (uint32_t)a1);
+            return (uint64_t)sys_openat(AT_FDCWD, (const char*)(uintptr_t)a0, (uint32_t)a1, (uint32_t)a2);
         case 3:
             return (uint64_t)sys_close((int)a0);
         case 4:
@@ -6789,6 +7118,8 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
             return (uint64_t)sys_ioctl((int)a0, a1, (void*)(uintptr_t)a2);
         case 17:
             return (uint64_t)sys_pread64((int)a0, (void*)(uintptr_t)a1, (size_t)a2, (int64_t)a3);
+        case 18:
+            return (uint64_t)sys_pwrite64((int)a0, (const void*)(uintptr_t)a1, (size_t)a2, (int64_t)a3);
         case 19:
         {
             int r = sys_readv((int)a0, (const struct linux_iovec*)(uintptr_t)a1, (size_t)a2, frame);
@@ -6868,12 +7199,40 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
             return (uint64_t)sys_uname((struct linux_utsname*)(uintptr_t)a0);
         case 72:
             return (uint64_t)sys_fcntl((int)a0, (int)a1, a2);
+        case 76:
+            return (uint64_t)sys_truncate_path((const char*)(uintptr_t)a0, (int64_t)a1);
+        case 77:
+            return (uint64_t)sys_ftruncate((int)a0, (int64_t)a1);
         case 79:
             return (uint64_t)sys_getcwd((char*)(uintptr_t)a0, (size_t)a1);
         case 80:
             return (uint64_t)sys_chdir((const char*)(uintptr_t)a0);
+        case 82:
+            return (uint64_t)sys_renameat(AT_FDCWD, (const char*)(uintptr_t)a0, AT_FDCWD, (const char*)(uintptr_t)a1);
+        case 83:
+            return (uint64_t)sys_mkdirat(AT_FDCWD, (const char*)(uintptr_t)a0, (uint32_t)a1);
+        case 84:
+            return (uint64_t)sys_unlinkat(AT_FDCWD, (const char*)(uintptr_t)a0, AT_REMOVEDIR);
+        case 85:
+            return (uint64_t)sys_openat(AT_FDCWD, (const char*)(uintptr_t)a0, O_CREAT | O_WRONLY | O_TRUNC, (uint32_t)a1);
+        case 86:
+            return (uint64_t)sys_linkat(AT_FDCWD, (const char*)(uintptr_t)a0, AT_FDCWD, (const char*)(uintptr_t)a1, 0);
+        case 87:
+            return (uint64_t)sys_unlinkat(AT_FDCWD, (const char*)(uintptr_t)a0, 0);
+        case 88:
+            return (uint64_t)sys_symlinkat((const char*)(uintptr_t)a0, AT_FDCWD, (const char*)(uintptr_t)a1);
         case 89:
             return (uint64_t)sys_readlinkat(AT_FDCWD, (const char*)(uintptr_t)a0, (char*)(uintptr_t)a1, (size_t)a2);
+        case 90:
+            return (uint64_t)sys_chmodat(AT_FDCWD, (const char*)(uintptr_t)a0, (uint32_t)a1, 0);
+        case 91:
+            return (uint64_t)sys_fchmod((int)a0, (uint32_t)a1);
+        case 92:
+            return (uint64_t)sys_chownat(AT_FDCWD, (const char*)(uintptr_t)a0, (uint32_t)a1, (uint32_t)a2, 0);
+        case 93:
+            return (uint64_t)sys_fchown((int)a0, (uint32_t)a1, (uint32_t)a2);
+        case 94:
+            return (uint64_t)sys_chownat(AT_FDCWD, (const char*)(uintptr_t)a0, (uint32_t)a1, (uint32_t)a2, AT_SYMLINK_NOFOLLOW);
         case 95:
             return (uint64_t)sys_umask((uint32_t)a0);
         case 97:
@@ -6899,6 +7258,8 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
             return (uint64_t)sys_prctl(a0, a1, a2, a3, a4);
         case 158:
             return (uint64_t)sys_arch_prctl(a0, a1);
+        case 162:
+            return (uint64_t)sys_sync();
         case 169:
             return (uint64_t)sys_reboot((int)a0, (int)a1, a2);
         case 186:
@@ -6915,11 +7276,27 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
         case 231:
             return sys_exit_common(frame, a0);
         case 257:
-            return (uint64_t)sys_openat((int)a0, (const char*)(uintptr_t)a1, (uint32_t)a2);
+            return (uint64_t)sys_openat((int)a0, (const char*)(uintptr_t)a1, (uint32_t)a2, (uint32_t)a3);
+        case 258:
+            return (uint64_t)sys_mkdirat((int)a0, (const char*)(uintptr_t)a1, (uint32_t)a2);
+        case 259:
+            return (uint64_t)sys_mknodat((int)a0, (const char*)(uintptr_t)a1, (uint32_t)a2, (uint32_t)a3);
+        case 260:
+            return (uint64_t)sys_chownat((int)a0, (const char*)(uintptr_t)a1, (uint32_t)a2, (uint32_t)a3, (uint32_t)a4);
         case 262:
             return (uint64_t)sys_newfstatat((int)a0, (const char*)(uintptr_t)a1, (struct linux_stat*)(uintptr_t)a2);
+        case 263:
+            return (uint64_t)sys_unlinkat((int)a0, (const char*)(uintptr_t)a1, (uint32_t)a2);
+        case 264:
+            return (uint64_t)sys_renameat((int)a0, (const char*)(uintptr_t)a1, (int)a2, (const char*)(uintptr_t)a3);
+        case 265:
+            return (uint64_t)sys_linkat((int)a0, (const char*)(uintptr_t)a1, (int)a2, (const char*)(uintptr_t)a3, (uint32_t)a4);
+        case 266:
+            return (uint64_t)sys_symlinkat((const char*)(uintptr_t)a0, (int)a1, (const char*)(uintptr_t)a2);
         case 267:
             return (uint64_t)sys_readlinkat((int)a0, (const char*)(uintptr_t)a1, (char*)(uintptr_t)a2, (size_t)a3);
+        case 268:
+            return (uint64_t)sys_chmodat((int)a0, (const char*)(uintptr_t)a1, (uint32_t)a2, 0);
         case 269:
             return (uint64_t)sys_access_like((int)a0, (const char*)(uintptr_t)a1);
         case 270:
@@ -6937,6 +7314,9 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
         case 302:
             return (uint64_t)sys_prlimit64((int)a0, (int)a1, (const struct linux_rlimit*)(uintptr_t)a2,
                                            (struct linux_rlimit*)(uintptr_t)a3);
+        case 316:
+            return (uint64_t)sys_renameat2((int)a0, (const char*)(uintptr_t)a1, (int)a2, (const char*)(uintptr_t)a3,
+                                           (uint32_t)a4);
         case 318:
             return (uint64_t)sys_getrandom((void*)(uintptr_t)a0, (size_t)a1);
         case 332:

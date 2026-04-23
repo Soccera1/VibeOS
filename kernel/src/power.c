@@ -6,6 +6,7 @@
 
 #include "common.h"
 #include "console.h"
+#include "fs.h"
 #include "io.h"
 #include "multiboot2.h"
 #include "string.h"
@@ -135,6 +136,15 @@ struct acpi_power_state {
 };
 
 static struct acpi_power_state g_acpi_power;
+static bool g_fs_shutdown_done;
+
+static void shutdown_filesystems_once(void) {
+    if (g_fs_shutdown_done) {
+        return;
+    }
+    g_fs_shutdown_done = true;
+    (void)fs_shutdown();
+}
 
 static void wait_for_kbc(void) {
     for (uint32_t spins = 0; spins < 0x10000u; ++spins) {
@@ -483,6 +493,7 @@ static void acpi_power_off(void) {
 }
 
 void power_shutdown(void) {
+    shutdown_filesystems_once();
     console_write("\nPowering off...\n");
 
     if (g_acpi_power.ready && g_acpi_power.s5_valid) {
@@ -498,11 +509,13 @@ void power_shutdown(void) {
 }
 
 void power_halt(void) {
+    shutdown_filesystems_once();
     console_write("\nSystem halted.\n");
     halt_forever();
 }
 
 void power_reboot(void) {
+    shutdown_filesystems_once();
     console_write("\nRebooting...\n");
     wait_for_kbc();
     outb(0x64, 0xFE);
