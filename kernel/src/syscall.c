@@ -619,7 +619,8 @@ static char g_exec_argv_scratch[EXEC_MAX_ARGS][EXEC_STR_MAX];
 static char g_exec_env_scratch[EXEC_MAX_ENVS][EXEC_STR_MAX];
 static uint64_t g_exec_argv_ptrs[EXEC_MAX_ARGS];
 static uint64_t g_exec_env_ptrs[EXEC_MAX_ENVS];
-static uint64_t g_fake_time_ns;
+static uint64_t g_wall_time_base_ns;
+static uint64_t g_wall_time_base_tsc;
 static int g_current_pid = 1;
 static int g_current_ppid = 0;
 static int g_current_pgid = 1;
@@ -906,6 +907,122 @@ static bool timeout_expired(uint64_t start, uint64_t budget) {
         return false;
     }
     return (read_tsc() - start) >= budget;
+}
+
+static uint8_t cmos_read(uint8_t reg) {
+    outb(0x70, reg);
+    io_wait();
+    return inb(0x71);
+}
+
+static bool rtc_update_in_progress(void) {
+    return (cmos_read(0x0A) & 0x80u) != 0u;
+}
+
+static uint8_t rtc_decode_value(uint8_t value, bool binary_mode) {
+    if (binary_mode) {
+        return value;
+    }
+    return (uint8_t)((value & 0x0Fu) + ((value >> 4) * 10u));
+}
+
+static bool is_leap_year(uint64_t year) {
+    return (year % 4u) == 0u && ((year % 100u) != 0u || (year % 400u) == 0u);
+}
+
+static uint64_t days_before_year(uint64_t year) {
+    uint64_t years = year - 1970u;
+    return years * 365u + (year - 1969u) / 4u - (year - 1901u) / 100u + (year - 1601u) / 400u;
+}
+
+static uint64_t rtc_unix_seconds(uint64_t year, uint8_t month, uint8_t day, uint8_t hour, uint8_t minute, uint8_t second) {
+    static const uint16_t month_days_before[12] = {
+        0u, 31u, 59u, 90u, 120u, 151u, 181u, 212u, 243u, 273u, 304u, 334u,
+    };
+
+    uint64_t days = days_before_year(year);
+    days += month_days_before[month - 1u];
+    if (month > 2u && is_leap_year(year)) {
+        days++;
+    }
+    days += (uint64_t)day - 1u;
+
+    return (((days * 24u + hour) * 60u + minute) * 60u) + second;
+}
+
+static uint64_t rtc_wall_time_ns(void) {
+    uint8_t second = 0;
+    uint8_t minute = 0;
+    uint8_t hour = 0;
+    uint8_t day = 0;
+    uint8_t month = 0;
+    uint8_t year = 0;
+    uint8_t century = 0;
+
+    for (;;) {
+        while (rtc_update_in_progress()) {
+            __asm__ volatile("pause");
+        }
+
+        uint8_t second_a = cmos_read(0x00);
+        uint8_t minute_a = cmos_read(0x02);
+        uint8_t hour_a = cmos_read(0x04);
+        uint8_t day_a = cmos_read(0x07);
+        uint8_t month_a = cmos_read(0x08);
+        uint8_t year_a = cmos_read(0x09);
+        uint8_t century_a = cmos_read(0x32);
+
+        while (rtc_update_in_progress()) {
+            __asm__ volatile("pause");
+        }
+
+        second = cmos_read(0x00);
+        minute = cmos_read(0x02);
+        hour = cmos_read(0x04);
+        day = cmos_read(0x07);
+        month = cmos_read(0x08);
+        year = cmos_read(0x09);
+        century = cmos_read(0x32);
+
+        if (second == second_a && minute == minute_a && hour == hour_a && day == day_a && month == month_a && year == year_a &&
+            century == century_a) {
+            break;
+        }
+    }
+
+    uint8_t status_b = cmos_read(0x0B);
+    bool binary_mode = (status_b & 0x04u) != 0u;
+    bool twenty_four_hour = (status_b & 0x02u) != 0u;
+    bool pm = !twenty_four_hour && (hour & 0x80u) != 0u;
+    hour &= 0x7Fu;
+
+    second = rtc_decode_value(second, binary_mode);
+    minute = rtc_decode_value(minute, binary_mode);
+    hour = rtc_decode_value(hour, binary_mode);
+    day = rtc_decode_value(day, binary_mode);
+    month = rtc_decode_value(month, binary_mode);
+    year = rtc_decode_value(year, binary_mode);
+    century = rtc_decode_value(century, binary_mode);
+
+    if (pm && hour < 12u) {
+        hour += 12u;
+    } else if (!twenty_four_hour && !pm && hour == 12u) {
+        hour = 0;
+    }
+
+    uint64_t full_year = century != 0u ? (uint64_t)century * 100u + year : 2000u + year;
+    return rtc_unix_seconds(full_year, month, day, hour, minute, second) * 1000000000ull;
+}
+
+static uint64_t synthetic_time_ns(void) {
+    if (g_wall_time_base_tsc == 0) {
+        g_wall_time_base_ns = rtc_wall_time_ns();
+        g_wall_time_base_tsc = read_tsc();
+    }
+
+    uint64_t elapsed_cycles = read_tsc() - g_wall_time_base_tsc;
+    uint64_t elapsed_usec = elapsed_cycles / APPROX_TSC_CYCLES_PER_USEC;
+    return g_wall_time_base_ns + elapsed_usec * 1000ull;
 }
 
 static uint64_t xorshift64(void) {
@@ -4863,6 +4980,12 @@ static int sys_poll(struct linux_pollfd* fds, size_t nfds, int timeout_ms) {
         return err(EINVAL);
     }
 
+    uint64_t start = read_tsc();
+    uint64_t budget = UINT64_MAX;
+    if (timeout_ms >= 0) {
+        budget = timeout_to_tsc_cycles(timeout_ms / 1000, (int64_t)(timeout_ms % 1000) * 1000000ll);
+    }
+
     for (;;) {
         service_keyboard_signal_for_tty();
         if (take_keyboard_signal() != 0) {
@@ -4886,8 +5009,8 @@ static int sys_poll(struct linux_pollfd* fds, size_t nfds, int timeout_ms) {
             return 0;
         }
 
-        if (timeout_ms > 0) {
-            --timeout_ms;
+        if (timeout_ms > 0 && timeout_expired(start, budget)) {
+            return 0;
         }
 
         __asm__ volatile("pause");
@@ -5228,9 +5351,9 @@ static int sys_uname(struct linux_utsname* uts) {
 }
 
 static int sys_clock_gettime(struct linux_timespec* ts) {
-    g_fake_time_ns += 1000000ull;
-    ts->tv_sec = (int64_t)(g_fake_time_ns / 1000000000ull);
-    ts->tv_nsec = (int64_t)(g_fake_time_ns % 1000000000ull);
+    uint64_t now = synthetic_time_ns();
+    ts->tv_sec = (int64_t)(now / 1000000000ull);
+    ts->tv_nsec = (int64_t)(now % 1000000000ull);
     return 0;
 }
 
@@ -5403,7 +5526,6 @@ static int sys_nanosleep(const struct linux_timespec* req, struct linux_timespec
         __asm__ volatile("pause");
     }
 
-    g_fake_time_ns += (uint64_t)req->tv_sec * 1000000000ull + (uint64_t)req->tv_nsec;
     if (rem != NULL) {
         rem->tv_sec = 0;
         rem->tv_nsec = 0;

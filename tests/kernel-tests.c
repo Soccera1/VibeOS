@@ -372,6 +372,8 @@ static void test_pipes_select_and_poll(void) {
     pfd.events = POLLIN;
     pfd.revents = 0;
     REQUIRE(poll(&pfd, 1, 0) == 0, "poll(empty read pipe) was unexpectedly ready");
+    pfd.revents = 0;
+    REQUIRE(poll(&pfd, 1, 2) == 0, "poll(empty read pipe) timeout did not expire cleanly");
 
     pfd.fd = pipefd[1];
     pfd.events = POLLOUT;
