@@ -44,7 +44,7 @@ The text-cell model stores:
 @end itemize
 
 When a framebuffer is present, the console renders characters by drawing the
-built-in 8x16 bitmap font from @file{kernel/src/console_font.c}.
+built-in 12x25 bitmap font from @file{kernel/src/console_font.c}.
 
 @node ANSI and Terminal Features
 @section ANSI and Terminal Features
