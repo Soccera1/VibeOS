@@ -11,7 +11,7 @@ gi.require_version("PangoCairo", "1.0")
 from gi.repository import Pango, PangoCairo
 
 
-FONT_DESCRIPTION = "Noto Sans Mono SemiCondensed Medium 13"
+FONT_DESCRIPTION = "Liberation Mono 13"
 FONT_WIDTH = 12
 FONT_HEIGHT = 25
 ALPHA_THRESHOLD = 96
