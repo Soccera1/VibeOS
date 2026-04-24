@@ -132,7 +132,7 @@ Main console implementation, ANSI handling, framebuffer rendering, and text-cell
 model.
 
 @item kernel/src/console_font.c
-Built-in 8x16 bitmap font table.
+Built-in 12x25 bitmap font table.
 
 @item kernel/src/serial.c
 COM1 initialization and polled serial I/O.

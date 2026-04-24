@@ -13,8 +13,8 @@
 #define VGA_WIDTH 80
 #define VGA_HEIGHT 25
 #define TAB_WIDTH 8
-#define FONT_WIDTH 8
-#define FONT_HEIGHT 16
+#define FONT_WIDTH CONSOLE_FONT_WIDTH
+#define FONT_HEIGHT CONSOLE_FONT_HEIGHT
 #define TEXT_PIXEL_WIDTH (VGA_WIDTH * FONT_WIDTH)
 #define TEXT_PIXEL_HEIGHT (VGA_HEIGHT * FONT_HEIGHT)
 #define VGA_CRTC_INDEX 0x3D4
@@ -22,6 +22,7 @@
 #define VGA_CRTC_CURSOR_START 0x0A
 #define VGA_CRTC_CURSOR_POS_LO 0x0F
 #define VGA_CRTC_CURSOR_POS_HI 0x0E
+#define SOFT_CURSOR_HEIGHT 3u
 
 static volatile uint16_t* const vga_hw = (volatile uint16_t*)0xB8000;
 static uint16_t text_cells[VGA_WIDTH * VGA_HEIGHT];
@@ -131,10 +132,11 @@ static void draw_framebuffer_cell(size_t row, size_t col, uint16_t cell, bool cu
     size_t y0 = g_fb_origin_y + row * FONT_HEIGHT;
 
     for (size_t glyph_row = 0; glyph_row < FONT_HEIGHT; ++glyph_row) {
-        uint8_t bits = g_console_font[ch][glyph_row];
+        console_font_row_t bits = g_console_font[ch][glyph_row];
         for (size_t glyph_col = 0; glyph_col < FONT_WIDTH; ++glyph_col) {
-            uint32_t pixel = ((bits & (0x80u >> glyph_col)) != 0u) ? fg : bg;
-            if (cursor_overlay && glyph_row >= FONT_HEIGHT - 2u) {
+            console_font_row_t mask = (console_font_row_t)(1u << (FONT_WIDTH - 1u - glyph_col));
+            uint32_t pixel = ((bits & mask) != 0u) ? fg : bg;
+            if (cursor_overlay && glyph_row >= FONT_HEIGHT - SOFT_CURSOR_HEIGHT) {
                 pixel = fg;
             }
             fb_store_pixel(x0 + glyph_col, y0 + glyph_row, pixel);
