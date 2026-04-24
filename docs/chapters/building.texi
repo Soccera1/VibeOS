@@ -189,13 +189,20 @@ qemu-system-x86_64 \
   -m 1G \
   -drive format=raw,file=build/vibeos-gpt.img,if=ide,index=0 \
   -device virtio-scsi-pci-transitional,id=scsi0 \
+  -drive format=raw,file=build/usr.ext3,if=none,id=usr \
+  -device scsi-hd,drive=usr,bus=scsi0.0,scsi-id=0,lun=0 \
   -drive format=raw,file=build/home.ext3,if=none,id=home \
-  -device scsi-hd,drive=home,bus=scsi0.0 \
+  -device scsi-hd,drive=home,bus=scsi0.0,scsi-id=1,lun=0 \
   -serial stdio
 @end example
 
 The serial console is especially important because the kernel mirrors console
 output to COM1.
+
+On the default GPT/QEMU run path, @file{build/usr.ext3} is attached as virtio
+SCSI target 0 for @file{/usr}, while @file{build/home.ext3} is attached as
+target 1 for @file{/home}.  ISO boot still stages @file{/usr} as a Multiboot
+module.
 
 @node Building the Manual
 @section Building the Manual

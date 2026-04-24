@@ -419,6 +419,7 @@ struct boot_ext2_mount {
     const char* mount_path;
     bool read_only;
     enum boot_ext2_source source;
+    size_t scsi_disk_index;
     const uint8_t* image;
     size_t size;
     const char* file_path;
@@ -445,12 +446,33 @@ int fs_mount_ext2_storage(const char* mount_path, const struct ext2_storage_ops*
     return ext2_mount_storage_at(mount_path, ops, ctx, size, read_only);
 }
 
+static int fs_mount_scsi_disk(const struct boot_ext2_mount* mount) {
+    if (mount == NULL) {
+        return -1;
+    }
+    if (virtio_scsi_disk_present(mount->scsi_disk_index)) {
+        return fs_mount_ext2_storage(mount->mount_path, virtio_scsi_disk_storage_ops(mount->scsi_disk_index),
+                                     virtio_scsi_disk_storage_ctx(mount->scsi_disk_index),
+                                     virtio_scsi_disk_size(mount->scsi_disk_index), mount->read_only);
+    }
+    if (mount->scsi_disk_index == 0u && ata_scsi_present()) {
+        return fs_mount_ext2_storage(mount->mount_path, ata_scsi_storage_ops(), ata_scsi_storage_ctx(), ata_scsi_size(),
+                                     mount->read_only);
+    }
+    return -1;
+}
+
 void fs_init(const uint8_t* usrfs_start, size_t usrfs_size) {
+    bool usr_from_multiboot = usrfs_start != NULL && usrfs_size != 0u;
+    bool usr_from_scsi = !usr_from_multiboot && virtio_scsi_disk_present(0u);
+    size_t home_scsi_index = (usr_from_scsi || virtio_scsi_disk_present(1u)) ? 1u : 0u;
+
     struct boot_ext2_mount mounts[] = {
         {
             .mount_path = "/usr",
             .read_only = true,
-            .source = (usrfs_start != NULL && usrfs_size != 0u) ? BOOT_EXT2_SOURCE_IMAGE : BOOT_EXT2_SOURCE_FILE,
+            .source = usr_from_multiboot ? BOOT_EXT2_SOURCE_IMAGE : (usr_from_scsi ? BOOT_EXT2_SOURCE_SCSI : BOOT_EXT2_SOURCE_FILE),
+            .scsi_disk_index = 0u,
             .image = usrfs_start,
             .size = usrfs_size,
             .file_path = "/boot/usr.ext3",
@@ -459,6 +481,7 @@ void fs_init(const uint8_t* usrfs_start, size_t usrfs_size) {
             .mount_path = "/home",
             .read_only = false,
             .source = BOOT_EXT2_SOURCE_SCSI,
+            .scsi_disk_index = home_scsi_index,
             .image = NULL,
             .size = 0u,
             .file_path = NULL,
@@ -481,13 +504,7 @@ void fs_init(const uint8_t* usrfs_start, size_t usrfs_size) {
                 }
                 break;
             case BOOT_EXT2_SOURCE_SCSI:
-                if (virtio_scsi_present()) {
-                    r = fs_mount_ext2_storage(mounts[i].mount_path, virtio_scsi_storage_ops(), virtio_scsi_storage_ctx(),
-                                              virtio_scsi_size(), mounts[i].read_only);
-                } else if (ata_scsi_present()) {
-                    r = fs_mount_ext2_storage(mounts[i].mount_path, ata_scsi_storage_ops(), ata_scsi_storage_ctx(),
-                                              ata_scsi_size(), mounts[i].read_only);
-                }
+                r = fs_mount_scsi_disk(&mounts[i]);
                 break;
         }
         if (r != 0) {
