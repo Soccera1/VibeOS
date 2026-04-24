@@ -3131,6 +3131,13 @@ static void ext2_destroy_mount(struct ext2_mount* mount) {
     memset(mount, 0, sizeof(*mount));
 }
 
+static void ext2_rebind_mount_storage_ctx(struct ext2_mount* mount) {
+    if (mount == NULL || mount->ops != &g_ext2_file_ops) {
+        return;
+    }
+    mount->storage_ctx = &mount->file_storage;
+}
+
 int ext2_mount_storage_at(const char* mount_path, const struct ext2_storage_ops* ops, void* ctx, size_t size, bool read_only) {
     struct ext2_mount mounted;
     int r = ext2_build_mount(&mounted, mount_path, ops, ctx, size, read_only);
@@ -3149,6 +3156,7 @@ int ext2_mount_storage_at(const char* mount_path, const struct ext2_storage_ops*
 
     ext2_destroy_mount(slot);
     *slot = mounted;
+    ext2_rebind_mount_storage_ctx(slot);
     g_ext2_current = slot;
     return 0;
 }
@@ -3209,6 +3217,7 @@ int ext2_mount_file_at(const char* mount_path, const struct fs_entry* image_file
 
     ext2_destroy_mount(slot);
     *slot = mounted;
+    ext2_rebind_mount_storage_ctx(slot);
     g_ext2_current = slot;
     return 0;
 }
