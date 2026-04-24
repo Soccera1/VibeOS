@@ -35,8 +35,8 @@
 #define VIRTIO_SCSI_S_OK 0u
 #define VIRTIO_SCSI_S_BAD_TARGET 3u
 #define VIRTIO_SCSI_CMD_SPIN_LIMIT 200000u
-#define VIRTIO_SCSI_MAX_DISKS 4u
 #define VIRTIO_SCSI_TARGET_SCAN_LIMIT 8u
+#define VIRTIO_SCSI_SCAN_PASSES 3u
 
 struct vring_desc {
     uint64_t addr;
@@ -104,7 +104,7 @@ struct virtio_scsi_target {
     uint16_t lun;
 };
 
-static struct virtio_scsi_target g_targets[VIRTIO_SCSI_MAX_DISKS];
+static struct virtio_scsi_target g_targets[VIRTIO_SCSI_TARGET_SCAN_LIMIT];
 static size_t g_target_count;
 
 static void virtio_status_or(uint8_t value) {
@@ -278,14 +278,25 @@ void virtio_scsi_init(void) {
     g_present = true;
     virtio_status_or(VIRTIO_STATUS_DRIVER_OK);
     g_last_used_idx = 0u;
-    for (uint8_t target = 0; target < VIRTIO_SCSI_TARGET_SCAN_LIMIT && g_target_count < VIRTIO_SCSI_MAX_DISKS; ++target) {
-        struct virtio_scsi_target* slot = &g_targets[g_target_count];
-        memset(slot, 0, sizeof(*slot));
-        slot->target = target;
-        slot->lun = 0u;
-        if (scsi_disk_probe(&slot->disk, &g_transport, slot, true) == 0) {
-            ++g_target_count;
-        } else if (g_target_count != 0u) {
+    for (uint8_t pass = 0; pass < VIRTIO_SCSI_SCAN_PASSES; ++pass) {
+        bool found_any = false;
+        for (uint8_t target = 0; target < VIRTIO_SCSI_TARGET_SCAN_LIMIT; ++target) {
+            struct virtio_scsi_target* slot = &g_targets[target];
+            if (slot->disk.present) {
+                continue;
+            }
+
+            memset(slot, 0, sizeof(*slot));
+            slot->target = target;
+            slot->lun = 0u;
+            if (scsi_disk_probe(&slot->disk, &g_transport, slot, true) == 0) {
+                found_any = true;
+                if (g_target_count < (size_t)target + 1u) {
+                    g_target_count = (size_t)target + 1u;
+                }
+            }
+        }
+        if (!found_any || g_targets[0].disk.present) {
             break;
         }
     }
