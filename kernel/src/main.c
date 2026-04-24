@@ -97,15 +97,21 @@ void kernel_main(uint64_t mb2_info) {
     const struct mb2_tag_module* usrfs_module = mb2_find_module(mb2_info, 1);
     const uint8_t* usrfs_start = NULL;
     size_t usrfs_size = 0;
+    bool usr_from_scsi = false;
     if (usrfs_module != NULL) {
         usrfs_start = (const uint8_t*)(uintptr_t)usrfs_module->mod_start;
         usrfs_size = (size_t)(usrfs_module->mod_end - usrfs_module->mod_start);
+    } else if (virtio_scsi_disk_present(0u)) {
+        usr_from_scsi = true;
     }
+    size_t home_scsi_index = (usr_from_scsi || virtio_scsi_disk_present(1u)) ? 1u : 0u;
 
     fs_init(usrfs_start, usrfs_size);
     if (fs_usr_mount_ready()) {
         if (usrfs_module != NULL) {
             console_printf("/usr: ext3 module mounted (%u bytes)\n", (unsigned)usrfs_size);
+        } else if (usr_from_scsi) {
+            console_printf("/usr: ext3 SCSI disk mounted read-only (%u bytes)\n", (unsigned)virtio_scsi_disk_size(0u));
         } else {
             console_write("/usr: ext3 image mounted from /boot/usr.ext3\n");
         }
@@ -117,7 +123,12 @@ void kernel_main(uint64_t mb2_info) {
         }
     }
     if (fs_home_mount_ready()) {
-        console_write("/home: ext3 SCSI disk mounted read-write\n");
+        if (virtio_scsi_disk_present(home_scsi_index)) {
+            console_printf("/home: ext3 SCSI disk %u mounted read-write (%u bytes)\n", (unsigned)home_scsi_index,
+                           (unsigned)virtio_scsi_disk_size(home_scsi_index));
+        } else {
+            console_write("/home: ext3 SCSI disk mounted read-write\n");
+        }
     } else if (fs_home_ramdisk_ready()) {
         console_write("/home: ramdisk mounted read-write\n");
     } else {
@@ -126,8 +137,11 @@ void kernel_main(uint64_t mb2_info) {
     if (ata_scsi_present()) {
         console_printf("scsi: ATA PACKET device present (%u bytes)\n", (unsigned)ata_scsi_size());
     }
-    if (virtio_scsi_present()) {
-        console_printf("scsi: virtio-scsi disk present (%u bytes)\n", (unsigned)virtio_scsi_size());
+    for (size_t i = 0; i < virtio_scsi_disk_count(); ++i) {
+        if (!virtio_scsi_disk_present(i)) {
+            continue;
+        }
+        console_printf("scsi: virtio-scsi disk %u present (%u bytes)\n", (unsigned)i, (unsigned)virtio_scsi_disk_size(i));
     }
 
     kernel_exit_stack_top = (uint64_t)(uintptr_t)(&post_user_stack[sizeof(post_user_stack)]);

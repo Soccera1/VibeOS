@@ -179,17 +179,19 @@ iso: check-toolchain $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT3)
 	./tools/make_iso.sh $(ISO_IMAGE) $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT3)
 
 # BIOS + GPT raw disk image. Needs loop devices and mount permissions.
-disk: check-toolchain $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT3) $(HOME_EXT3)
-	./tools/make_gpt_disk.sh $(DISK_IMAGE) $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT3)
+disk: check-toolchain $(KERNEL_BIN) $(INITRAMFS)
+	./tools/make_gpt_disk.sh $(DISK_IMAGE) $(KERNEL_BIN) $(INITRAMFS)
 
-run: disk
+run: disk $(USR_EXT3) $(HOME_EXT3)
 	qemu-system-x86_64 \
 		-machine q35,accel=kvm:tcg \
 		-m 1G \
 		-drive format=raw,file=$(DISK_IMAGE),if=ide,index=0 \
 		-device virtio-scsi-pci-transitional,id=scsi0 \
+		-drive format=raw,file=$(USR_EXT3),if=none,id=usr \
+		-device scsi-hd,drive=usr,bus=scsi0.0,scsi-id=0,lun=0 \
 		-drive format=raw,file=$(HOME_EXT3),if=none,id=home \
-		-device scsi-hd,drive=home,bus=scsi0.0 \
+		-device scsi-hd,drive=home,bus=scsi0.0,scsi-id=1,lun=0 \
 		-serial stdio
 
 docs: $(DOCS_SRC) | $(DOCS_OUT)

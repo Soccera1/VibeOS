@@ -5,6 +5,8 @@
 
 #include "string.h"
 
+#define SCSI_OP_TEST_UNIT_READY 0x00u
+#define SCSI_OP_REQUEST_SENSE 0x03u
 #define SCSI_OP_INQUIRY 0x12u
 #define SCSI_OP_READ_CAPACITY_10 0x25u
 #define SCSI_OP_READ_10 0x28u
@@ -21,6 +23,22 @@ static void be32_store(uint8_t* p, uint32_t v) {
     p[1] = (uint8_t)(v >> 16);
     p[2] = (uint8_t)(v >> 8);
     p[3] = (uint8_t)v;
+}
+
+static int scsi_probe_retry(const struct scsi_transport* transport, void* transport_ctx, const uint8_t* cdb, size_t cdb_len, void* data,
+                            size_t data_len, bool data_in) {
+    if (transport->command(transport_ctx, cdb, cdb_len, data, data_len, data_in) == 0) {
+        return 0;
+    }
+
+    uint8_t sense_cdb[6] = { 0 };
+    uint8_t sense[18];
+    memset(sense, 0, sizeof(sense));
+    sense_cdb[0] = SCSI_OP_REQUEST_SENSE;
+    sense_cdb[4] = sizeof(sense);
+    (void)transport->command(transport_ctx, sense_cdb, sizeof(sense_cdb), sense, sizeof(sense), true);
+
+    return transport->command(transport_ctx, cdb, cdb_len, data, data_len, data_in);
 }
 
 static int scsi_rw_blocks(struct scsi_disk* disk, bool write, uint64_t lba, uint16_t blocks, void* data) {
@@ -56,7 +74,7 @@ int scsi_disk_probe(struct scsi_disk* disk, const struct scsi_transport* transpo
     memset(cdb, 0, sizeof(cdb));
     cdb[0] = SCSI_OP_INQUIRY;
     cdb[4] = sizeof(inquiry);
-    if (transport->command(transport_ctx, cdb, 6u, inquiry, sizeof(inquiry), true) != 0) {
+    if (scsi_probe_retry(transport, transport_ctx, cdb, 6u, inquiry, sizeof(inquiry), true) != 0) {
         return -1;
     }
 
@@ -66,8 +84,12 @@ int scsi_disk_probe(struct scsi_disk* disk, const struct scsi_transport* transpo
     }
 
     memset(cdb, 0, sizeof(cdb));
+    cdb[0] = SCSI_OP_TEST_UNIT_READY;
+    (void)scsi_probe_retry(transport, transport_ctx, cdb, 6u, NULL, 0u, true);
+
+    memset(cdb, 0, sizeof(cdb));
     cdb[0] = SCSI_OP_READ_CAPACITY_10;
-    if (transport->command(transport_ctx, cdb, sizeof(cdb), capacity, sizeof(capacity), true) != 0) {
+    if (scsi_probe_retry(transport, transport_ctx, cdb, sizeof(cdb), capacity, sizeof(capacity), true) != 0) {
         return -1;
     }
 
