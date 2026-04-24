@@ -127,6 +127,12 @@ int keyboard_poll_char(void) {
             case 0x48:
                 enqueue_pending_string("\x1b[A");
                 return dequeue_pending_char();
+            case 0x4B:
+                enqueue_pending_string("\x1b[D");
+                return dequeue_pending_char();
+            case 0x4D:
+                enqueue_pending_string("\x1b[C");
+                return dequeue_pending_char();
             case 0x50:
                 enqueue_pending_string("\x1b[B");
                 return dequeue_pending_char();
