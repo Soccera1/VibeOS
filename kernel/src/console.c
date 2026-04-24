@@ -1042,12 +1042,9 @@ void console_putc(char c) {
     if (c == '\b') {
         if (cursor_col > 0) {
             --cursor_col;
-            text_cells[cell_index(cursor_row, cursor_col)] = ((uint16_t)color << 8) | ' ';
-            present_row_range(cursor_row, cursor_col, cursor_col + 1u);
+            // Terminal backspace moves left; destructive erase is emitted as "\b \b".
+            serial_putc('\b');
         }
-        serial_putc('\b');
-        serial_putc(' ');
-        serial_putc('\b');
         update_hw_cursor();
         return;
     }
