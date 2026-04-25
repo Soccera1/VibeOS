@@ -3517,6 +3517,8 @@ static int sys_ioctl(int fd, uint64_t req, void* argp) {
             ws.ws_row = 25;
             ws.ws_col = 80;
             if (get_fb_info(&fb)) {
+                ws.ws_row = (uint16_t)fb.text_rows;
+                ws.ws_col = (uint16_t)fb.text_cols;
                 ws.ws_xpixel = (uint16_t)fb.width;
                 ws.ws_ypixel = (uint16_t)fb.height;
             } else {

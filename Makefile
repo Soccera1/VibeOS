@@ -50,6 +50,7 @@ USER_HELP := $(BUILD_DIR)/userspace/help
 USER_FILE := $(BUILD_DIR)/userspace/file
 USER_FILE_MAGIC := $(BUILD_DIR)/userspace/file-magic.mgc
 USER_NANO := $(BUILD_DIR)/userspace/nano
+USER_LESS := $(BUILD_DIR)/userspace/less
 USER_MAN_PAGES := $(BUILD_DIR)/userspace/man-pages
 USER_LIBPIPELINE := $(BUILD_DIR)/userspace/libpipeline
 USER_GDBM := $(BUILD_DIR)/userspace/gdbm
@@ -62,6 +63,7 @@ NCURSES_BUILD := $(NCURSES_SRC)/build-musl
 SL_SRC := external/sl-src
 FILE_SRC := external/file-src
 NANO_SRC := external/nano-src
+LESS_SRC := external/less-src
 MAN_PAGES_SRC := external/man-pages-src
 LIBPIPELINE_SRC := external/libpipeline-src
 GDBM_SRC := external/gdbm-src
@@ -148,6 +150,9 @@ $(USER_FILE_MAGIC): $(USER_FILE)
 $(USER_NANO): $(NCURSES_BUILD)/lib/libncursesw.a | $(BUILD_DIR)
 	./tools/build_nano.sh $@ "$(NANO_SRC)"
 
+$(USER_LESS): $(NCURSES_BUILD)/lib/libncursesw.a | $(BUILD_DIR)
+	./tools/build_less.sh $@ "$(LESS_SRC)" "$(NCURSES_BUILD)"
+
 $(USER_MAN_PAGES): | $(BUILD_DIR)
 	./tools/build_man_pages.sh $@ "$(MAN_PAGES_SRC)"
 
@@ -169,8 +174,8 @@ $(USER_TESTS): $(TESTS_SRC) tools/build_kernel_tests.sh | $(BUILD_DIR)
 $(INITRAMFS): tools/make_initramfs.sh $(USER_BUSYBOX) $(USER_HELP) $(USER_COREUTILS) $(USER_COREUTILS_PROGS)
 	./tools/make_initramfs.sh $@ $(USER_BUSYBOX) $(USER_HELP) $(USER_COREUTILS) $(USER_COREUTILS_PROGS)
 
-$(USR_EXT3): tools/make_usr_ext2.sh $(USER_BASH) $(USER_HELP) $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO) $(USER_COREUTILS) $(USER_COREUTILS_PROGS) $(USER_MAN_PAGES) $(USER_GROFF) $(USER_MAN_DB) $(USER_TESTS)
-	./tools/make_usr_ext2.sh $@ $(USER_BASH) $(USER_HELP) $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO) $(USER_COREUTILS) $(USER_COREUTILS_PROGS) $(USER_MAN_PAGES) $(USER_GROFF) $(USER_MAN_DB) $(USER_TESTS)
+$(USR_EXT3): tools/make_usr_ext2.sh $(USER_BASH) $(USER_HELP) $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO) $(USER_LESS) $(USER_COREUTILS) $(USER_COREUTILS_PROGS) $(USER_MAN_PAGES) $(USER_GROFF) $(USER_MAN_DB) $(USER_TESTS)
+	./tools/make_usr_ext2.sh $@ $(USER_BASH) $(USER_HELP) $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO) $(USER_LESS) $(USER_COREUTILS) $(USER_COREUTILS_PROGS) $(USER_MAN_PAGES) $(USER_GROFF) $(USER_MAN_DB) $(USER_TESTS)
 
 $(HOME_EXT3): tools/make_home_ext2.sh | $(BUILD_DIR)
 	./tools/make_home_ext2.sh $@
@@ -186,6 +191,8 @@ run: disk $(USR_EXT3) $(HOME_EXT3)
 	qemu-system-x86_64 \
 		-machine q35,accel=kvm:tcg \
 		-m 1G \
+		-vga none \
+		-device virtio-vga \
 		-drive format=raw,file=$(DISK_IMAGE),if=ide,index=0 \
 		-device virtio-scsi-pci-transitional,id=scsi0 \
 		-drive format=raw,file=$(USR_EXT3),if=none,id=usr \

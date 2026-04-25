@@ -12,11 +12,12 @@
 
 #define VGA_WIDTH 80
 #define VGA_HEIGHT 25
+#define FB_MAX_COLS 512
+#define FB_MAX_ROWS 256
 #define TAB_WIDTH 8
 #define FONT_WIDTH CONSOLE_FONT_WIDTH
 #define FONT_HEIGHT CONSOLE_FONT_HEIGHT
-#define TEXT_PIXEL_WIDTH (VGA_WIDTH * FONT_WIDTH)
-#define TEXT_PIXEL_HEIGHT (VGA_HEIGHT * FONT_HEIGHT)
+#define TEXT_CELL_CAPACITY (FB_MAX_COLS * FB_MAX_ROWS)
 #define VGA_CRTC_INDEX 0x3D4
 #define VGA_CRTC_DATA 0x3D5
 #define VGA_CRTC_CURSOR_START 0x0A
@@ -25,8 +26,10 @@
 #define SOFT_CURSOR_HEIGHT 3u
 
 static volatile uint16_t* const vga_hw = (volatile uint16_t*)0xB8000;
-static uint16_t text_cells[VGA_WIDTH * VGA_HEIGHT];
-static uint16_t main_vga[VGA_WIDTH * VGA_HEIGHT];
+static uint16_t text_cells[TEXT_CELL_CAPACITY];
+static uint16_t main_vga[TEXT_CELL_CAPACITY];
+static size_t text_cols = VGA_WIDTH;
+static size_t text_rows = VGA_HEIGHT;
 static size_t cursor_row;
 static size_t cursor_col;
 static uint8_t color = 0x07;
@@ -77,7 +80,28 @@ static bool framebuffer_active(void) {
 }
 
 static size_t cell_index(size_t row, size_t col) {
-    return row * VGA_WIDTH + col;
+    return row * text_cols + col;
+}
+
+static size_t cell_count(void) {
+    return text_cols * text_rows;
+}
+
+static void set_text_geometry(size_t cols, size_t rows) {
+    if (cols == 0u || rows == 0u) {
+        cols = VGA_WIDTH;
+        rows = VGA_HEIGHT;
+    }
+    if (cols > FB_MAX_COLS) {
+        cols = FB_MAX_COLS;
+    }
+    if (rows > FB_MAX_ROWS) {
+        rows = FB_MAX_ROWS;
+    }
+    text_cols = cols;
+    text_rows = rows;
+    scroll_top = 0;
+    scroll_bottom = text_rows - 1u;
 }
 
 static uint32_t scale_channel(uint8_t value, uint8_t bits) {
@@ -174,11 +198,11 @@ static void draw_soft_cursor(void) {
 }
 
 static void present_row_range(size_t row, size_t start_col, size_t end_col) {
-    if (row >= VGA_HEIGHT || start_col >= VGA_WIDTH) {
+    if (row >= text_rows || start_col >= text_cols) {
         return;
     }
-    if (end_col > VGA_WIDTH) {
-        end_col = VGA_WIDTH;
+    if (end_col > text_cols) {
+        end_col = text_cols;
     }
 
     for (size_t x = start_col; x < end_col; ++x) {
@@ -187,11 +211,11 @@ static void present_row_range(size_t row, size_t start_col, size_t end_col) {
 }
 
 static void present_rows(size_t start_row, size_t end_row) {
-    if (end_row > VGA_HEIGHT) {
-        end_row = VGA_HEIGHT;
+    if (end_row > text_rows) {
+        end_row = text_rows;
     }
     for (size_t row = start_row; row < end_row; ++row) {
-        present_row_range(row, 0, VGA_WIDTH);
+        present_row_range(row, 0, text_cols);
     }
 }
 
@@ -199,7 +223,7 @@ static void present_all(void) {
     if (framebuffer_active()) {
         fb_fill_rect(0, 0, g_fb_info.width, g_fb_info.height, g_fb_palette[0]);
     }
-    present_rows(0, VGA_HEIGHT);
+    present_rows(0, text_rows);
 }
 
 static void apply_text_attributes(void) {
@@ -229,12 +253,12 @@ static void reset_text_attributes(void) {
 }
 
 static void clear_row_range(size_t row, size_t start_col, size_t end_col) {
-    if (row >= VGA_HEIGHT || start_col >= VGA_WIDTH) {
+    if (row >= text_rows || start_col >= text_cols) {
         return;
     }
 
-    if (end_col > VGA_WIDTH) {
-        end_col = VGA_WIDTH;
+    if (end_col > text_cols) {
+        end_col = text_cols;
     }
 
     for (size_t x = start_col; x < end_col; ++x) {
@@ -245,29 +269,29 @@ static void clear_row_range(size_t row, size_t start_col, size_t end_col) {
 
 static void clear_screen_entire(void) {
     uint16_t blank = blank_cell();
-    for (size_t i = 0; i < VGA_WIDTH * VGA_HEIGHT; ++i) {
+    for (size_t i = 0; i < cell_count(); ++i) {
         text_cells[i] = blank;
     }
     present_all();
 }
 
 static void scroll_up_region(size_t top, size_t bottom, size_t lines) {
-    if (top >= VGA_HEIGHT || bottom >= VGA_HEIGHT || top > bottom) {
+    if (top >= text_rows || bottom >= text_rows || top > bottom) {
         return;
     }
 
     size_t height = bottom - top + 1u;
     if (lines >= height) {
         for (size_t y = top; y <= bottom; ++y) {
-            clear_row_range(y, 0, VGA_WIDTH);
+            clear_row_range(y, 0, text_cols);
         }
         return;
     }
 
     memmove(&text_cells[cell_index(top, 0)], &text_cells[cell_index(top + lines, 0)],
-            (height - lines) * VGA_WIDTH * sizeof(text_cells[0]));
+            (height - lines) * text_cols * sizeof(text_cells[0]));
     for (size_t y = bottom + 1u - lines; y <= bottom; ++y) {
-        for (size_t x = 0; x < VGA_WIDTH; ++x) {
+        for (size_t x = 0; x < text_cols; ++x) {
             text_cells[cell_index(y, x)] = blank_cell();
         }
     }
@@ -275,22 +299,22 @@ static void scroll_up_region(size_t top, size_t bottom, size_t lines) {
 }
 
 static void scroll_down_region(size_t top, size_t bottom, size_t lines) {
-    if (top >= VGA_HEIGHT || bottom >= VGA_HEIGHT || top > bottom) {
+    if (top >= text_rows || bottom >= text_rows || top > bottom) {
         return;
     }
 
     size_t height = bottom - top + 1u;
     if (lines >= height) {
         for (size_t y = top; y <= bottom; ++y) {
-            clear_row_range(y, 0, VGA_WIDTH);
+            clear_row_range(y, 0, text_cols);
         }
         return;
     }
 
     memmove(&text_cells[cell_index(top + lines, 0)], &text_cells[cell_index(top, 0)],
-            (height - lines) * VGA_WIDTH * sizeof(text_cells[0]));
+            (height - lines) * text_cols * sizeof(text_cells[0]));
     for (size_t y = top; y < top + lines; ++y) {
-        for (size_t x = 0; x < VGA_WIDTH; ++x) {
+        for (size_t x = 0; x < text_cols; ++x) {
             text_cells[cell_index(y, x)] = blank_cell();
         }
     }
@@ -298,11 +322,11 @@ static void scroll_down_region(size_t top, size_t bottom, size_t lines) {
 }
 
 static void clamp_cursor(void) {
-    if (cursor_row >= VGA_HEIGHT) {
-        cursor_row = VGA_HEIGHT - 1;
+    if (cursor_row >= text_rows) {
+        cursor_row = text_rows - 1;
     }
-    if (cursor_col >= VGA_WIDTH) {
-        cursor_col = VGA_WIDTH - 1;
+    if (cursor_col >= text_cols) {
+        cursor_col = text_cols - 1;
     }
 }
 
@@ -334,7 +358,7 @@ static void update_hw_cursor(void) {
 
     size_t row = cursor_row;
     size_t col = cursor_col;
-    uint16_t pos = (uint16_t)(row * VGA_WIDTH + col);
+    uint16_t pos = (uint16_t)(row * text_cols + col);
     outb(VGA_CRTC_INDEX, VGA_CRTC_CURSOR_POS_LO);
     outb(VGA_CRTC_DATA, (uint8_t)(pos & 0xFFu));
     outb(VGA_CRTC_INDEX, VGA_CRTC_CURSOR_POS_HI);
@@ -343,15 +367,15 @@ static void update_hw_cursor(void) {
 
 static void clear_line_from_cursor(void) {
     clamp_cursor();
-    clear_row_range(cursor_row, cursor_col, VGA_WIDTH);
+    clear_row_range(cursor_row, cursor_col, text_cols);
 }
 
 static void clear_screen_from_cursor(void) {
     clamp_cursor();
     clear_line_from_cursor();
 
-    for (size_t y = cursor_row + 1; y < VGA_HEIGHT; ++y) {
-        clear_row_range(y, 0, VGA_WIDTH);
+    for (size_t y = cursor_row + 1; y < text_rows; ++y) {
+        clear_row_range(y, 0, text_cols);
     }
 }
 
@@ -434,14 +458,14 @@ static void move_cursor_relative(int row_delta, int col_delta) {
 
     if (row < 0) {
         row = 0;
-    } else if (row >= (int)VGA_HEIGHT) {
-        row = (int)VGA_HEIGHT - 1;
+    } else if (row >= (int)text_rows) {
+        row = (int)text_rows - 1;
     }
 
     if (col < 0) {
         col = 0;
-    } else if (col >= (int)VGA_WIDTH) {
-        col = (int)VGA_WIDTH - 1;
+    } else if (col >= (int)text_cols) {
+        col = (int)text_cols - 1;
     }
 
     cursor_row = (size_t)row;
@@ -450,7 +474,7 @@ static void move_cursor_relative(int row_delta, int col_delta) {
 
 static void clear_entire_line(void) {
     clamp_cursor();
-    clear_row_range(cursor_row, 0, VGA_WIDTH);
+    clear_row_range(cursor_row, 0, text_cols);
 }
 
 static void clear_line_to_cursor(void) {
@@ -462,7 +486,7 @@ static void clear_screen_to_cursor(void) {
     clamp_cursor();
 
     for (size_t y = 0; y < cursor_row; ++y) {
-        clear_row_range(y, 0, VGA_WIDTH);
+        clear_row_range(y, 0, text_cols);
     }
 
     clear_row_range(cursor_row, 0, cursor_col + 1u);
@@ -470,38 +494,38 @@ static void clear_screen_to_cursor(void) {
 
 static void insert_blank_chars(size_t count) {
     clamp_cursor();
-    if (count == 0 || cursor_col >= VGA_WIDTH) {
+    if (count == 0 || cursor_col >= text_cols) {
         return;
     }
-    if (count > VGA_WIDTH - cursor_col) {
-        count = VGA_WIDTH - cursor_col;
+    if (count > text_cols - cursor_col) {
+        count = text_cols - cursor_col;
     }
 
-    size_t row_base = cursor_row * VGA_WIDTH;
+    size_t row_base = cursor_row * text_cols;
     memmove(&text_cells[row_base + cursor_col + count], &text_cells[row_base + cursor_col],
-            (VGA_WIDTH - cursor_col - count) * sizeof(text_cells[0]));
+            (text_cols - cursor_col - count) * sizeof(text_cells[0]));
     for (size_t x = cursor_col; x < cursor_col + count; ++x) {
         text_cells[row_base + x] = blank_cell();
     }
-    present_row_range(cursor_row, cursor_col, VGA_WIDTH);
+    present_row_range(cursor_row, cursor_col, text_cols);
 }
 
 static void delete_chars(size_t count) {
     clamp_cursor();
-    if (count == 0 || cursor_col >= VGA_WIDTH) {
+    if (count == 0 || cursor_col >= text_cols) {
         return;
     }
-    if (count > VGA_WIDTH - cursor_col) {
-        count = VGA_WIDTH - cursor_col;
+    if (count > text_cols - cursor_col) {
+        count = text_cols - cursor_col;
     }
 
-    size_t row_base = cursor_row * VGA_WIDTH;
+    size_t row_base = cursor_row * text_cols;
     memmove(&text_cells[row_base + cursor_col], &text_cells[row_base + cursor_col + count],
-            (VGA_WIDTH - cursor_col - count) * sizeof(text_cells[0]));
-    for (size_t x = VGA_WIDTH - count; x < VGA_WIDTH; ++x) {
+            (text_cols - cursor_col - count) * sizeof(text_cells[0]));
+    for (size_t x = text_cols - count; x < text_cols; ++x) {
         text_cells[row_base + x] = blank_cell();
     }
-    present_row_range(cursor_row, cursor_col, VGA_WIDTH);
+    present_row_range(cursor_row, cursor_col, text_cols);
 }
 
 static void erase_chars(size_t count) {
@@ -509,8 +533,8 @@ static void erase_chars(size_t count) {
     if (count == 0) {
         return;
     }
-    if (count > VGA_WIDTH - cursor_col) {
-        count = VGA_WIDTH - cursor_col;
+    if (count > text_cols - cursor_col) {
+        count = text_cols - cursor_col;
     }
     clear_row_range(cursor_row, cursor_col, cursor_col + count);
 }
@@ -539,8 +563,8 @@ static void linefeed(void) {
             scroll_up_region(scroll_top, scroll_bottom, 1u);
             return;
         }
-    } else if (cursor_row == VGA_HEIGHT - 1u) {
-        scroll_up_region(0, VGA_HEIGHT - 1u, 1u);
+    } else if (cursor_row == text_rows - 1u) {
+        scroll_up_region(0, text_rows - 1u, 1u);
         return;
     }
 
@@ -557,7 +581,7 @@ static void reverse_index(void) {
             return;
         }
     } else if (cursor_row == 0u) {
-        scroll_down_region(0, VGA_HEIGHT - 1u, 1u);
+        scroll_down_region(0, text_rows - 1u, 1u);
         return;
     }
 
@@ -571,11 +595,11 @@ static void set_scroll_region(unsigned top_1based, unsigned bottom_1based) {
         top_1based = 1u;
     }
     if (bottom_1based == 0u) {
-        bottom_1based = VGA_HEIGHT;
+        bottom_1based = (unsigned)text_rows;
     }
-    if (top_1based > VGA_HEIGHT || bottom_1based > VGA_HEIGHT || top_1based >= bottom_1based) {
+    if (top_1based > text_rows || bottom_1based > text_rows || top_1based >= bottom_1based) {
         scroll_top = 0;
-        scroll_bottom = VGA_HEIGHT - 1u;
+        scroll_bottom = text_rows - 1u;
     } else {
         scroll_top = (size_t)(top_1based - 1u);
         scroll_bottom = (size_t)(bottom_1based - 1u);
@@ -621,7 +645,7 @@ static void reset_console_state(void) {
     ansi_state = 0;
     ansi_len = 0;
     scroll_top = 0;
-    scroll_bottom = VGA_HEIGHT - 1u;
+    scroll_bottom = text_rows - 1u;
     g1_charset_graphics = false;
     shift_out_active = false;
     cursor_visible = true;
@@ -634,8 +658,9 @@ static void setup_framebuffer(const struct mb2_framebuffer_info* fb) {
     g_fb_base = NULL;
     g_fb_origin_x = 0;
     g_fb_origin_y = 0;
+    set_text_geometry(VGA_WIDTH, VGA_HEIGHT);
 
-    if (fb == NULL || fb->addr == 0 || fb->addr >= (1ull << 32) || fb->width < TEXT_PIXEL_WIDTH || fb->height < TEXT_PIXEL_HEIGHT) {
+    if (fb == NULL || fb->addr == 0 || fb->addr >= (1ull << 32) || fb->width < FONT_WIDTH || fb->height < FONT_HEIGHT) {
         return;
     }
     if (fb->bpp != 15u && fb->bpp != 16u && fb->bpp != 24u && fb->bpp != 32u) {
@@ -647,6 +672,9 @@ static void setup_framebuffer(const struct mb2_framebuffer_info* fb) {
     g_fb_info.pitch = fb->pitch;
     g_fb_info.width = fb->width;
     g_fb_info.height = fb->height;
+    set_text_geometry(fb->width / FONT_WIDTH, fb->height / FONT_HEIGHT);
+    g_fb_info.text_cols = (uint32_t)text_cols;
+    g_fb_info.text_rows = (uint32_t)text_rows;
     g_fb_info.bpp = fb->bpp;
     g_fb_info.size = fb->pitch * fb->height;
     g_fb_info.red_offset = fb->red_field_position;
@@ -678,8 +706,8 @@ static void setup_framebuffer(const struct mb2_framebuffer_info* fb) {
     }
 
     g_fb_base = (volatile uint8_t*)(uintptr_t)fb->addr;
-    g_fb_origin_x = (fb->width - TEXT_PIXEL_WIDTH) / 2u;
-    g_fb_origin_y = (fb->height - TEXT_PIXEL_HEIGHT) / 2u;
+    g_fb_origin_x = (fb->width - text_cols * FONT_WIDTH) / 2u;
+    g_fb_origin_y = (fb->height - text_rows * FONT_HEIGHT) / 2u;
     for (size_t i = 0; i < 16; ++i) {
         g_fb_palette[i] = pack_fb_color(g_vga_palette_rgb[i][0], g_vga_palette_rgb[i][1], g_vga_palette_rgb[i][2]);
     }
@@ -690,7 +718,7 @@ static void enter_alt_mode(void) {
         return;
     }
 
-    for (size_t i = 0; i < VGA_WIDTH * VGA_HEIGHT; ++i) {
+    for (size_t i = 0; i < cell_count(); ++i) {
         main_vga[i] = text_cells[i];
     }
 
@@ -707,7 +735,7 @@ static void enter_alt_mode(void) {
     cursor_row = 0;
     cursor_col = 0;
     scroll_top = 0;
-    scroll_bottom = VGA_HEIGHT - 1u;
+    scroll_bottom = text_rows - 1u;
     clear_screen_entire();
     update_hw_cursor();
 }
@@ -717,7 +745,7 @@ static void exit_alt_mode(void) {
         return;
     }
 
-    for (size_t i = 0; i < VGA_WIDTH * VGA_HEIGHT; ++i) {
+    for (size_t i = 0; i < cell_count(); ++i) {
         text_cells[i] = main_vga[i];
     }
 
@@ -731,7 +759,7 @@ static void exit_alt_mode(void) {
     g1_charset_graphics = saved_g1_charset_graphics;
     shift_out_active = saved_shift_out_active;
     scroll_top = 0;
-    scroll_bottom = VGA_HEIGHT - 1u;
+    scroll_bottom = text_rows - 1u;
     alt_mode_active = false;
     present_all();
     update_hw_cursor();
@@ -872,7 +900,7 @@ static bool handle_ansi_char(char c) {
                 erase_chars(n);
             } else if (c == 'r') {
                 unsigned top = ansi_param_or_default(params, param_count, 0, 1u);
-                unsigned bottom = ansi_param_or_default(params, param_count, 1, VGA_HEIGHT);
+                unsigned bottom = ansi_param_or_default(params, param_count, 1, (unsigned)text_rows);
                 set_scroll_region(top, bottom);
             } else if (c == 'm') {
                 if (param_count == 0) {
@@ -958,6 +986,7 @@ void console_init(uint64_t mb2_info) {
     } else {
         memset(&g_fb_info, 0, sizeof(g_fb_info));
         g_fb_base = NULL;
+        set_text_geometry(VGA_WIDTH, VGA_HEIGHT);
     }
     reset_console_state();
     console_clear();
@@ -975,7 +1004,7 @@ void console_clear(void) {
     cursor_row = 0;
     cursor_col = 0;
     scroll_top = 0;
-    scroll_bottom = VGA_HEIGHT - 1u;
+    scroll_bottom = text_rows - 1u;
     clear_screen_entire();
     update_hw_cursor();
 }
@@ -1053,7 +1082,7 @@ void console_putc(char c) {
     text_cells[cell_index(cursor_row, cursor_col)] = ((uint16_t)color << 8) | translate_graphics_char((uint8_t)c);
     present_row_range(cursor_row, cursor_col, cursor_col + 1u);
     ++cursor_col;
-    if (cursor_col >= VGA_WIDTH) {
+    if (cursor_col >= text_cols) {
         cursor_col = 0;
         linefeed();
     }
