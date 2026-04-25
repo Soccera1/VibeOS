@@ -55,6 +55,7 @@ external/bash-src/bash
 external/bash-src/build-musl/
 external/coreutils-src/autom4te.cache/
 external/coreutils-src/build-musl/
+external/less-src/build-musl/
 external/ncurses-src/build-musl/
 external/nano-src/build-musl/
 external/man-pages-src/.tmp/
