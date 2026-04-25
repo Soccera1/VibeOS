@@ -143,11 +143,14 @@ BASHRC
 fi
 
 cat > "$ROOT/init" <<'INIT'
-#!/bin/busybox
-if [ -x /usr/bin/bash ]; then
-  exec /usr/bin/bash -i
-fi
-exec /bin/busybox sh -i
+#!/bin/busybox sh
+while true; do
+  if [ -x /usr/bin/bash ]; then
+    /usr/bin/bash -i
+  else
+    /bin/busybox sh -i
+  fi
+done
 INIT
 chmod +x "$ROOT/init"
 

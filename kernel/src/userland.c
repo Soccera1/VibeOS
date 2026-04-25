@@ -445,11 +445,19 @@ static int userland_run_program(const char* path, const char* const* argv, size_
 }
 
 int userland_run_default_shell(void) {
+    static const char* const init_argv[] = {"busybox", "sh", "/init"};
     static const char* const bash_argv[] = {"bash", "-i"};
     static const char* const busybox_argv[] = {"busybox", "sh", "-i"};
 
+    if (userland_run_program("/bin/busybox", init_argv, ARRAY_LEN(init_argv),
+                             "Launching /bin/busybox sh /init\n",
+                             "/bin/busybox not found in initramfs\n",
+                             "init shell launcher load failed\n") == 0) {
+        return 0;
+    }
+
     if (userland_run_program("/usr/bin/bash", bash_argv, ARRAY_LEN(bash_argv),
-                             "Launching /usr/bin/bash -i\n",
+                             "Falling back to /usr/bin/bash -i\n",
                              "/usr/bin/bash not found\n",
                              "bash ELF load failed\n") == 0) {
         return 0;
