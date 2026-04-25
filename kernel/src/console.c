@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "console_font.h"
+#include "input.h"
 #include "io.h"
 #include "multiboot2.h"
 #include "serial.h"
@@ -18,6 +19,8 @@
 #define FONT_WIDTH CONSOLE_FONT_WIDTH
 #define FONT_HEIGHT CONSOLE_FONT_HEIGHT
 #define TEXT_CELL_CAPACITY (FB_MAX_COLS * FB_MAX_ROWS)
+#define TAB_STOP_CAPACITY FB_MAX_COLS
+#define CELL_FLAG_UNDERLINE 0x01u
 #define VGA_CRTC_INDEX 0x3D4
 #define VGA_CRTC_DATA 0x3D5
 #define VGA_CRTC_CURSOR_START 0x0A
@@ -27,7 +30,9 @@
 
 static volatile uint16_t* const vga_hw = (volatile uint16_t*)0xB8000;
 static uint16_t text_cells[TEXT_CELL_CAPACITY];
+static uint8_t text_cell_flags[TEXT_CELL_CAPACITY];
 static uint16_t main_vga[TEXT_CELL_CAPACITY];
+static uint8_t main_vga_flags[TEXT_CELL_CAPACITY];
 static size_t text_cols = VGA_WIDTH;
 static size_t text_rows = VGA_HEIGHT;
 static size_t cursor_row;
@@ -37,6 +42,9 @@ static uint8_t base_fg = 0x07;
 static uint8_t base_bg;
 static bool sgr_bold;
 static bool sgr_reverse;
+static bool sgr_underline;
+static bool sgr_blink;
+static bool sgr_invisible;
 static uint8_t saved_color;
 static size_t saved_cursor_row;
 static size_t saved_cursor_col;
@@ -44,6 +52,9 @@ static uint8_t saved_base_fg;
 static uint8_t saved_base_bg;
 static bool saved_sgr_bold;
 static bool saved_sgr_reverse;
+static bool saved_sgr_underline;
+static bool saved_sgr_blink;
+static bool saved_sgr_invisible;
 static bool alt_mode_active;
 static size_t scroll_top;
 static size_t scroll_bottom = VGA_HEIGHT - 1;
@@ -51,7 +62,7 @@ static bool g1_charset_graphics;
 static bool shift_out_active;
 static bool saved_g1_charset_graphics;
 static bool saved_shift_out_active;
-static uint8_t ansi_state;  // 0=none, 1=ESC, 2=CSI, 3=ESC ), 4=OSC
+static uint8_t ansi_state;  // 0=none, 1=ESC, 2=CSI, 3=ESC ), 4=OSC, 5=charset designator
 static char ansi_buf[32];
 static size_t ansi_len;
 static struct console_framebuffer_info g_fb_info;
@@ -63,6 +74,16 @@ static bool cursor_visible = true;
 static bool soft_cursor_drawn;
 static size_t soft_cursor_row;
 static size_t soft_cursor_col;
+static bool tab_stops[TAB_STOP_CAPACITY];
+static uint8_t last_printed_char = ' ';
+
+static uint8_t current_cell_flags(void) {
+    uint8_t flags = 0;
+    if (sgr_underline) {
+        flags |= CELL_FLAG_UNDERLINE;
+    }
+    return flags;
+}
 
 static const uint8_t g_vga_palette_rgb[16][3] = {
     {0x00, 0x00, 0x00}, {0x00, 0x00, 0xaa}, {0x00, 0xaa, 0x00}, {0x00, 0xaa, 0xaa},
@@ -147,11 +168,11 @@ static void fb_fill_rect(size_t x, size_t y, size_t width, size_t height, uint32
     }
 }
 
-static void draw_framebuffer_cell(size_t row, size_t col, uint16_t cell, bool cursor_overlay) {
+static void draw_framebuffer_cell(size_t row, size_t col, uint16_t cell, uint8_t flags, bool cursor_overlay) {
     uint8_t ch = (uint8_t)(cell & 0xffu);
     uint8_t attr = (uint8_t)(cell >> 8);
     uint32_t fg = g_fb_palette[attr & 0x0fu];
-    uint32_t bg = g_fb_palette[(attr >> 4) & 0x0fu];
+    uint32_t bg = g_fb_palette[(attr >> 4) & 0x07u];
     size_t x0 = g_fb_origin_x + col * FONT_WIDTH;
     size_t y0 = g_fb_origin_y + row * FONT_HEIGHT;
 
@@ -160,6 +181,9 @@ static void draw_framebuffer_cell(size_t row, size_t col, uint16_t cell, bool cu
         for (size_t glyph_col = 0; glyph_col < FONT_WIDTH; ++glyph_col) {
             console_font_row_t mask = (console_font_row_t)(1u << (FONT_WIDTH - 1u - glyph_col));
             uint32_t pixel = ((bits & mask) != 0u) ? fg : bg;
+            if ((flags & CELL_FLAG_UNDERLINE) != 0u && glyph_row + 2u >= FONT_HEIGHT) {
+                pixel = fg;
+            }
             if (cursor_overlay && glyph_row >= FONT_HEIGHT - SOFT_CURSOR_HEIGHT) {
                 pixel = fg;
             }
@@ -174,7 +198,7 @@ static void draw_cell(size_t row, size_t col, uint16_t cell) {
         return;
     }
 
-    draw_framebuffer_cell(row, col, cell, false);
+    draw_framebuffer_cell(row, col, cell, text_cell_flags[cell_index(row, col)], false);
 }
 
 static void restore_soft_cursor(void) {
@@ -193,7 +217,8 @@ static void draw_soft_cursor(void) {
 
     soft_cursor_row = cursor_row;
     soft_cursor_col = cursor_col;
-    draw_framebuffer_cell(cursor_row, cursor_col, text_cells[cell_index(cursor_row, cursor_col)], true);
+    draw_framebuffer_cell(cursor_row, cursor_col, text_cells[cell_index(cursor_row, cursor_col)],
+                          text_cell_flags[cell_index(cursor_row, cursor_col)], true);
     soft_cursor_drawn = true;
 }
 
@@ -241,7 +266,14 @@ static void apply_text_attributes(void) {
         bg = rev_bg;
     }
 
+    if (sgr_invisible) {
+        fg = bg;
+    }
+
     color = (uint8_t)((bg << 4) | (fg & 0x0Fu));
+    if (sgr_blink) {
+        color = (uint8_t)(color | 0x80u);
+    }
 }
 
 static void reset_text_attributes(void) {
@@ -249,6 +281,9 @@ static void reset_text_attributes(void) {
     base_bg = 0x00u;
     sgr_bold = false;
     sgr_reverse = false;
+    sgr_underline = false;
+    sgr_blink = false;
+    sgr_invisible = false;
     apply_text_attributes();
 }
 
@@ -263,6 +298,7 @@ static void clear_row_range(size_t row, size_t start_col, size_t end_col) {
 
     for (size_t x = start_col; x < end_col; ++x) {
         text_cells[cell_index(row, x)] = blank_cell();
+        text_cell_flags[cell_index(row, x)] = 0;
     }
     present_row_range(row, start_col, end_col);
 }
@@ -271,6 +307,7 @@ static void clear_screen_entire(void) {
     uint16_t blank = blank_cell();
     for (size_t i = 0; i < cell_count(); ++i) {
         text_cells[i] = blank;
+        text_cell_flags[i] = 0;
     }
     present_all();
 }
@@ -290,9 +327,12 @@ static void scroll_up_region(size_t top, size_t bottom, size_t lines) {
 
     memmove(&text_cells[cell_index(top, 0)], &text_cells[cell_index(top + lines, 0)],
             (height - lines) * text_cols * sizeof(text_cells[0]));
+    memmove(&text_cell_flags[cell_index(top, 0)], &text_cell_flags[cell_index(top + lines, 0)],
+            (height - lines) * text_cols * sizeof(text_cell_flags[0]));
     for (size_t y = bottom + 1u - lines; y <= bottom; ++y) {
         for (size_t x = 0; x < text_cols; ++x) {
             text_cells[cell_index(y, x)] = blank_cell();
+            text_cell_flags[cell_index(y, x)] = 0;
         }
     }
     present_rows(top, bottom + 1u);
@@ -313,9 +353,12 @@ static void scroll_down_region(size_t top, size_t bottom, size_t lines) {
 
     memmove(&text_cells[cell_index(top + lines, 0)], &text_cells[cell_index(top, 0)],
             (height - lines) * text_cols * sizeof(text_cells[0]));
+    memmove(&text_cell_flags[cell_index(top + lines, 0)], &text_cell_flags[cell_index(top, 0)],
+            (height - lines) * text_cols * sizeof(text_cell_flags[0]));
     for (size_t y = top; y < top + lines; ++y) {
         for (size_t x = 0; x < text_cols; ++x) {
             text_cells[cell_index(y, x)] = blank_cell();
+            text_cell_flags[cell_index(y, x)] = 0;
         }
     }
     present_rows(top, bottom + 1u);
@@ -504,8 +547,11 @@ static void insert_blank_chars(size_t count) {
     size_t row_base = cursor_row * text_cols;
     memmove(&text_cells[row_base + cursor_col + count], &text_cells[row_base + cursor_col],
             (text_cols - cursor_col - count) * sizeof(text_cells[0]));
+    memmove(&text_cell_flags[row_base + cursor_col + count], &text_cell_flags[row_base + cursor_col],
+            (text_cols - cursor_col - count) * sizeof(text_cell_flags[0]));
     for (size_t x = cursor_col; x < cursor_col + count; ++x) {
         text_cells[row_base + x] = blank_cell();
+        text_cell_flags[row_base + x] = 0;
     }
     present_row_range(cursor_row, cursor_col, text_cols);
 }
@@ -522,8 +568,11 @@ static void delete_chars(size_t count) {
     size_t row_base = cursor_row * text_cols;
     memmove(&text_cells[row_base + cursor_col], &text_cells[row_base + cursor_col + count],
             (text_cols - cursor_col - count) * sizeof(text_cells[0]));
+    memmove(&text_cell_flags[row_base + cursor_col], &text_cell_flags[row_base + cursor_col + count],
+            (text_cols - cursor_col - count) * sizeof(text_cell_flags[0]));
     for (size_t x = text_cols - count; x < text_cols; ++x) {
         text_cells[row_base + x] = blank_cell();
+        text_cell_flags[row_base + x] = 0;
     }
     present_row_range(cursor_row, cursor_col, text_cols);
 }
@@ -537,6 +586,113 @@ static void erase_chars(size_t count) {
         count = text_cols - cursor_col;
     }
     clear_row_range(cursor_row, cursor_col, cursor_col + count);
+}
+
+static void linefeed(void);
+static uint8_t translate_graphics_char(uint8_t c);
+
+static void cursor_tab_forward(size_t count) {
+    clamp_cursor();
+    if (count == 0) {
+        count = 1;
+    }
+
+    while (count-- > 0) {
+        size_t next = cursor_col + 1u;
+        while (next < text_cols && !tab_stops[next]) {
+            ++next;
+        }
+        cursor_col = (next < text_cols) ? next : (text_cols - 1u);
+    }
+}
+
+static void cursor_tab_backward(size_t count) {
+    clamp_cursor();
+    if (count == 0) {
+        count = 1;
+    }
+
+    while (count-- > 0) {
+        if (cursor_col == 0) {
+            return;
+        }
+        size_t prev = cursor_col - 1u;
+        while (prev > 0 && !tab_stops[prev]) {
+            --prev;
+        }
+        cursor_col = tab_stops[prev] ? prev : 0;
+    }
+}
+
+static void set_tab_stop(void) {
+    clamp_cursor();
+    if (cursor_col < TAB_STOP_CAPACITY) {
+        tab_stops[cursor_col] = true;
+    }
+}
+
+static void clear_tab_stop_at_cursor(void) {
+    clamp_cursor();
+    if (cursor_col < TAB_STOP_CAPACITY) {
+        tab_stops[cursor_col] = false;
+    }
+}
+
+static void clear_all_tab_stops(void) {
+    memset(tab_stops, 0, sizeof(tab_stops));
+}
+
+static void reset_tab_stops(void) {
+    clear_all_tab_stops();
+    for (size_t col = TAB_WIDTH; col < TAB_STOP_CAPACITY; col += TAB_WIDTH) {
+        tab_stops[col] = true;
+    }
+}
+
+static void repeat_last_printed_char(size_t count) {
+    if (count == 0) {
+        count = 1;
+    }
+
+    for (size_t i = 0; i < count; ++i) {
+        uint8_t ch = translate_graphics_char(last_printed_char);
+        clamp_cursor();
+        serial_putc((char)last_printed_char);
+        text_cells[cell_index(cursor_row, cursor_col)] = ((uint16_t)color << 8) | ch;
+        text_cell_flags[cell_index(cursor_row, cursor_col)] = current_cell_flags();
+        present_row_range(cursor_row, cursor_col, cursor_col + 1u);
+        ++cursor_col;
+        if (cursor_col >= text_cols) {
+            cursor_col = 0;
+            linefeed();
+        }
+    }
+}
+
+static void enqueue_decimal(unsigned value) {
+    char buf[10];
+    size_t idx = 0;
+
+    if (value == 0u) {
+        input_enqueue_response_char('0');
+        return;
+    }
+
+    while (value != 0u && idx < sizeof(buf)) {
+        buf[idx++] = (char)('0' + (value % 10u));
+        value /= 10u;
+    }
+    while (idx > 0) {
+        input_enqueue_response_char(buf[--idx]);
+    }
+}
+
+static void enqueue_cursor_position_report(void) {
+    input_enqueue_response_string("\x1b[");
+    enqueue_decimal((unsigned)(cursor_row + 1u));
+    input_enqueue_response_char(';');
+    enqueue_decimal((unsigned)(cursor_col + 1u));
+    input_enqueue_response_char('R');
 }
 
 static void insert_lines(size_t count) {
@@ -650,6 +806,7 @@ static void reset_console_state(void) {
     shift_out_active = false;
     cursor_visible = true;
     soft_cursor_drawn = false;
+    reset_tab_stops();
     reset_text_attributes();
 }
 
@@ -720,6 +877,7 @@ static void enter_alt_mode(void) {
 
     for (size_t i = 0; i < cell_count(); ++i) {
         main_vga[i] = text_cells[i];
+        main_vga_flags[i] = text_cell_flags[i];
     }
 
     saved_cursor_row = cursor_row;
@@ -729,6 +887,9 @@ static void enter_alt_mode(void) {
     saved_base_bg = base_bg;
     saved_sgr_bold = sgr_bold;
     saved_sgr_reverse = sgr_reverse;
+    saved_sgr_underline = sgr_underline;
+    saved_sgr_blink = sgr_blink;
+    saved_sgr_invisible = sgr_invisible;
     saved_g1_charset_graphics = g1_charset_graphics;
     saved_shift_out_active = shift_out_active;
     alt_mode_active = true;
@@ -747,6 +908,7 @@ static void exit_alt_mode(void) {
 
     for (size_t i = 0; i < cell_count(); ++i) {
         text_cells[i] = main_vga[i];
+        text_cell_flags[i] = main_vga_flags[i];
     }
 
     cursor_row = saved_cursor_row;
@@ -756,6 +918,9 @@ static void exit_alt_mode(void) {
     base_bg = saved_base_bg;
     sgr_bold = saved_sgr_bold;
     sgr_reverse = saved_sgr_reverse;
+    sgr_underline = saved_sgr_underline;
+    sgr_blink = saved_sgr_blink;
+    sgr_invisible = saved_sgr_invisible;
     g1_charset_graphics = saved_g1_charset_graphics;
     shift_out_active = saved_shift_out_active;
     scroll_top = 0;
@@ -783,6 +948,11 @@ static bool handle_ansi_char(char c) {
         }
         if (c == ')') {
             ansi_state = 3;
+            ansi_len = 0;
+            return true;
+        }
+        if (c == '(' || c == '*' || c == '+') {
+            ansi_state = 5;
             ansi_len = 0;
             return true;
         }
@@ -820,6 +990,11 @@ static bool handle_ansi_char(char c) {
         if (c == 'M') {
             reverse_index();
             update_hw_cursor();
+            ansi_state = 0;
+            return true;
+        }
+        if (c == 'H') {
+            set_tab_stop();
             ansi_state = 0;
             return true;
         }
@@ -883,6 +1058,15 @@ static bool handle_ansi_char(char c) {
             } else if (c == 'G') {
                 unsigned col = ansi_param_or_default(params, param_count, 0, 1u);
                 move_cursor_to((unsigned)(cursor_row + 1u), col);
+            } else if (c == 'd') {
+                unsigned row = ansi_param_or_default(params, param_count, 0, 1u);
+                move_cursor_to(row, (unsigned)(cursor_col + 1u));
+            } else if (c == 'I') {
+                unsigned n = ansi_param_or_default(params, param_count, 0, 1u);
+                cursor_tab_forward(n);
+            } else if (c == 'Z') {
+                unsigned n = ansi_param_or_default(params, param_count, 0, 1u);
+                cursor_tab_backward(n);
             } else if (c == 'L') {
                 unsigned n = ansi_param_or_default(params, param_count, 0, 1u);
                 insert_lines(n);
@@ -898,6 +1082,22 @@ static bool handle_ansi_char(char c) {
             } else if (c == 'X') {
                 unsigned n = ansi_param_or_default(params, param_count, 0, 1u);
                 erase_chars(n);
+            } else if (c == 'S') {
+                unsigned n = ansi_param_or_default(params, param_count, 0, 1u);
+                scroll_up_region(scroll_top, scroll_bottom, n);
+            } else if (c == 'T') {
+                unsigned n = ansi_param_or_default(params, param_count, 0, 1u);
+                scroll_down_region(scroll_top, scroll_bottom, n);
+            } else if (c == 'b') {
+                unsigned n = ansi_param_or_default(params, param_count, 0, 1u);
+                repeat_last_printed_char(n);
+            } else if (c == 'g') {
+                unsigned mode = ansi_param_or_default(params, param_count, 0, 0u);
+                if (mode == 3u) {
+                    clear_all_tab_stops();
+                } else {
+                    clear_tab_stop_at_cursor();
+                }
             } else if (c == 'r') {
                 unsigned top = ansi_param_or_default(params, param_count, 0, 1u);
                 unsigned bottom = ansi_param_or_default(params, param_count, 1, (unsigned)text_rows);
@@ -912,12 +1112,30 @@ static bool handle_ansi_char(char c) {
                         reset_text_attributes();
                     } else if (value == 1u) {
                         sgr_bold = true;
+                    } else if (value == 4u) {
+                        sgr_underline = true;
+                    } else if (value == 5u) {
+                        sgr_blink = true;
                     } else if (value == 7u) {
                         sgr_reverse = true;
+                    } else if (value == 8u) {
+                        sgr_invisible = true;
+                    } else if (value == 10u) {
+                        shift_out_active = false;
+                        g1_charset_graphics = false;
+                    } else if (value == 11u) {
+                        shift_out_active = true;
+                        g1_charset_graphics = true;
                     } else if (value == 22u) {
                         sgr_bold = false;
+                    } else if (value == 24u) {
+                        sgr_underline = false;
+                    } else if (value == 25u) {
+                        sgr_blink = false;
                     } else if (value == 27u) {
                         sgr_reverse = false;
+                    } else if (value == 28u) {
+                        sgr_invisible = false;
                     } else if (value >= 30u && value <= 37u) {
                         base_fg = (uint8_t)(value - 30u);
                     } else if (value == 39u) {
@@ -948,6 +1166,12 @@ static bool handle_ansi_char(char c) {
                 cursor_visible = false;
             } else if (c == 'l' && private_mode && param_count > 0 && params[0] == 1049u) {
                 exit_alt_mode();
+            } else if (c == 'n' && param_count > 0 && params[0] == 6u) {
+                enqueue_cursor_position_report();
+            } else if (c == 'c') {
+                input_enqueue_response_string("\x1b[?1;0c");
+            } else if (c == 'i') {
+                // ANSI printer controller modes are accepted but have no printer backend.
             }
             ansi_state = 0;
             update_hw_cursor();
@@ -969,6 +1193,11 @@ static bool handle_ansi_char(char c) {
         if (c == '\a' || c == 'R' || (ansi_len == 8u && ansi_buf[0] == 'P')) {
             ansi_state = 0;
         }
+        return true;
+    }
+
+    if (ansi_state == 5) {
+        ansi_state = 0;
         return true;
     }
 
@@ -1042,13 +1271,9 @@ void console_putc(char c) {
     clamp_cursor();
 
     if (c == '\t') {
-        size_t spaces = TAB_WIDTH - (cursor_col % TAB_WIDTH);
-        if (spaces == 0) {
-            spaces = TAB_WIDTH;
-        }
-        for (size_t i = 0; i < spaces; ++i) {
-            console_putc(' ');
-        }
+        serial_putc(c);
+        cursor_tab_forward(1);
+        update_hw_cursor();
         return;
     }
 
@@ -1079,7 +1304,9 @@ void console_putc(char c) {
     }
 
     serial_putc(c);
+    last_printed_char = (uint8_t)c;
     text_cells[cell_index(cursor_row, cursor_col)] = ((uint16_t)color << 8) | translate_graphics_char((uint8_t)c);
+    text_cell_flags[cell_index(cursor_row, cursor_col)] = current_cell_flags();
     present_row_range(cursor_row, cursor_col, cursor_col + 1u);
     ++cursor_col;
     if (cursor_col >= text_cols) {
