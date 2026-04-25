@@ -49,19 +49,23 @@ built-in 12x25 bitmap font from @file{kernel/src/console_font.c}.
 @node ANSI and Terminal Features
 @section ANSI and Terminal Features
 
-The console parser supports a practical subset of ANSI and DEC terminal
-behavior:
+The console parser supports the capabilities advertised by the shipped
+@code{ansi} terminfo entry:
 
 @itemize @bullet
 @item cursor movement,
-@item screen and line clearing,
+@item screen, line, and character clearing,
 @item scrolling regions,
-@item insertion and deletion of lines and characters,
-@item SGR color, bold, and reverse-video state,
+@item indexed scrolling,
+@item tab stops and forward/backward tab movement,
+@item insertion, deletion, and repetition of lines and characters,
+@item SGR color, bold, underline, blink, reverse-video, and invisible state,
 @item save and restore of cursor position,
+@item cursor-position and device-attribute reports,
 @item cursor hide and show,
 @item alternate-screen enter and leave through private mode 1049, and
-@item DEC line-drawing graphics through shift-out and shift-in handling.
+@item DEC line-drawing graphics through shift-out/shift-in and ANSI SGR
+charset switching.
 @end itemize
 
 This is the reason ncurses-style applications work at all in VibeOS.

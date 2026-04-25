@@ -119,7 +119,7 @@ stack containing:
 Default environment strings include:
 
 @example
-TERM=vt100
+TERM=ansi
 HOME=/
 PATH=/bin:/sbin:/usr/bin
 SH_STANDALONE=1
