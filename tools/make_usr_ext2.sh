@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/strip_helpers.sh"
 
 if [[ $# -lt 1 ]]; then
-  echo "usage: $0 <output.ext3> [bash-bin] [help-bin] [sl-bin] [file-bin] [file-magic] [nano-bin] [coreutils-dir] [coreutils-programs] [usr-tree...]" >&2
+  echo "usage: $0 <output.ext3> [bash-bin] [help-bin] [sl-bin] [file-bin] [file-magic] [nano-bin] [less-bin] [coreutils-dir] [coreutils-programs] [usr-tree...]" >&2
   exit 1
 fi
 
@@ -16,10 +16,11 @@ SL_BIN="${4:-}"
 FILE_BIN="${5:-}"
 FILE_MAGIC="${6:-}"
 NANO_BIN="${7:-}"
-COREUTILS_DIR="${8:-}"
-COREUTILS_PROGS="${9:-}"
-if [[ $# -gt 9 ]]; then
-  shift 9
+LESS_BIN="${8:-}"
+COREUTILS_DIR="${9:-}"
+COREUTILS_PROGS="${10:-}"
+if [[ $# -gt 10 ]]; then
+  shift 10
 else
   shift $#
 fi
@@ -92,6 +93,11 @@ fi
 if [[ -n "$NANO_BIN" && -x "$NANO_BIN" ]]; then
   cp "$NANO_BIN" "$ROOT/bin/nano"
   chmod +x "$ROOT/bin/nano"
+fi
+
+if [[ -n "$LESS_BIN" && -x "$LESS_BIN" ]]; then
+  cp "$LESS_BIN" "$ROOT/bin/less"
+  chmod +x "$ROOT/bin/less"
 fi
 
 for usr_tree in "${USR_TREES[@]}"; do

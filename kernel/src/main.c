@@ -14,6 +14,7 @@
 #include "string.h"
 #include "syscall.h"
 #include "userland.h"
+#include "virtio_gpu.h"
 #include "virtio_scsi.h"
 #include "vm.h"
 
@@ -81,6 +82,7 @@ void kernel_main(uint64_t mb2_info) {
     console_write("VibeOS amd64 monolithic kernel prototype\n");
     power_init(mb2_info);
     kmalloc_init();
+    virtio_gpu_init();
     ata_init();
     virtio_scsi_init();
 

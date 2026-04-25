@@ -13,8 +13,8 @@ mb2_header_start:
     dw 5
     dw 1
     dd 20
-    dd 1024
-    dd 768
+    dd 0
+    dd 0
     dd 32
 
     ; end tag

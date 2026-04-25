@@ -11,6 +11,8 @@ struct console_framebuffer_info {
     uint32_t pitch;
     uint32_t width;
     uint32_t height;
+    uint32_t text_cols;
+    uint32_t text_rows;
     uint8_t bpp;
     uint8_t red_offset;
     uint8_t red_length;
