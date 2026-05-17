@@ -1488,7 +1488,8 @@ public void commands(void)
 				 * If the user backspaces past the start 
 				 * of the line, abort the command.
 				 */
-				if (cmd_char(c) == CC_QUIT || cmdbuf_empty())
+				int cmd_char_result = (mca == A_PREFIX) ? cmd_char_silent(c) : cmd_char(c);
+				if (cmd_char_result == CC_QUIT || cmdbuf_empty())
 					continue;
 				cbuf = get_cmdbuf();
 				if (cbuf == NULL)
@@ -2344,7 +2345,10 @@ public void commands(void)
 			{
 				cmd_reset();
 				start_mca(A_PREFIX, " ", NULL, CF_QUIT_ON_ERASE);
-				(void) cmd_char(c);
+				if (c == ESC)
+					(void) cmd_char_silent(c);
+				else
+					(void) cmd_char(c);
 			}
 			c = getcc();
 			goto again;

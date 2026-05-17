@@ -7,6 +7,7 @@
 #include "console_font.h"
 #include "input.h"
 #include "io.h"
+#include "keyboard.h"
 #include "multiboot2.h"
 #include "serial.h"
 #include "string.h"
@@ -804,6 +805,7 @@ static void reset_console_state(void) {
     scroll_bottom = text_rows - 1u;
     g1_charset_graphics = false;
     shift_out_active = false;
+    keyboard_set_application_cursor_keys(false);
     cursor_visible = true;
     soft_cursor_drawn = false;
     reset_tab_stops();
@@ -1158,14 +1160,26 @@ static bool handle_ansi_char(char c) {
             } else if (c == 'u') {
                 cursor_row = saved_cursor_row;
                 cursor_col = saved_cursor_col;
-            } else if (c == 'h' && private_mode && param_count > 0 && params[0] == 25u) {
-                cursor_visible = true;
-            } else if (c == 'h' && private_mode && param_count > 0 && params[0] == 1049u) {
-                enter_alt_mode();
-            } else if (c == 'l' && private_mode && param_count > 0 && params[0] == 25u) {
-                cursor_visible = false;
-            } else if (c == 'l' && private_mode && param_count > 0 && params[0] == 1049u) {
-                exit_alt_mode();
+            } else if (c == 'h' && private_mode) {
+                for (size_t i = 0; i < param_count; ++i) {
+                    if (params[i] == 1u) {
+                        keyboard_set_application_cursor_keys(true);
+                    } else if (params[i] == 25u) {
+                        cursor_visible = true;
+                    } else if (params[i] == 1049u) {
+                        enter_alt_mode();
+                    }
+                }
+            } else if (c == 'l' && private_mode) {
+                for (size_t i = 0; i < param_count; ++i) {
+                    if (params[i] == 1u) {
+                        keyboard_set_application_cursor_keys(false);
+                    } else if (params[i] == 25u) {
+                        cursor_visible = false;
+                    } else if (params[i] == 1049u) {
+                        exit_alt_mode();
+                    }
+                }
             } else if (c == 'n' && param_count > 0 && params[0] == 6u) {
                 enqueue_cursor_position_report();
             } else if (c == 'c') {

@@ -11,6 +11,16 @@ static char response_queue[INPUT_RESPONSE_QUEUE_CAPACITY];
 static size_t response_head;
 static size_t response_count;
 
+static void enqueue_response_char(char c) {
+    if (response_count >= INPUT_RESPONSE_QUEUE_CAPACITY) {
+        return;
+    }
+
+    size_t idx = (response_head + response_count) % INPUT_RESPONSE_QUEUE_CAPACITY;
+    response_queue[idx] = c;
+    ++response_count;
+}
+
 static int dequeue_response_char(void) {
     if (response_count == 0) {
         return -1;
@@ -20,6 +30,40 @@ static int dequeue_response_char(void) {
     response_head = (response_head + 1u) % INPUT_RESPONSE_QUEUE_CAPACITY;
     --response_count;
     return c;
+}
+
+static int translate_serial_cursor_sequence(int first) {
+    if (first != 0x1b || !keyboard_application_cursor_keys()) {
+        return first;
+    }
+    if (!serial_input_ready()) {
+        return first;
+    }
+
+    int second = serial_pollc();
+    if (second != '[' || !serial_input_ready()) {
+        if (second >= 0) {
+            enqueue_response_char((char)second);
+        }
+        return first;
+    }
+
+    int third = serial_pollc();
+    switch (third) {
+        case 'A':
+        case 'B':
+        case 'C':
+        case 'D':
+            enqueue_response_char('O');
+            enqueue_response_char((char)third);
+            return first;
+        default:
+            enqueue_response_char('[');
+            if (third >= 0) {
+                enqueue_response_char((char)third);
+            }
+            return first;
+    }
 }
 
 static int normalize_input_char(int c) {
@@ -44,6 +88,7 @@ int input_poll_char(void) {
 
     int c = serial_pollc();
     if (c >= 0) {
+        c = translate_serial_cursor_sequence(c);
         return normalize_input_char(c);
     }
 
@@ -82,13 +127,7 @@ int input_peek_signal(void) {
 }
 
 void input_enqueue_response_char(char c) {
-    if (response_count >= INPUT_RESPONSE_QUEUE_CAPACITY) {
-        return;
-    }
-
-    size_t idx = (response_head + response_count) % INPUT_RESPONSE_QUEUE_CAPACITY;
-    response_queue[idx] = c;
-    ++response_count;
+    enqueue_response_char(c);
 }
 
 void input_enqueue_response_string(const char* s) {

@@ -30,7 +30,7 @@ WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 
 ROOT="$WORKDIR/root"
-mkdir -p "$ROOT"/{bin,lib,lib64,share/misc,share/terminfo}
+mkdir -p "$ROOT"/{bin,lib,lib64,share/misc,share/terminfo,terminfo}
 
 is_essential_coreutils_prog() {
   case "$1" in
@@ -113,8 +113,12 @@ mkdir -p "$ROOT/lib"
 copy_terminfo() {
   local entry="$1"
   local src="external/ncurses-src/build-musl/share/terminfo/${entry:0:1}/$entry"
-  local dst="$ROOT/share/terminfo/${entry:0:1}/$entry"
   if [[ -f "$src" ]]; then
+    local dst
+    dst="$ROOT/share/terminfo/${entry:0:1}/$entry"
+    mkdir -p "$(dirname "$dst")"
+    cp "$src" "$dst"
+    dst="$ROOT/terminfo/${entry:0:1}/$entry"
     mkdir -p "$(dirname "$dst")"
     cp "$src" "$dst"
   fi
@@ -123,8 +127,30 @@ copy_terminfo() {
 copy_terminfo linux
 copy_terminfo vt100
 copy_terminfo xterm
+copy_terminfo xterm-256color
 copy_terminfo ansi
 copy_terminfo dumb
+
+install_vibeos_terminfo() {
+  if ! command -v tic >/dev/null; then
+    echo "tic is required to build the VibeOS terminfo entry" >&2
+    exit 1
+  fi
+
+  local src="$WORKDIR/vibeos.terminfo"
+  cat > "$src" <<'EOF'
+vibeos|VibeOS console,
+	smkx=,
+	rmkx=,
+	smcup=\E[?1049h,
+	rmcup=\E[?1049l,
+	use=linux,
+EOF
+  tic -x -o "$ROOT/terminfo" "$src"
+  tic -x -o "$ROOT/share/terminfo" "$src"
+}
+
+install_vibeos_terminfo
 
 maybe_strip_tree_binaries "$ROOT"
 

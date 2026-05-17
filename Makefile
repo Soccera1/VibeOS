@@ -72,6 +72,7 @@ MAN_DB_SRC := external/man-db-src
 USER_SL := $(BUILD_DIR)/userspace/sl
 HELP_SRC := userspace/help.c
 TESTS_SRC := $(shell find tests -type f | sort)
+LESS_SRC_FILES := $(shell find $(LESS_SRC) -path "$(LESS_SRC)/build-musl" -prune -o -type f -print | sort)
 
 export STRIP_BINARIES ?= 1
 export STRIP
@@ -150,7 +151,7 @@ $(USER_FILE_MAGIC): $(USER_FILE)
 $(USER_NANO): $(NCURSES_BUILD)/lib/libncursesw.a | $(BUILD_DIR)
 	./tools/build_nano.sh $@ "$(NANO_SRC)"
 
-$(USER_LESS): $(NCURSES_BUILD)/lib/libncursesw.a | $(BUILD_DIR)
+$(USER_LESS): $(NCURSES_BUILD)/lib/libncursesw.a $(LESS_SRC_FILES) tools/build_less.sh | $(BUILD_DIR)
 	./tools/build_less.sh $@ "$(LESS_SRC)" "$(NCURSES_BUILD)"
 
 $(USER_MAN_PAGES): | $(BUILD_DIR)
@@ -165,7 +166,7 @@ $(USER_GDBM): | $(BUILD_DIR)
 $(USER_GROFF): | $(BUILD_DIR)
 	./tools/build_groff.sh $@ "$(GROFF_SRC)"
 
-$(USER_MAN_DB): $(USER_LIBPIPELINE) $(USER_GDBM) $(USER_GROFF) | $(BUILD_DIR)
+$(USER_MAN_DB): $(USER_LIBPIPELINE) $(USER_GDBM) $(USER_GROFF) tools/build_man_db.sh | $(BUILD_DIR)
 	./tools/build_man_db.sh $@ "$(MAN_DB_SRC)" "$(USER_LIBPIPELINE)" "$(USER_GDBM)" "$(USER_GROFF)"
 
 $(USER_TESTS): $(TESTS_SRC) tools/build_kernel_tests.sh | $(BUILD_DIR)

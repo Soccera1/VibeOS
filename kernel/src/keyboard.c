@@ -22,6 +22,7 @@ static const char keymap_shift[128] = {
 
 static int shift_pressed;
 static int ctrl_pressed;
+static bool application_cursor_keys;
 static bool extended_scancode;
 static char pending_chars[8];
 static size_t pending_char_count;
@@ -125,16 +126,16 @@ int keyboard_poll_char(void) {
     if (extended) {
         switch (sc) {
             case 0x48:
-                enqueue_pending_string("\x1b[A");
+                enqueue_pending_string(application_cursor_keys ? "\x1bOA" : "\x1b[A");
                 return dequeue_pending_char();
             case 0x4B:
-                enqueue_pending_string("\x1b[D");
+                enqueue_pending_string(application_cursor_keys ? "\x1bOD" : "\x1b[D");
                 return dequeue_pending_char();
             case 0x4D:
-                enqueue_pending_string("\x1b[C");
+                enqueue_pending_string(application_cursor_keys ? "\x1bOC" : "\x1b[C");
                 return dequeue_pending_char();
             case 0x50:
-                enqueue_pending_string("\x1b[B");
+                enqueue_pending_string(application_cursor_keys ? "\x1bOB" : "\x1b[B");
                 return dequeue_pending_char();
             default:
                 return -1;
@@ -177,4 +178,12 @@ int keyboard_poll_signal(void) {
 
 int keyboard_peek_signal(void) {
     return KEYBOARD_COMBO_SIGNAL_NONE;
+}
+
+void keyboard_set_application_cursor_keys(bool enabled) {
+    application_cursor_keys = enabled;
+}
+
+bool keyboard_application_cursor_keys(void) {
+    return application_cursor_keys;
 }

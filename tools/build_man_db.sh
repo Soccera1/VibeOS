@@ -20,11 +20,23 @@ if [[ ! -d "$SRC_DIR" ]]; then
   echo "man-db source directory not found: $SRC_DIR" >&2
   exit 1
 fi
-if [[ ! -d "$LIBPIPELINE_SYSROOT/usr/lib64/pkgconfig" ]]; then
+LIBPIPELINE_PKGCONFIG_DIR=""
+if [[ -d "$LIBPIPELINE_SYSROOT/usr/lib64/pkgconfig" ]]; then
+  LIBPIPELINE_PKGCONFIG_DIR="$LIBPIPELINE_SYSROOT/usr/lib64/pkgconfig"
+elif [[ -d "$LIBPIPELINE_SYSROOT/usr/lib/pkgconfig" ]]; then
+  LIBPIPELINE_PKGCONFIG_DIR="$LIBPIPELINE_SYSROOT/usr/lib/pkgconfig"
+fi
+if [[ -z "$LIBPIPELINE_PKGCONFIG_DIR" ]]; then
   echo "libpipeline sysroot missing pkg-config metadata: $LIBPIPELINE_SYSROOT" >&2
   exit 1
 fi
-if [[ ! -f "$GDBM_SYSROOT/usr/include/gdbm.h" || ! -f "$GDBM_SYSROOT/usr/lib64/libgdbm.a" ]]; then
+GDBM_LIB_DIR=""
+if [[ -f "$GDBM_SYSROOT/usr/lib64/libgdbm.a" ]]; then
+  GDBM_LIB_DIR="$GDBM_SYSROOT/usr/lib64"
+elif [[ -f "$GDBM_SYSROOT/usr/lib/libgdbm.a" ]]; then
+  GDBM_LIB_DIR="$GDBM_SYSROOT/usr/lib"
+fi
+if [[ ! -f "$GDBM_SYSROOT/usr/include/gdbm.h" || -z "$GDBM_LIB_DIR" ]]; then
   echo "gdbm sysroot missing static library or headers: $GDBM_SYSROOT" >&2
   exit 1
 fi
@@ -35,7 +47,9 @@ fi
 
 ABS_SRC_DIR="$(cd "$SRC_DIR" && pwd)"
 ABS_LIBPIPELINE_SYSROOT="$(cd "$LIBPIPELINE_SYSROOT" && pwd)"
+ABS_LIBPIPELINE_PKGCONFIG_DIR="$(cd "$LIBPIPELINE_PKGCONFIG_DIR" && pwd)"
 ABS_GDBM_SYSROOT="$(cd "$GDBM_SYSROOT" && pwd)"
+ABS_GDBM_LIB_DIR="$(cd "$GDBM_LIB_DIR" && pwd)"
 ABS_GROFF_TREE="$(cd "$GROFF_TREE" && pwd)"
 mkdir -p "$(dirname "$OUT_DIR")"
 OUT_DIR="$(cd "$(dirname "$OUT_DIR")" && pwd)/$(basename "$OUT_DIR")"
@@ -109,7 +123,7 @@ MANPATH_MAP	/usr/bin	/usr/share/man
 MANPATH_MAP	/usr/sbin	/usr/share/man
 MANDB_MAP	/usr/share/man	/tmp/man
 SECTION		1 n l 8 3 0 2 3type 5 4 9 6 7
-DEFINE		pager		cat
+DEFINE		pager		env TERMINFO=/usr/terminfo TERM=vibeos less -c -h0 -y0
 DEFINE		cat		cat
 DEFINE		nroff		groff -mandoc -mtty-char
 DEFINE		troff		groff
@@ -135,7 +149,7 @@ configure_man_db() {
 
   pushd "$BUILD_DIR" >/dev/null
   PATH="$ABS_GROFF_TREE/bin:$PATH" \
-  PKG_CONFIG_PATH="$ABS_LIBPIPELINE_SYSROOT/usr/lib64/pkgconfig" \
+  PKG_CONFIG_PATH="$ABS_LIBPIPELINE_PKGCONFIG_DIR" \
   PKG_CONFIG_SYSROOT_DIR="$ABS_LIBPIPELINE_SYSROOT" \
   "$ABS_SRC_DIR/configure" \
     --prefix=/usr \
@@ -161,7 +175,7 @@ configure_man_db() {
     RANLIB="zig ranlib" \
     CPPFLAGS="-I$ABS_GDBM_SYSROOT/usr/include" \
     CFLAGS="-Os -fno-stack-protector -fomit-frame-pointer -fno-pie" \
-    LDFLAGS="-static -no-pie -L$ABS_GDBM_SYSROOT/usr/lib64" \
+    LDFLAGS="-static -no-pie -L$ABS_GDBM_LIB_DIR" \
     2>&1 | tee configure.log || {
       echo "Configure failed. Check $BUILD_DIR/configure.log" >&2
       exit 1
