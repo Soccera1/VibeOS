@@ -12,7 +12,8 @@ extern char __kernel_end[];
 #define HEAP_START 0x10000000ull
 #define HEAP_SIZE (256u * 1024u * 1024u)
 #define HEAP_END (HEAP_START + HEAP_SIZE)
-#define MIN_BLOCK_SIZE (sizeof(struct block_header) + 16)
+#define KMALLOC_ALIGN 16u
+#define MIN_BLOCK_SIZE (sizeof(struct block_header) * 2u + KMALLOC_ALIGN)
 
 #define BLOCK_HEADER_MAGIC 0xDEADBEEFCAFEBABEULL
 
@@ -125,7 +126,7 @@ void* kmalloc(size_t size) {
         size = 1;
     }
 
-    size = (size + 15) & ~15;
+    size = (size + (KMALLOC_ALIGN - 1u)) & ~(KMALLOC_ALIGN - 1u);
     size_t total_size = size + sizeof(struct block_header) * 2;
 
     struct block_header* best = NULL;

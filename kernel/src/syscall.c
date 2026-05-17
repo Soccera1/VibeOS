@@ -28,6 +28,9 @@
 #define AT_SYMLINK_NOFOLLOW 0x100u
 #define AT_REMOVEDIR 0x200u
 #define AT_SYMLINK_FOLLOW 0x400u
+#define AT_NO_AUTOMOUNT 0x800u
+#define AT_EMPTY_PATH 0x1000u
+#define AT_STATX_SYNC_TYPE 0x6000u
 
 #define O_RDONLY 0u
 #define O_WRONLY 1u
@@ -5244,7 +5247,7 @@ static int sys_readlinkat(int dirfd, const char* path_user, char* out, size_t bu
     return fs_readlink(&e, out, bufsz);
 }
 
-static int sys_fstat(int fd, struct linux_stat* st) {
+static int fd_mode_size(int fd, uint32_t* mode_out, size_t* size_out) {
     if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
         return err(EBADF);
     }
@@ -5274,13 +5277,55 @@ static int sys_fstat(int fd, struct linux_stat* st) {
         size = g_fds[fd].entry.size;
     }
 
+    if (mode_out != NULL) {
+        *mode_out = mode;
+    }
+    if (size_out != NULL) {
+        *size_out = size;
+    }
+    return 0;
+}
+
+static int sys_fstat(int fd, struct linux_stat* st) {
+    uint32_t mode = 0;
+    size_t size = 0;
+    int r = fd_mode_size(fd, &mode, &size);
+    if (r != 0) {
+        return r;
+    }
+
     fill_stat(st, mode, size);
     return 0;
 }
 
-static int sys_newfstatat(int dirfd, const char* path_user, struct linux_stat* st) {
+static int sys_newfstatat(int dirfd, const char* path_user, struct linux_stat* st, uint32_t flags) {
+    if ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT | AT_EMPTY_PATH | AT_STATX_SYNC_TYPE)) != 0u) {
+        return err(EINVAL);
+    }
+
+    char path_input[128];
+    int cr = copy_user_string(path_user, path_input, sizeof(path_input));
+    if (cr != 0) {
+        return cr;
+    }
+
     char path[128];
-    int r = resolve_user_path(dirfd, path_user, true, path, sizeof(path));
+    if ((flags & AT_EMPTY_PATH) != 0u && path_input[0] == '\0') {
+        uint32_t mode = 0;
+        size_t size = 0;
+        int r = fd_mode_size(dirfd, &mode, &size);
+        if (r != 0) {
+            return r;
+        }
+        fill_stat(st, mode, size);
+        return 0;
+    }
+
+    int r = make_absolute_path(dirfd, path_input, path, sizeof(path));
+    if (r != 0) {
+        return r;
+    }
+    r = resolve_symlinks(path, path, sizeof(path), (flags & AT_SYMLINK_NOFOLLOW) == 0u);
     if (r != 0) {
         return r;
     }
@@ -5296,20 +5341,43 @@ static int sys_newfstatat(int dirfd, const char* path_user, struct linux_stat* s
     return 0;
 }
 
-static int sys_statx(int dirfd, const char* path_user, struct linux_statx* stx) {
-    char path[128];
-    int r = resolve_user_path(dirfd, path_user, true, path, sizeof(path));
-    if (r != 0) {
-        return r;
+static int sys_statx(int dirfd, const char* path_user, uint32_t flags, struct linux_statx* stx) {
+    if ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT | AT_EMPTY_PATH | AT_STATX_SYNC_TYPE)) != 0u) {
+        return err(EINVAL);
+    }
+
+    char path_input[128];
+    int cr = copy_user_string(path_user, path_input, sizeof(path_input));
+    if (cr != 0) {
+        return cr;
     }
 
     uint32_t mode = 0;
     size_t size = 0;
+    if ((flags & AT_EMPTY_PATH) != 0u && path_input[0] == '\0') {
+        int r = fd_mode_size(dirfd, &mode, &size);
+        if (r != 0) {
+            return r;
+        }
+        goto fill;
+    }
+
+    char path[128];
+    int r = make_absolute_path(dirfd, path_input, path, sizeof(path));
+    if (r != 0) {
+        return r;
+    }
+    r = resolve_symlinks(path, path, sizeof(path), (flags & AT_SYMLINK_NOFOLLOW) == 0u);
+    if (r != 0) {
+        return r;
+    }
+
     r = path_mode_size(path, &mode, &size, NULL);
     if (r != 0) {
         return r;
     }
 
+fill:
     memset(stx, 0, sizeof(*stx));
     stx->stx_mask = 0xFFFu;
     stx->stx_mode = (uint16_t)mode;
@@ -7408,7 +7476,8 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
         case 260:
             return (uint64_t)sys_chownat((int)a0, (const char*)(uintptr_t)a1, (uint32_t)a2, (uint32_t)a3, (uint32_t)a4);
         case 262:
-            return (uint64_t)sys_newfstatat((int)a0, (const char*)(uintptr_t)a1, (struct linux_stat*)(uintptr_t)a2);
+            return (uint64_t)sys_newfstatat((int)a0, (const char*)(uintptr_t)a1, (struct linux_stat*)(uintptr_t)a2,
+                                            (uint32_t)a3);
         case 263:
             return (uint64_t)sys_unlinkat((int)a0, (const char*)(uintptr_t)a1, (uint32_t)a2);
         case 264:
@@ -7444,7 +7513,7 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
         case 318:
             return (uint64_t)sys_getrandom((void*)(uintptr_t)a0, (size_t)a1);
         case 332:
-            return (uint64_t)sys_statx((int)a0, (const char*)(uintptr_t)a1, (struct linux_statx*)(uintptr_t)a4);
+            return (uint64_t)sys_statx((int)a0, (const char*)(uintptr_t)a1, (uint32_t)a2, (struct linux_statx*)(uintptr_t)a4);
         case 334:
             return (uint64_t)err(ENOSYS);
         case 439:
