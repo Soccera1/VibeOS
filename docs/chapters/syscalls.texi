@@ -222,6 +222,9 @@ Miscellaneous calls include:
 @headitem Nr @tab Name @tab Notes
 @item 63 @tab @code{uname} @tab Returns VibeOS identity strings.
 @item 97 @tab @code{getrlimit} @tab Limited resource-limit reporting.
+@item 162 @tab @code{sync} @tab Flushes writable ext2/ext3 mounts.
+@item 186 @tab @code{gettid} @tab Returns the current PID; VibeOS does not have
+separate thread IDs.
 @item 228 @tab @code{clock_gettime} @tab Synthetic time source.
 @item 302 @tab @code{prlimit64} @tab Limited resource-limit interface.
 @item 318 @tab @code{getrandom} @tab Pseudorandom bytes from a simple internal
@@ -269,9 +272,12 @@ implementation.  Common values include @code{EINVAL}, @code{ENOENT},
 Important semantic caveats to remember:
 
 @itemize @bullet
-@item There is no true filesystem mutation support.
-@item @code{poll}, @code{select}, and @code{nanosleep} are not driven by a real
-timer interrupt or high-quality wall clock.
+@item Filesystem mutation is limited to writable ext2/ext3 mounts and the
+@file{/home} ramdisk fallback; the root initramfs and shipped @file{/usr} are
+read-only.
+@item @code{poll}, @code{select}, and @code{nanosleep} are not driven by a
+preemptive timer interrupt.  Wall-clock time is seeded from RTC state when
+available and then advanced from the TSC.
 @item @code{clone} does not offer full Linux thread semantics.
 @item @code{/proc} and @code{/sys} are not real filesystems.
 @item @code{mprotect} enforces only coarse present/write page permissions; page

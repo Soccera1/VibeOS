@@ -79,6 +79,7 @@ The runtime namespace is jointly defined by:
 @itemize @bullet
 @item @file{tools/make_initramfs.sh},
 @item @file{tools/make_usr_ext2.sh},
+@item @file{tools/make_home_ext2.sh},
 @item @file{kernel/src/fs.c},
 @item @file{kernel/src/ext2.c}, and
 @item the synthetic-path logic in @file{kernel/src/syscall.c}.

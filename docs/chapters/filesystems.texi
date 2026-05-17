@@ -16,22 +16,22 @@
 @menu
 * Filesystem Design Summary::
 * Initramfs Backend::
-* ext2/ext3 Backend for /usr::
+* ext2/ext3 Backend for /usr and /home::
 * VFS Routing Rules::
 * Synthetic Directories and Devices::
 * Path Resolution and Symlink Semantics::
-* Read-Only Nature of the Filesystems::
+* Filesystem Mutability::
 @end menu
 
 @node Filesystem Design Summary
 @section Filesystem Design Summary
 
-VibeOS does not implement a general mount tree.  Instead, it exposes two
-read-only backends and a dispatcher:
+VibeOS does not implement a general mount tree.  Instead, it exposes a small
+set of fixed backends and a dispatcher:
 
 @itemize @bullet
 @item the initramfs backend for the root filesystem, and
-@item the ext2/ext3 backend for @file{/usr}.
+@item the ext2/ext3 backend for @file{/usr} and @file{/home}.
 @end itemize
 
 The VFS layer in @file{kernel/src/fs.c} decides which backend owns a path and
@@ -63,13 +63,17 @@ Important implementation details:
 This backend is intentionally simple because the root image is built by the
 VibeOS scripts and loaded as an immutable module.
 
-@node ext2/ext3 Backend for /usr
-@section ext2/ext3 Backend for /usr
+@node ext2/ext3 Backend for /usr and /home
+@section ext2/ext3 Backend for /usr and /home
 
 The ext2/ext3 implementation is the secondary filesystem backend used for
-@file{/usr}.  In the shipped boot configuration it mounts a read-only
-filesystem image, but the kernel backend itself supports both non-journaled
-ext2 and journaled ext3 filesystems.
+@file{/usr} and @file{/home}.  In the shipped boot configuration @file{/usr} is
+mounted read-only, while @file{/home} is mounted read-write when a writable SCSI
+disk image is attached.  If no writable home disk is available, the kernel falls
+back to a volatile in-memory @file{/home} ramdisk.
+
+The kernel backend itself supports both non-journaled ext2 and journaled ext3
+filesystems.
 
 It supports:
 
@@ -85,8 +89,9 @@ resolution,
 @item directory child collection for user-visible directory enumeration.
 @end itemize
 
-The ext2/ext3 backend only claims paths rooted at @file{/usr}.  A mounted ext2
-or ext3 image therefore augments the root namespace without replacing it.
+The ext2/ext3 backend claims paths rooted at fixed mount points such as
+@file{/usr} and @file{/home}.  Mounted images therefore augment the root
+namespace without replacing it.
 
 @node VFS Routing Rules
 @section VFS Routing Rules
@@ -97,8 +102,10 @@ or ext3 image therefore augments the root namespace without replacing it.
 The routing rule is intentionally small:
 
 @itemize @bullet
-@item If the ext2/ext3 image is mounted and the path belongs to @file{/usr},
-use the ext2/ext3 backend.
+@item If the path belongs to a mounted ext2/ext3 tree such as @file{/usr} or
+@file{/home}, use that ext2/ext3 mount.
+@item If @file{/home} is backed by the ramdisk fallback, use the ramdisk
+backend for @file{/home} paths.
 @item Otherwise use the initramfs backend.
 @end itemize
 
@@ -168,11 +175,14 @@ Final-component symlink following is selectable depending on the operation.  For
 example, @code{readlinkat} does not follow the final link because it needs the
 link object itself.
 
-@node Read-Only Nature of the Filesystems
-@section Read-Only Nature of the Filesystems
+@node Filesystem Mutability
+@section Filesystem Mutability
 
 The shipped root initramfs and @file{/usr} mount are read-only in the current
-boot configuration.
+boot configuration.  The default QEMU run path attaches @file{build/home.ext3}
+as a writable SCSI disk and mounts it at @file{/home}.  When that disk is not
+present, @file{/home} is still writable but volatile because it is backed by an
+in-memory ramdisk.
 
 You can:
 
@@ -181,8 +191,9 @@ You can:
 @item read files,
 @item stat files,
 @item traverse directories,
-@item read symlinks, and
-@item access synthetic device-like paths.
+@item read symlinks,
+@item access synthetic device-like paths, and
+@item create, modify, rename, and remove files under writable @file{/home}.
 @end itemize
 
 The ext2/ext3 backend has read-write support for regular-file data, block and

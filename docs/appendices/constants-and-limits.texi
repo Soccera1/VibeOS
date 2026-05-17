@@ -105,4 +105,6 @@ partition
 @file{tools/make_usr_ext2.sh}
 @item ext3 inode size @tab 256 @tab Inode size used while estimating the
 filesystem image
+@item Home image size @tab @code{64 MiB} @tab Writable ext3 image size created
+by @file{tools/make_home_ext2.sh}
 @end multitable

@@ -79,6 +79,12 @@ Builds nano against the VibeOS ncurses tree as a static non-PIE binary.  The
 script disables NLS and libmagic support to keep the build aligned with the
 current runtime assumptions.
 
+@item tools/build_less.sh
+Builds less against the VibeOS ncurses tree as a static non-PIE binary.  It
+uses the POSIX regex backend, filters incompatible host linker flags through a
+Zig compiler wrapper, and validates that the result has no program
+interpreter.
+
 @item tools/build_libpipeline.sh
 Builds a static libpipeline sysroot used by man-db.
 
@@ -96,6 +102,11 @@ result into the VibeOS @file{/usr/share/man} tree.
 @item tools/build_man_db.sh
 Builds man-db against the static libpipeline and gdbm sysroots plus the staged
 groff tree.
+
+@item tools/build_kernel_tests.sh
+Builds the in-tree kernel regression tests and helper binary as static non-PIE
+musl executables, validates them with @code{readelf}, and stages the test tree
+under @file{/usr}.
 @end table
 
 @node Image and Media Builders
@@ -112,8 +123,13 @@ provided by GNU coreutils instead.
 @item tools/make_usr_ext2.sh
 Constructs the read-only @file{/usr} ext3 image.  It copies optional program
 trees, stages non-essential coreutils, installs data files such as
-@file{magic.mgc}, copies selected terminfo entries, estimates the block count,
-and then runs @code{mkfs.ext3 -d} to create the filesystem image.
+@file{magic.mgc}, copies selected terminfo entries including @code{ansi},
+estimates the block count, and then runs @code{mkfs.ext3 -d} to create the
+filesystem image.
+
+@item tools/make_home_ext2.sh
+Constructs the writable @file{/home} ext3 image used by the default QEMU run
+path.  The image is currently 64 MiB and labeled @code{VIBEOS_HOME}.
 
 @item tools/make_iso.sh
 Creates a temporary ISO tree, copies the kernel and both module images into
