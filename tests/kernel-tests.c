@@ -409,6 +409,69 @@ static void test_pipes_select_and_poll(void) {
     pipefd[0] = -1;
 }
 
+static void test_pipe_reader_wakes_full_writer(void) {
+    int data[2] = { -1, -1 };
+    int gate[2] = { -1, -1 };
+    pid_t child = -1;
+    char buf[4096];
+    char ready = 0;
+    size_t total = 128 * 1024;
+    size_t done = 0;
+
+    memset(buf, 'x', sizeof(buf));
+    REQUIRE(pipe(data) == 0, "pipe(data) failed: %s", strerror(errno));
+    REQUIRE(pipe(gate) == 0, "pipe(gate) failed: %s", strerror(errno));
+
+    child = fork();
+    REQUIRE(child >= 0, "fork(pipe reader) failed: %s", strerror(errno));
+    if (child == 0) {
+        size_t got = 0;
+        close(data[1]);
+        close(gate[0]);
+        if (write(gate[1], "r", 1) != 1) {
+            _exit(2);
+        }
+        close(gate[1]);
+        while (got < total) {
+            ssize_t n = read(data[0], buf, sizeof(buf));
+            if (n < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                _exit(3);
+            }
+            if (n == 0) {
+                break;
+            }
+            got += (size_t)n;
+        }
+        close(data[0]);
+        _exit(got == total ? 0 : 4);
+    }
+
+    close(data[0]);
+    data[0] = -1;
+    close(gate[1]);
+    gate[1] = -1;
+    REQUIRE(read(gate[0], &ready, 1) == 1 && ready == 'r', "reader did not reach blocking read");
+    close(gate[0]);
+    gate[0] = -1;
+
+    while (done < total) {
+        size_t chunk = total - done;
+        if (chunk > sizeof(buf)) {
+            chunk = sizeof(buf);
+        }
+        ssize_t n = write(data[1], buf, chunk);
+        REQUIRE(n > 0, "large pipe write failed at %zu: %s", done, strerror(errno));
+        done += (size_t)n;
+    }
+    close(data[1]);
+    data[1] = -1;
+
+    wait_for_exit_code(child, 0);
+}
+
 static void test_socketpair_and_unix_sockets(void) {
     int sv[2] = { -1, -1 };
     int listener = -1;
@@ -896,6 +959,7 @@ static const struct test_case g_tests[] = {
     { "identity_and_paths", test_identity_and_paths },
     { "file_io_and_mmap", test_file_io_and_mmap },
     { "pipes_select_and_poll", test_pipes_select_and_poll },
+    { "pipe_reader_wakes_full_writer", test_pipe_reader_wakes_full_writer },
     { "socketpair_and_unix_sockets", test_socketpair_and_unix_sockets },
     { "memory_and_misc", test_memory_and_misc },
     { "compat_syscalls", test_compat_syscalls },

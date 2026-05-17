@@ -1387,6 +1387,23 @@ public int cmd_char(char c)
 	return cmd_char2(c, FALSE);
 }
 
+public int cmd_char_silent(char c)
+{
+	char *s;
+
+	if (strlen(cmdbuf) + 1 >= sizeof(cmdbuf)-1)
+	{
+		lbell();
+		return (CC_ERROR);
+	}
+
+	for (s = &cmdbuf[strlen(cmdbuf)];  s >= cp;  s--)
+		s[1] = s[0];
+	*cp++ = c;
+	have_updown_match = FALSE;
+	return (CC_OK);
+}
+
 /*
  * Copy an ASCII string to the command buffer.
  */

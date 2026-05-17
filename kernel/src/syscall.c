@@ -682,6 +682,7 @@ static int try_complete_unix_send(struct process* proc);
 static int try_complete_select(struct process* proc);
 static int try_complete_nanosleep(struct process* proc);
 static int try_complete_futex(struct process* proc);
+static bool process_block_ready(const struct process* proc);
 static uint64_t schedule_away(struct syscall_frame* frame);
 static int signal_process_group(int pgid, int sig);
 static int signal_process(struct process* proc, int sig);
@@ -1247,10 +1248,10 @@ static uint32_t elf_segment_prot(uint32_t flags) {
 static bool has_other_runnable_process(const struct process* current) {
     for (int i = 0; i < MAX_PROCESSES; ++i) {
         struct process* proc = process_at(i);
-        if (proc == NULL || proc->state != PROCESS_RUNNABLE) {
+        if (proc == NULL || proc == current) {
             continue;
         }
-        if (proc != current) {
+        if (proc->state == PROCESS_RUNNABLE || process_block_ready(proc)) {
             return true;
         }
     }
@@ -1818,6 +1819,15 @@ static void close_cloexec_fds(void) {
         if ((g_fds[fd].fd_flags & FD_CLOEXEC) != 0u) {
             (void)sys_close(fd);
         }
+    }
+}
+
+static void reset_caught_signal_handlers_on_exec(void) {
+    for (int sig = 1; sig < (int)NSIG; ++sig) {
+        if (g_sig_actions[sig].handler == SIGNAL_HANDLER_DFL || g_sig_actions[sig].handler == SIGNAL_HANDLER_IGN) {
+            continue;
+        }
+        memset(&g_sig_actions[sig], 0, sizeof(g_sig_actions[sig]));
     }
 }
 
@@ -4533,12 +4543,6 @@ static void unblock_process(struct process* proc, int64_t retval) {
 }
 
 static int try_complete_wait4(struct process* proc) {
-    if (proc->pending_count > 0) {
-        (void)process_take_pending_signal(proc);
-        unblock_process(proc, err(EINTR));
-        return 0;
-    }
-
     int zombie_idx = find_zombie_for_wait(proc, proc->wait.aux0);
     if (zombie_idx >= 0) {
         if (proc->wait.ptr0 != 0) {
@@ -4557,6 +4561,11 @@ static int try_complete_wait4(struct process* proc) {
     int status = 0;
     int pid = find_waitable_child_event(proc, proc->wait.aux0, proc->wait.aux1, &status);
     if (pid == 0) {
+        if (proc->pending_count > 0) {
+            (void)process_take_pending_signal(proc);
+            unblock_process(proc, err(EINTR));
+            return 0;
+        }
         return err(EAGAIN);
     }
 
@@ -6689,6 +6698,7 @@ static int sys_execve(struct syscall_frame* frame, const char* path_user, uint64
     write_fs_base_current(0);
     userland_set_image_span(image_start, image_end);
     set_task_name_from_path(current_exec_path);
+    reset_caught_signal_handlers_on_exec();
 
     current->tid_address = 0;
     current->fs_base = 0;

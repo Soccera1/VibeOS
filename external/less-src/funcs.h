@@ -100,6 +100,7 @@ public void restore_updown_match(ssize_t udm);
 public void cmd_addhist(struct mlist *mlist, constant char *cmd, lbool modified);
 public void cmd_accept(void);
 public int cmd_char(char c);
+public int cmd_char_silent(char c);
 public int cmd_setstring(constant char *s, lbool uc);
 public LINENUM cmd_int(mutable long *frac);
 public constant char * get_cmdbuf(void);

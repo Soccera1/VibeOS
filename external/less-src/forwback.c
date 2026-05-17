@@ -423,7 +423,10 @@ public void back(int n, POSITION pos, lbool force, lbool only_last, lbool to_new
 		}
 	}
 	if (nlines == 0)
+	{
 		eof_bell();
+		repaint();
+	}
 	else if (do_repaint)
 		repaint();
 	else
