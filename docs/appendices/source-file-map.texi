@@ -265,10 +265,10 @@ Build and stage nano.
 Build and stage less.
 
 @item tools/build_libpipeline.sh
-Build and stage libpipeline.
+Build and stage libpipeline with 64-bit libraries under @file{/usr/lib64}.
 
 @item tools/build_gdbm.sh
-Build and stage gdbm.
+Build and stage gdbm with 64-bit libraries under @file{/usr/lib64}.
 
 @item tools/build_groff.sh
 Build and stage groff.

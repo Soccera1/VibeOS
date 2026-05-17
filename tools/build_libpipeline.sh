@@ -92,6 +92,7 @@ configure_libpipeline() {
   pushd "$BUILD_DIR" >/dev/null
   "$ABS_SRC_DIR/configure" \
     --prefix=/usr \
+    --libdir=/usr/lib64 \
     --disable-shared \
     --enable-static \
     --disable-dependency-tracking \
@@ -129,13 +130,14 @@ stage_libpipeline() {
   }
   popd >/dev/null
 
-  if [[ ! -f "$STAGE_DIR/usr/lib/libpipeline.a" ]]; then
+  if [[ ! -f "$STAGE_DIR/usr/lib64/libpipeline.a" ]]; then
     echo "Static libpipeline archive missing after install" >&2
     exit 1
   fi
 
   cp -a "$STAGE_DIR/." "$OUT_DIR"
-  rm -f "$OUT_DIR/usr/lib/libpipeline.la"
+  mkdir -p "$OUT_DIR/usr/lib"
+  rm -f "$OUT_DIR/usr/lib64/libpipeline.la"
 }
 
 configure_libpipeline

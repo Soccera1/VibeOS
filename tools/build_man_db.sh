@@ -20,11 +20,11 @@ if [[ ! -d "$SRC_DIR" ]]; then
   echo "man-db source directory not found: $SRC_DIR" >&2
   exit 1
 fi
-if [[ ! -d "$LIBPIPELINE_SYSROOT/usr/lib/pkgconfig" ]]; then
+if [[ ! -d "$LIBPIPELINE_SYSROOT/usr/lib64/pkgconfig" ]]; then
   echo "libpipeline sysroot missing pkg-config metadata: $LIBPIPELINE_SYSROOT" >&2
   exit 1
 fi
-if [[ ! -f "$GDBM_SYSROOT/usr/include/gdbm.h" || ! -f "$GDBM_SYSROOT/usr/lib/libgdbm.a" ]]; then
+if [[ ! -f "$GDBM_SYSROOT/usr/include/gdbm.h" || ! -f "$GDBM_SYSROOT/usr/lib64/libgdbm.a" ]]; then
   echo "gdbm sysroot missing static library or headers: $GDBM_SYSROOT" >&2
   exit 1
 fi
@@ -135,10 +135,11 @@ configure_man_db() {
 
   pushd "$BUILD_DIR" >/dev/null
   PATH="$ABS_GROFF_TREE/bin:$PATH" \
-  PKG_CONFIG_PATH="$ABS_LIBPIPELINE_SYSROOT/usr/lib/pkgconfig" \
+  PKG_CONFIG_PATH="$ABS_LIBPIPELINE_SYSROOT/usr/lib64/pkgconfig" \
   PKG_CONFIG_SYSROOT_DIR="$ABS_LIBPIPELINE_SYSROOT" \
   "$ABS_SRC_DIR/configure" \
     --prefix=/usr \
+    --libdir=/usr/lib64 \
     --sysconfdir=/usr/etc \
     --with-db=gdbm \
     --without-libseccomp \
@@ -160,7 +161,7 @@ configure_man_db() {
     RANLIB="zig ranlib" \
     CPPFLAGS="-I$ABS_GDBM_SYSROOT/usr/include" \
     CFLAGS="-Os -fno-stack-protector -fomit-frame-pointer -fno-pie" \
-    LDFLAGS="-static -no-pie -L$ABS_GDBM_SYSROOT/usr/lib" \
+    LDFLAGS="-static -no-pie -L$ABS_GDBM_SYSROOT/usr/lib64" \
     2>&1 | tee configure.log || {
       echo "Configure failed. Check $BUILD_DIR/configure.log" >&2
       exit 1
@@ -204,7 +205,7 @@ stage_man_db() {
 
   mkdir -p "$OUT_DIR" "$OUT_DIR/etc"
   cp -a "$STAGE_DIR/usr/." "$OUT_DIR"/
-  rm -rf "$OUT_DIR/lib"
+  mkdir -p "$OUT_DIR/lib"
   rm -f \
     "$OUT_DIR/bin/apropos" \
     "$OUT_DIR/bin/catman" \

@@ -30,7 +30,7 @@ WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 
 ROOT="$WORKDIR/root"
-mkdir -p "$ROOT"/{bin,share/misc,share/terminfo}
+mkdir -p "$ROOT"/{bin,lib,lib64,share/misc,share/terminfo}
 
 is_essential_coreutils_prog() {
   case "$1" in
@@ -106,6 +106,9 @@ for usr_tree in "${USR_TREES[@]}"; do
 done
 
 install_coreutils_bins
+
+rm -rf "$ROOT/lib"
+mkdir -p "$ROOT/lib"
 
 copy_terminfo() {
   local entry="$1"
