@@ -92,6 +92,7 @@ configure_gdbm() {
   pushd "$BUILD_DIR" >/dev/null
   "$ABS_SRC_DIR/configure" \
     --prefix=/usr \
+    --libdir=/usr/lib64 \
     --disable-shared \
     --enable-static \
     --disable-nls \
@@ -133,13 +134,14 @@ stage_gdbm() {
     echo "Installed gdbm header missing after install" >&2
     exit 1
   fi
-  if [[ ! -f "$STAGE_DIR/usr/lib/libgdbm.a" ]]; then
+  if [[ ! -f "$STAGE_DIR/usr/lib64/libgdbm.a" ]]; then
     echo "Static gdbm archive missing after install" >&2
     exit 1
   fi
 
   cp -a "$STAGE_DIR/." "$OUT_DIR"
-  rm -f "$OUT_DIR/usr/lib/libgdbm.la"
+  mkdir -p "$OUT_DIR/usr/lib"
+  rm -f "$OUT_DIR/usr/lib64/libgdbm.la"
 }
 
 configure_gdbm

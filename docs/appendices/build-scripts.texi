@@ -86,10 +86,12 @@ Zig compiler wrapper, and validates that the result has no program
 interpreter.
 
 @item tools/build_libpipeline.sh
-Builds a static libpipeline sysroot used by man-db.
+Builds a static libpipeline sysroot used by man-db, placing 64-bit libraries
+and pkg-config metadata under @file{/usr/lib64}.
 
 @item tools/build_gdbm.sh
-Builds a static gdbm sysroot used by man-db.
+Builds a static gdbm sysroot used by man-db, placing 64-bit libraries under
+@file{/usr/lib64}.
 
 @item tools/build_groff.sh
 Builds and stages groff into a tree rooted at @file{/usr}.  The output is later
