@@ -27,8 +27,9 @@ The implemented design is intentionally conservative:
 @item One architecture: amd64.
 @item One boot protocol: Multiboot2.
 @item One read-only root filesystem format: @code{cpio newc}.
-@item One read-only secondary filesystem backend: ext2/ext3 for @file{/usr},
-with ext3 used by the shipped images.
+@item One ext2/ext3 secondary filesystem backend, mounted read-only for
+@file{/usr} and read-write for @file{/home} when a writable home image is
+available.
 @item One primary userspace ABI target: Linux-compatible amd64 syscalls.
 @item One preferred binary model: static, non-PIE, musl-linked executables.
 @end itemize
@@ -46,10 +47,11 @@ bootable Unix-like environment:
 @item a process table and blocking scheduler,
 @item signals, process groups, and sessions,
 @item TTY and pipe file descriptors,
-@item a read-only filesystem namespace,
+@item a filesystem namespace with read-only root and @file{/usr} images plus a
+writable @file{/home} mount or ramdisk fallback,
 @item an ELF loader with shebang support, and
-@item enough Linux syscalls to run static BusyBox, Bash, coreutils, and related
-utilities.
+@item enough Linux syscalls to run static BusyBox, Bash, coreutils, man-db,
+less, and related utilities.
 @end itemize
 
 @node Execution Model

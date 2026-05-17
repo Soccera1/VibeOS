@@ -36,14 +36,16 @@ and then the machine halts.
 @node Filesystem and Namespace Limits
 @appendixsec Filesystem and Namespace Limits
 
-Both filesystem backends are read-only.
+The root initramfs and shipped @file{/usr} image are read-only.  @file{/home}
+is writable when backed by the default SCSI ext3 image, and falls back to a
+volatile writable ramdisk if no home disk is attached.
 
 The namespace can expose files, directories, symlinks, pipes, pathname
 Unix-domain socket nodes, TTYs, a null device, and possibly a framebuffer
 device, but it does not yet provide:
 
 @itemize @bullet
-@item writable persistent filesystems,
+@item writable persistent filesystems outside the fixed @file{/home} mount,
 @item a real procfs implementation,
 @item a real sysfs implementation,
 @item device discovery beyond the hardcoded synthetic devices, or

@@ -62,7 +62,7 @@ That header requests:
 @item the normal end tag.
 @end itemize
 
-The boot media scripts always pass two Multiboot modules after the kernel:
+The ISO boot script passes two Multiboot modules after the kernel:
 
 @enumerate
 @item module 0 is the initramfs, and
@@ -73,7 +73,9 @@ The boot media scripts always pass two Multiboot modules after the kernel:
 @findex fs_init
 
 This ordering is not incidental.  @code{kernel_main} looks up the modules by
-index and assigns fixed meanings to them.
+index and assigns fixed meanings to them.  The default GPT/QEMU run path does
+not embed @file{/usr} or @file{/home} in the boot disk; it attaches those ext3
+images as SCSI disks after the kernel has booted.
 
 @node Early Long-Mode Transition
 @section Early Long-Mode Transition
@@ -107,8 +109,9 @@ Once C code begins, @code{kernel_main} performs initialization in a fixed order:
 @item console initialization,
 @item ACPI power probing,
 @item heap initialization,
+@item virtio GPU, ATA, and virtio SCSI probing,
 @item initramfs discovery and indexing,
-@item @file{/usr} ext3 mount attempt,
+@item @file{/usr} and @file{/home} ext3 mount attempts,
 @item post-user return-stack installation,
 @item VM template initialization,
 @item GDT setup,

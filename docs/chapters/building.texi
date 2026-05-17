@@ -64,8 +64,10 @@ Build the kernel, initramfs, and @file{/usr} ext3 image, then package them into
 @file{build/vibeos.iso}.
 
 @item disk
-Build the same runtime artifacts and install them into a BIOS plus GPT raw disk
-image at @file{build/vibeos-gpt.img}.
+Build the kernel and initramfs and install them into a BIOS plus GPT raw disk
+image at @file{build/vibeos-gpt.img}.  The default QEMU run target attaches
+@file{/usr} and @file{/home} as separate SCSI disks instead of embedding them in
+this boot disk.
 
 @item run
 Build the disk image and run it under QEMU.
@@ -134,8 +136,7 @@ subsequent builds are cheaper.
 @node Runtime Image Layout
 @section Runtime Image Layout
 
-The build produces three core runtime artifacts before any boot medium is
-generated:
+The build produces these runtime artifacts before or alongside boot media:
 
 @table @file
 @item build/vibeos-kernel.bin
@@ -145,7 +146,12 @@ The linked kernel.
 The root filesystem image loaded as Multiboot module 0.
 
 @item build/usr.ext3
-The ext3 image loaded as Multiboot module 1 and mounted at @file{/usr}.
+The ext3 image loaded as Multiboot module 1 for ISO boot, or attached as a
+read-only SCSI disk by the default QEMU run path, and mounted at @file{/usr}.
+
+@item build/home.ext3
+The writable ext3 image attached as a SCSI disk by the default QEMU run path and
+mounted at @file{/home}.
 @end table
 
 The split between root and @file{/usr} is deliberate.
@@ -158,7 +164,7 @@ The initramfs contains the minimum system needed to come up:
 @item essential coreutils copied into @file{/bin},
 @item device and directory scaffolding such as @file{/dev}, @file{/proc},
 @file{/sys}, and @file{/tmp}, and
-@item an empty @file{/usr} mount point.
+@item empty @file{/usr} and @file{/home} mount points.
 @end itemize
 
 The ext3 image contains the larger optional userspace:
@@ -166,10 +172,10 @@ The ext3 image contains the larger optional userspace:
 @itemize @bullet
 @item Bash,
 @item the remaining coreutils,
-@item @code{help}, @code{sl}, @code{file}, and @code{nano},
+@item @code{help}, @code{sl}, @code{file}, @code{less}, and @code{nano},
 @item groff and man-db runtime files,
 @item Linux man-pages, and
-@item terminfo and other shared data.
+@item terminfo, kernel regression tests, and other shared data.
 @end itemize
 
 @node Running and Testing
@@ -187,6 +193,8 @@ which expands to a QEMU invocation similar to:
 qemu-system-x86_64 \
   -machine q35,accel=kvm:tcg \
   -m 1G \
+  -vga none \
+  -device virtio-vga \
   -drive format=raw,file=build/vibeos-gpt.img,if=ide,index=0 \
   -device virtio-scsi-pci-transitional,id=scsi0 \
   -drive format=raw,file=build/usr.ext3,if=none,id=usr \

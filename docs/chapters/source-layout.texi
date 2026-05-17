@@ -34,6 +34,10 @@ Architecture-specific and machine-independent kernel code.
 @item userspace/
 In-tree userspace code owned by this repository.
 
+@item tests/
+Static userspace regression tests and helper programs staged under
+@file{/usr}.
+
 @item tools/
 Build wrappers, staging helpers, and image-generation scripts.
 
@@ -95,8 +99,8 @@ Broadly speaking, the scripts fall into four classes:
 @itemize @bullet
 @item package build wrappers, such as @file{build_bash.sh} or
 @file{build_coreutils.sh};
-@item staging helpers, such as @file{make_initramfs.sh} and
-@file{make_usr_ext2.sh};
+@item staging helpers, such as @file{make_initramfs.sh},
+@file{make_usr_ext2.sh}, and @file{make_home_ext2.sh};
 @item boot media generators, such as @file{make_iso.sh} and
 @file{make_gpt_disk.sh}; and
 @item shared helpers such as @file{strip_helpers.sh}.
@@ -120,6 +124,9 @@ Important examples include:
 @item groff,
 @item man-db,
 @item Linux man-pages,
+@item less,
+@item libpipeline,
+@item gdbm,
 @item nano, and
 @item file(1).
 @end itemize

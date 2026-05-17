@@ -93,6 +93,15 @@ Kernel heap allocator interface.
 @item kernel/include/multiboot2.h
 Multiboot2 tag structures and lookup helpers used by the kernel.
 
+@item kernel/include/pci.h
+PCI configuration-space scanning interface used by virtio device discovery.
+
+@item kernel/include/scsi.h
+SCSI command helpers and block-storage operation interfaces.
+
+@item kernel/include/ata.h
+ATA and ATAPI probing plus storage-operation interfaces.
+
 @item kernel/include/power.h
 ACPI and machine power-control interface.
 
@@ -114,6 +123,12 @@ Bootstrap userland loader interface.
 
 @item kernel/include/vm.h
 User VM layout constants and VM-space interfaces.
+
+@item kernel/include/virtio_gpu.h
+Virtio GPU discovery and framebuffer setup interface.
+
+@item kernel/include/virtio_scsi.h
+Virtio SCSI discovery and disk-access interface.
 @end table
 
 @node Kernel Source Files
@@ -143,6 +158,22 @@ Input multiplexer over serial and keyboard.
 @item kernel/src/keyboard.c
 Polled PS/2 keyboard scancode translator.
 
+@item kernel/src/pci.c
+Minimal PCI bus scanner used to find virtio devices.
+
+@item kernel/src/ata.c
+ATA disk and ATAPI packet-device probing, with storage adapters for mounted
+filesystem images.
+
+@item kernel/src/scsi.c
+Shared SCSI command helpers used by ATAPI and virtio SCSI devices.
+
+@item kernel/src/virtio_gpu.c
+Virtio GPU setup for framebuffer-backed console output.
+
+@item kernel/src/virtio_scsi.c
+Virtio SCSI setup and disk I/O for @file{/usr} and @file{/home} images.
+
 @item kernel/src/power.c
 ACPI parsing and machine halt, reboot, and shutdown logic.
 
@@ -165,9 +196,9 @@ Kernel and per-process page-table management.
 Read-only initramfs parser and entry indexer.
 
 @item kernel/src/ext2.c
-Ext2/ext3 filesystem implementation used for the @file{/usr} mount.  The file
-keeps its historical name even though the implementation now supports both
-formats.
+Ext2/ext3 filesystem implementation used for the @file{/usr} and @file{/home}
+mounts.  The file keeps its historical name even though the implementation now
+supports both formats.
 
 @item kernel/src/fs.c
 VFS dispatcher over initramfs and the ext2/ext3 backend.
@@ -193,6 +224,13 @@ implementations.
 @table @file
 @item userspace/help.c
 Curated quick-start helper program staged into @file{/usr/bin/help}.
+
+@item tests/kernel-tests.c
+Static userspace regression test runner staged into @file{/usr/bin}.
+
+@item tests/kernel-test-helper.c
+Helper executable used by the regression tests for exec and descriptor
+inheritance checks.
 @end table
 
 @node Tool Script Files
@@ -223,6 +261,9 @@ Build and stage @code{file(1)} and @file{magic.mgc}.
 @item tools/build_nano.sh
 Build and stage nano.
 
+@item tools/build_less.sh
+Build and stage less.
+
 @item tools/build_libpipeline.sh
 Build and stage libpipeline.
 
@@ -238,11 +279,17 @@ Stage Linux man-pages.
 @item tools/build_man_db.sh
 Build and stage man-db.
 
+@item tools/build_kernel_tests.sh
+Build and stage the in-tree kernel regression tests.
+
 @item tools/make_initramfs.sh
 Create the initramfs root archive.
 
 @item tools/make_usr_ext2.sh
-Create the ext2 @file{/usr} image.
+Create the ext3 @file{/usr} image.
+
+@item tools/make_home_ext2.sh
+Create the ext3 @file{/home} image.
 
 @item tools/make_iso.sh
 Create the bootable ISO image.
