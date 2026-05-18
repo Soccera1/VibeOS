@@ -93,6 +93,10 @@ Kernel heap allocator interface.
 @item kernel/include/multiboot2.h
 Multiboot2 tag structures and lookup helpers used by the kernel.
 
+@item kernel/include/net.h
+Small IPv4 network-stack interface used by the socket layer and virtio-net
+driver.
+
 @item kernel/include/pci.h
 PCI configuration-space scanning interface used by virtio device discovery.
 
@@ -126,6 +130,9 @@ User VM layout constants and VM-space interfaces.
 
 @item kernel/include/virtio_gpu.h
 Virtio GPU discovery and framebuffer setup interface.
+
+@item kernel/include/virtio_net.h
+Virtio network-device discovery, polling, and Ethernet transmit interface.
 
 @item kernel/include/virtio_scsi.h
 Virtio SCSI discovery and disk-access interface.
@@ -171,6 +178,9 @@ Shared SCSI command helpers used by ATAPI and virtio SCSI devices.
 @item kernel/src/virtio_gpu.c
 Virtio GPU setup for framebuffer-backed console output.
 
+@item kernel/src/virtio_net.c
+Virtio network-device setup, receive polling, and Ethernet frame transmit path.
+
 @item kernel/src/virtio_scsi.c
 Virtio SCSI setup and disk I/O for @file{/usr} and @file{/home} images.
 
@@ -202,6 +212,9 @@ supports both formats.
 
 @item kernel/src/fs.c
 VFS dispatcher over initramfs and the ext2/ext3 backend.
+
+@item kernel/src/net.c
+Small IPv4 stack with ARP, DHCP, ICMP, UDP, and client-side TCP support.
 
 @item kernel/src/process.c
 Process table allocator, lookup, and pending-signal bookkeeping.
@@ -278,6 +291,18 @@ Stage Linux man-pages.
 
 @item tools/build_man_db.sh
 Build and stage man-db.
+
+@item tools/build_gmp.sh
+Build and stage the static GMP sysroot.
+
+@item tools/build_nettle.sh
+Build and stage the static Nettle/Hogweed sysroot.
+
+@item tools/build_gnutls.sh
+Build and stage the static GnuTLS sysroot.
+
+@item tools/build_wget.sh
+Build and stage static HTTPS-capable @code{wget}.
 
 @item tools/build_kernel_tests.sh
 Build and stage the in-tree kernel regression tests.

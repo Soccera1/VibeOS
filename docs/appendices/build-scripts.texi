@@ -105,6 +105,23 @@ result into the VibeOS @file{/usr/share/man} tree.
 Builds man-db against the static libpipeline and gdbm sysroots plus the staged
 groff tree.
 
+@item tools/build_gmp.sh
+Builds a static musl GMP sysroot from the configured distfile cache for use by
+Nettle and GnuTLS.
+
+@item tools/build_nettle.sh
+Builds a static musl Nettle and Hogweed sysroot against the staged GMP sysroot.
+
+@item tools/build_gnutls.sh
+Builds a static GnuTLS sysroot against the staged Nettle and GMP sysroots,
+using the included libtasn1 and unistring copies and disabling features that are
+not needed by the current VibeOS runtime.
+
+@item tools/build_wget.sh
+Builds a static non-PIE @code{wget} binary with HTTPS support through GnuTLS,
+stages @file{/usr/bin/wget}, writes @file{/usr/etc/wgetrc}, and copies the host
+CA bundle into the VibeOS @file{/usr/etc/ssl/certs} tree when available.
+
 @item tools/build_kernel_tests.sh
 Builds the in-tree kernel regression tests and helper binary as static non-PIE
 musl executables, validates them with @code{readelf}, and stages the test tree
@@ -125,7 +142,8 @@ provided by GNU coreutils instead.
 @item tools/make_usr_ext2.sh
 Constructs the read-only @file{/usr} ext3 image.  It copies optional program
 trees, stages non-essential coreutils, installs data files such as
-@file{magic.mgc}, copies selected terminfo entries including @code{ansi},
+@file{magic.mgc}, copies selected terminfo entries including @code{ansi} and
+@code{vibeos}, stages @code{wget} runtime configuration and the CA bundle,
 estimates the block count, and then runs @code{mkfs.ext3 -d} to create the
 filesystem image.
 

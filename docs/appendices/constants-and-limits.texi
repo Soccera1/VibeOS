@@ -11,6 +11,7 @@ This appendix collects the major in-tree constants that define system shape.
 * Boot and Link Constants::
 * Memory Layout Constants::
 * Process and Descriptor Limits::
+* Network Limits::
 * Filesystem and Path Limits::
 * Pipe and Signal Limits::
 * Image-Build and Filesystem-Creation Constants::
@@ -60,6 +61,23 @@ coverage
 @item @code{MAX_FDS} @tab 64 @tab Active descriptor slots in the syscall layer
 @item @code{MAX_CHILDREN} @tab 256 @tab Temporary directory-entry buffer limit
 @item @code{MAX_ZOMBIES} @tab 64 @tab Zombie bookkeeping slots
+@end multitable
+
+@node Network Limits
+@appendixsec Network Limits
+
+@multitable @columnfractions .35 .20 .45
+@headitem Constant @tab Value @tab Meaning
+@item @code{MAX_UNIX_SOCKETS} @tab 128 @tab Pathname Unix-domain socket slots
+@item @code{MAX_UNIX_CONNECTIONS} @tab 128 @tab Unix-domain stream connection
+slots
+@item @code{MAX_INET_SOCKETS} @tab 64 @tab IPv4 socket slots in the syscall
+layer
+@item @code{MAX_UDP_BINDINGS} @tab 32 @tab UDP local-port bindings in the
+network stack
+@item @code{MAX_TCP_CONNECTIONS} @tab 32 @tab Active client-side TCP
+connections in the network stack
+@item @code{MAX_RAW_ICMP_SOCKETS} @tab 16 @tab Raw ICMP receive queues
 @end multitable
 
 @node Filesystem and Path Limits

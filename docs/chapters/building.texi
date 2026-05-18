@@ -31,6 +31,8 @@ for a full OS build:
 @item @code{grub-mkrescue},
 @item @code{grub-install},
 @item @code{mkfs.ext3}, and
+@item @code{parted}, @code{losetup}, and mount permissions for the GPT disk
+builder, and
 @item @code{qemu-system-x86_64}.
 @end itemize
 
@@ -40,7 +42,9 @@ In practice, userspace builds also depend heavily on:
 @item @code{zig},
 @item typical Autoconf host tools,
 @item @code{readelf} for validation, and
-@item utilities used by GRUB and ext3 image generation.
+@item utilities used by GRUB and ext3 image generation, including
+@code{xorriso}, @code{mtools}, @code{tic}, and a host CA bundle for
+@code{wget}.
 @end itemize
 
 The documentation target depends on the Texinfo tools:
@@ -172,10 +176,12 @@ The ext3 image contains the larger optional userspace:
 @itemize @bullet
 @item Bash,
 @item the remaining coreutils,
-@item @code{help}, @code{sl}, @code{file}, @code{less}, and @code{nano},
+@item @code{help}, @code{sl}, @code{file}, @code{less}, @code{nano}, and
+@code{wget},
 @item groff and man-db runtime files,
 @item Linux man-pages, and
-@item terminfo, kernel regression tests, and other shared data.
+@item terminfo, the CA bundle and @code{wgetrc}, kernel regression tests, and
+other shared data.
 @end itemize
 
 @node Running and Testing
@@ -201,6 +207,8 @@ qemu-system-x86_64 \
   -device scsi-hd,drive=usr,bus=scsi0.0,scsi-id=0,lun=0 \
   -drive format=raw,file=build/home.ext3,if=none,id=home \
   -device scsi-hd,drive=home,bus=scsi0.0,scsi-id=1,lun=0 \
+  -netdev user,id=net0 \
+  -device virtio-net-pci-transitional,netdev=net0 \
   -serial stdio
 @end example
 

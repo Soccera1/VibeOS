@@ -10,6 +10,7 @@ VibeOS is an amd64 monolithic-kernel OS prototype that boots via Multiboot2 and 
 - **Process Management:** Support for `fork` (state snapshotting), `execve` (ELF64 loader), and `wait4`.
 - **VFS:** Read-only initramfs (`cpio newc`) root with an `ext2`/`ext3` `/usr` mount path, a writable `/home` ext3 mount or ramdisk fallback, plus support for pipes, symlinks, Unix-domain sockets, and device nodes (`/dev/tty`, `/dev/null`, `/dev/fb0`). The shipped `/usr` and `/home` images are `ext3`.
 - **I/O:** TTY support over VGA text mode, Multiboot/virtio framebuffer, keyboard, and serial (`COM1`).
+- **Networking:** virtio-net with a small IPv4 stack covering ARP, DHCP, ICMP, UDP, and client-side TCP streams.
 - **Hardware:** XSAVE/AVX/SSE enablement, FSGSBASE support.
 - **Shells:**
   - **Bash:** Default interactive shell.
@@ -26,6 +27,8 @@ VibeOS is an amd64 monolithic-kernel OS prototype that boots via Multiboot2 and 
 
 - `gcc`, `ld`, `nasm` (for the kernel)
 - `grub-mkrescue`, `grub-install` (for bootable images)
+- `mkfs.ext3`, `parted`, `losetup`, and `sudo` (for ext3 and GPT images)
+- `qemu-system-x86_64` (for `make run`)
 - `xorriso`, `mtools`, `libisoboot` (usually dependencies of `grub-mkrescue`)
 - `zig` (required for musl userspace builds via `zig cc`)
 
@@ -66,11 +69,13 @@ qemu-system-x86_64 \
   -device scsi-hd,drive=usr,bus=scsi0.0,scsi-id=0,lun=0 \
   -drive format=raw,file=build/home.ext3,if=none,id=home \
   -device scsi-hd,drive=home,bus=scsi0.0,scsi-id=1,lun=0 \
+  -netdev user,id=net0 \
+  -device virtio-net-pci-transitional,netdev=net0 \
   -serial stdio
 ```
 
 ## Userspace Implementation
 
-VibeOS currently ships BusyBox, GNU coreutils, Bash, and upstream `file(1)` as static, non-PIE musl binaries. The kernel loader now accepts interpreter-backed ELF64 binaries as well, but that path is still expected to be buggy, and the runtime shared-object loaders and libraries are not staged in the system image yet. Static binaries remain the preferred execution model and are expected to stay that way even if dynamic loading support improves. GNU coreutils provides the standard utility set wherever it has an implementation, with the essential commands copied into `/bin` and the rest copied into `/usr/bin` from the separate `/usr` image. BusyBox remains installed for the fallback shell and the non-coreutils applets such as `vi`, `mount`, `ps`, and similar small-system tools. Standalone programs such as Bash, `file`, `less`, `nano`, `sl`, `man`, and the curated `help` command live under `/usr/bin`, `file` ships with its compiled `magic.mgc` database under `/usr/share/misc`, groff provides the formatter stack used by `man`, and the upstream Linux man-pages tree is staged under `/usr/share/man`. The `man` reader is shipped now; `man-db` is built against static musl `libpipeline` and `gdbm`, while the database-maintenance utilities remain omitted from the staged image.
+VibeOS currently ships BusyBox, GNU coreutils, Bash, upstream `file(1)`, `wget`, and supporting standalone tools as static, non-PIE musl binaries. The kernel loader now accepts interpreter-backed ELF64 binaries as well, but that path is still expected to be buggy, and the runtime shared-object loaders and libraries are not staged in the system image yet. Static binaries remain the preferred execution model and are expected to stay that way even if dynamic loading support improves. GNU coreutils provides the standard utility set wherever it has an implementation, with the essential commands copied into `/bin` and the rest copied into `/usr/bin` from the separate `/usr` image. BusyBox remains installed for the fallback shell and the non-coreutils applets such as `vi`, `mount`, `ps`, and similar small-system tools. Standalone programs such as Bash, `file`, `less`, `nano`, `sl`, `man`, `wget`, and the curated `help` command live under `/usr/bin`, `file` ships with its compiled `magic.mgc` database under `/usr/share/misc`, groff provides the formatter stack used by `man`, and the upstream Linux man-pages tree is staged under `/usr/share/man`. The `man` reader is shipped now; `man-db` is built against static musl `libpipeline` and `gdbm`, while the database-maintenance utilities remain omitted from the staged image. `wget` is linked statically against GnuTLS, Nettle, and GMP, and the image stages a CA bundle and `wgetrc` under `/usr/etc`.
 
 The initramfs now carries the root filesystem, the essential `/bin` command set, BusyBox, and empty `/usr` and `/home` mountpoints. The kernel filesystem backend supports both ext2 and ext3 images. On the default GPT/QEMU run path, `build/usr.ext3` is attached as virtio SCSI target 0 and mounted read-only at `/usr`, while `build/home.ext3` is attached as target 1 and mounted read-write at `/home`. ISO boot still loads `/usr` as a Multiboot module. The kernel can also mount ext2 or ext3 filesystems from regular files through the existing ext2/ext3 loopback path when those files are already reachable through VFS, but there is not yet a kernel block-device/boot-filesystem reader for opening `/boot/usr.ext3` directly from the boot medium.

@@ -109,7 +109,7 @@ Once C code begins, @code{kernel_main} performs initialization in a fixed order:
 @item console initialization,
 @item ACPI power probing,
 @item heap initialization,
-@item virtio GPU, ATA, and virtio SCSI probing,
+@item virtio GPU, ATA, virtio SCSI, and virtio-net probing,
 @item initramfs discovery and indexing,
 @item @file{/usr} and @file{/home} ext3 mount attempts,
 @item post-user return-stack installation,
