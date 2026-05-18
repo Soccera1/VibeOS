@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -lt 3 || $# -gt 4 ]]; then
-  echo "usage: $0 <output-tree> <wget-src-dir> <libressl-sysroot> [ca-bundle]" >&2
+if [[ $# -lt 5 || $# -gt 6 ]]; then
+  echo "usage: $0 <output-tree> <wget-src-dir> <gnutls-sysroot> <nettle-sysroot> <gmp-sysroot> [ca-bundle]" >&2
   exit 1
 fi
 
 OUT_DIR="$1"
 SRC_DIR="$2"
-LIBRESSL_SYSROOT="$3"
-CA_BUNDLE="${4:-}"
+GNUTLS_SYSROOT="$3"
+NETTLE_SYSROOT="$4"
+GMP_SYSROOT="$5"
+CA_BUNDLE="${6:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -20,13 +22,25 @@ if [[ ! -d "$SRC_DIR" ]]; then
   exit 1
 fi
 
-if [[ ! -f "$LIBRESSL_SYSROOT/usr/include/openssl/ssl.h" || ! -f "$LIBRESSL_SYSROOT/usr/lib/libssl.a" || ! -f "$LIBRESSL_SYSROOT/usr/lib/libcrypto.a" ]]; then
-  echo "LibreSSL sysroot missing headers or static libraries: $LIBRESSL_SYSROOT" >&2
+if [[ ! -f "$GNUTLS_SYSROOT/usr/include/gnutls/gnutls.h" || ! -f "$GNUTLS_SYSROOT/usr/lib/libgnutls.a" ]]; then
+  echo "GnuTLS sysroot missing headers or static library: $GNUTLS_SYSROOT" >&2
+  exit 1
+fi
+
+if [[ ! -f "$NETTLE_SYSROOT/usr/include/nettle/nettle-types.h" || ! -f "$NETTLE_SYSROOT/usr/lib/libnettle.a" || ! -f "$NETTLE_SYSROOT/usr/lib/libhogweed.a" ]]; then
+  echo "Nettle sysroot missing headers or static libraries: $NETTLE_SYSROOT" >&2
+  exit 1
+fi
+
+if [[ ! -f "$GMP_SYSROOT/usr/include/gmp.h" || ! -f "$GMP_SYSROOT/usr/lib/libgmp.a" ]]; then
+  echo "GMP sysroot missing headers or static library: $GMP_SYSROOT" >&2
   exit 1
 fi
 
 ABS_SRC_DIR="$(cd "$SRC_DIR" && pwd)"
-ABS_LIBRESSL_SYSROOT="$(cd "$LIBRESSL_SYSROOT" && pwd)"
+ABS_GNUTLS_SYSROOT="$(cd "$GNUTLS_SYSROOT" && pwd)"
+ABS_NETTLE_SYSROOT="$(cd "$NETTLE_SYSROOT" && pwd)"
+ABS_GMP_SYSROOT="$(cd "$GMP_SYSROOT" && pwd)"
 mkdir -p "$(dirname "$OUT_DIR")"
 OUT_DIR="$(cd "$(dirname "$OUT_DIR")" && pwd)/$(basename "$OUT_DIR")"
 
@@ -96,6 +110,7 @@ configure_wget() {
 
   pushd "$BUILD_DIR" >/dev/null
   PKG_CONFIG=false \
+  ac_cv_func_rawmemchr=no \
   "$ABS_SRC_DIR/configure" \
     --host=x86_64-linux-musl \
     --prefix=/usr \
@@ -107,15 +122,15 @@ configure_wget() {
     --without-libpsl \
     --without-zlib \
     --without-libuuid \
-    --with-ssl=openssl \
-    --with-libssl-prefix="$ABS_LIBRESSL_SYSROOT/usr" \
+    --with-ssl=gnutls \
+    --with-libgnutls-prefix="$ABS_GNUTLS_SYSROOT/usr" \
     CC="$CC_WRAPPER" \
     HOSTCC="${HOSTCC:-cc}" \
     AR="zig ar" \
     RANLIB="zig ranlib" \
-    CFLAGS="-Os -fno-stack-protector -fomit-frame-pointer -fno-pie -I$ABS_LIBRESSL_SYSROOT/usr/include" \
-    LDFLAGS="-static -no-pie -L$ABS_LIBRESSL_SYSROOT/usr/lib" \
-    LIBS="$ABS_LIBRESSL_SYSROOT/usr/lib/libssl.a $ABS_LIBRESSL_SYSROOT/usr/lib/libcrypto.a" \
+    CFLAGS="-Os -fno-stack-protector -fomit-frame-pointer -fno-pie -I$ABS_GNUTLS_SYSROOT/usr/include -I$ABS_NETTLE_SYSROOT/usr/include -I$ABS_GMP_SYSROOT/usr/include" \
+    LDFLAGS="-static -no-pie -L$ABS_GNUTLS_SYSROOT/usr/lib -L$ABS_NETTLE_SYSROOT/usr/lib -L$ABS_GMP_SYSROOT/usr/lib" \
+    LIBS="-Wl,--start-group $ABS_GNUTLS_SYSROOT/usr/lib/libgnutls.a $ABS_NETTLE_SYSROOT/usr/lib/libhogweed.a $ABS_NETTLE_SYSROOT/usr/lib/libnettle.a $ABS_GMP_SYSROOT/usr/lib/libgmp.a -Wl,--end-group" \
     2>&1 | tee configure.log || {
       echo "Configure failed. Check $BUILD_DIR/configure.log" >&2
       exit 1
@@ -159,8 +174,8 @@ validate_binary() {
     return 1
   fi
 
-  if ! "$bin" --version | grep -q "+ssl/openssl"; then
-    echo "wget was not built with HTTPS/OpenSSL support" >&2
+  if ! "$bin" --version | grep -q "+ssl/gnutls"; then
+    echo "wget was not built with HTTPS/GnuTLS support" >&2
     return 1
   fi
 }
