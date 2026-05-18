@@ -361,6 +361,11 @@ struct linux_timeval {
     int64_t tv_usec;
 };
 
+struct linux_itimerval {
+    struct linux_timeval it_interval;
+    struct linux_timeval it_value;
+};
+
 struct linux_termios {
     uint32_t c_iflag;
     uint32_t c_oflag;
@@ -457,6 +462,12 @@ struct linux_sigaction {
     uint64_t flags;
     void* restorer;
     uint64_t mask;
+};
+
+struct linux_rt_sigframe_vibe {
+    struct syscall_frame regs;
+    uint64_t iret[5];
+    uint64_t sig_mask;
 };
 
 struct linux_pollfd {
@@ -710,6 +721,9 @@ static struct sigaction_data g_sig_actions[NSIG];
 static uint64_t g_sig_mask = 0;
 static int g_pending_signals[MAX_PENDING_SIGNALS];
 static int g_pending_signal_count = 0;
+static bool g_itimer_real_active;
+static uint64_t g_itimer_real_deadline_tsc;
+static uint64_t g_itimer_real_interval_ns;
 static uint32_t g_umask = 022u;
 static struct linux_termios g_tty_termios;
 static int g_terminal_fg_pgrp = 1;
@@ -719,6 +733,7 @@ static void add_zombie(int pid, int ppid, int pgid, int exit_code, int exit_stat
 static void remove_zombie(int idx);
 static struct process* current_process(void);
 static int save_live_process(struct process* proc, struct syscall_frame* frame);
+static void sync_current_process_runtime(void);
 static int try_complete_wait4(struct process* proc);
 static int try_complete_tty_read(struct process* proc);
 static int try_complete_pipe_read(struct process* proc);
@@ -733,6 +748,8 @@ static bool process_block_ready(const struct process* proc);
 static uint64_t schedule_away(struct syscall_frame* frame);
 static int signal_process_group(int pgid, int sig);
 static int signal_process(struct process* proc, int sig);
+static void queue_signal_for_process(struct process* proc, int sig);
+static void terminate_process(struct process* proc, int exit_code, int wait_status);
 static int map_exec_segment(struct vm_space* space, uint64_t vaddr, size_t memsz, const void* src, size_t filesz, uint32_t prot);
 static void close_cloexec_fds(void);
 static int sys_close(int fd);
@@ -955,6 +972,164 @@ static uint64_t timeout_to_tsc_cycles(int64_t sec, int64_t nsec) {
     return total_usec * APPROX_TSC_CYCLES_PER_USEC;
 }
 
+static uint64_t ns_to_tsc_cycles(uint64_t ns) {
+    return timeout_to_tsc_cycles((int64_t)(ns / 1000000000ull), (int64_t)(ns % 1000000000ull));
+}
+
+static uint64_t timeval_to_ns(const struct linux_timeval* tv) {
+    return (uint64_t)tv->tv_sec * 1000000000ull + (uint64_t)tv->tv_usec * 1000ull;
+}
+
+static int validate_timeval(const struct linux_timeval* tv) {
+    if (tv == NULL) {
+        return err(EFAULT);
+    }
+    if (tv->tv_sec < 0 || tv->tv_usec < 0 || tv->tv_usec >= 1000000ll) {
+        return err(EINVAL);
+    }
+    return 0;
+}
+
+static void fill_timeval_remaining(uint64_t deadline_tsc, struct linux_timeval* out) {
+    uint64_t now = read_tsc();
+    if (deadline_tsc <= now) {
+        out->tv_sec = 0;
+        out->tv_usec = 0;
+        return;
+    }
+
+    uint64_t usec = (deadline_tsc - now + APPROX_TSC_CYCLES_PER_USEC - 1ull) / APPROX_TSC_CYCLES_PER_USEC;
+    out->tv_sec = (int64_t)(usec / 1000000ull);
+    out->tv_usec = (int64_t)(usec % 1000000ull);
+}
+
+static void advance_real_timer(bool* active, uint64_t* deadline_tsc, uint64_t interval_ns) {
+    if (interval_ns == 0u) {
+        *active = false;
+        *deadline_tsc = 0;
+        return;
+    }
+
+    uint64_t interval_cycles = ns_to_tsc_cycles(interval_ns);
+    if (interval_cycles == 0u) {
+        interval_cycles = 1u;
+    }
+    uint64_t now = read_tsc();
+    do {
+        *deadline_tsc += interval_cycles;
+    } while (*deadline_tsc <= now);
+}
+
+static bool process_real_timer_expired(struct process* proc) {
+    if (proc == NULL || !proc->itimer_real_active || read_tsc() < proc->itimer_real_deadline_tsc) {
+        return false;
+    }
+
+    const struct sigaction_data* action = &proc->sig_actions[SIGALRM];
+    advance_real_timer(&proc->itimer_real_active, &proc->itimer_real_deadline_tsc, proc->itimer_real_interval_ns);
+    if (action->handler == SIGNAL_HANDLER_IGN) {
+        return false;
+    }
+    if (action->handler == SIGNAL_HANDLER_DFL) {
+        terminate_process(proc, 128 + (int)SIGALRM, (int)SIGALRM);
+    } else {
+        process_queue_signal(proc, (int)SIGALRM);
+    }
+    return true;
+}
+
+static bool current_real_timer_expired(void) {
+    if (!g_itimer_real_active || read_tsc() < g_itimer_real_deadline_tsc) {
+        return false;
+    }
+
+    struct process* proc = current_process();
+    struct sigaction_data action = g_sig_actions[SIGALRM];
+    advance_real_timer(&g_itimer_real_active, &g_itimer_real_deadline_tsc, g_itimer_real_interval_ns);
+    if (proc != NULL) {
+        proc->itimer_real_active = g_itimer_real_active;
+        proc->itimer_real_deadline_tsc = g_itimer_real_deadline_tsc;
+        proc->itimer_real_interval_ns = g_itimer_real_interval_ns;
+    }
+    if (action.handler == SIGNAL_HANDLER_IGN) {
+        return false;
+    }
+    if (action.handler == SIGNAL_HANDLER_DFL) {
+        terminate_process(proc, 128 + (int)SIGALRM, (int)SIGALRM);
+    } else {
+        queue_signal_for_process(proc, (int)SIGALRM);
+    }
+    return true;
+}
+
+static bool current_has_pending_signal(void) {
+    current_real_timer_expired();
+    return g_pending_signal_count > 0;
+}
+
+static int take_current_pending_signal(void) {
+    while (g_pending_signal_count > 0) {
+        int sig = g_pending_signals[0];
+        for (int i = 1; i < g_pending_signal_count; ++i) {
+            g_pending_signals[i - 1] = g_pending_signals[i];
+        }
+        g_pending_signals[--g_pending_signal_count] = 0;
+        if (sig >= 1 && sig < (int)NSIG && (g_sig_mask & (1ull << sig)) == 0u &&
+            g_sig_actions[sig].handler != SIGNAL_HANDLER_IGN) {
+            return sig;
+        }
+    }
+    return 0;
+}
+
+static bool deliver_current_signal(struct syscall_frame* frame, int64_t syscall_retval) {
+    if (frame == NULL) {
+        return false;
+    }
+    current_real_timer_expired();
+
+    int sig = take_current_pending_signal();
+    if (sig == 0) {
+        return false;
+    }
+
+    struct sigaction_data* action = &g_sig_actions[sig];
+    if (action->handler == SIGNAL_HANDLER_DFL) {
+        struct process* proc = current_process();
+        terminate_process(proc, 128 + sig, sig & 0x7F);
+        return false;
+    }
+    if (action->restorer == NULL) {
+        return false;
+    }
+
+    uint64_t* raw = (uint64_t*)(void*)frame;
+    uint64_t old_rsp = raw[IRET_SLOT_RSP];
+    uint64_t sigframe_addr = (old_rsp - sizeof(struct linux_rt_sigframe_vibe) - sizeof(uint64_t)) & ~15ull;
+    sigframe_addr -= 8ull;
+    struct linux_rt_sigframe_vibe* sigframe = (struct linux_rt_sigframe_vibe*)(uintptr_t)(sigframe_addr + sizeof(uint64_t));
+    *(uint64_t*)(uintptr_t)sigframe_addr = (uint64_t)(uintptr_t)action->restorer;
+
+    struct syscall_frame saved = *frame;
+    saved.rax = (uint64_t)syscall_retval;
+    sigframe->regs = saved;
+    sigframe->iret[0] = raw[IRET_SLOT_RIP];
+    sigframe->iret[1] = raw[IRET_SLOT_CS];
+    sigframe->iret[2] = raw[IRET_SLOT_RFLAGS];
+    sigframe->iret[3] = raw[IRET_SLOT_RSP];
+    sigframe->iret[4] = raw[IRET_SLOT_SS];
+    sigframe->sig_mask = g_sig_mask;
+
+    g_sig_mask |= action->mask | (1ull << sig);
+    frame->rdi = (uint64_t)sig;
+    frame->rsi = 0;
+    frame->rdx = 0;
+    raw[IRET_SLOT_RIP] = (uint64_t)(uintptr_t)action->handler;
+    raw[IRET_SLOT_RSP] = sigframe_addr;
+    sync_current_process_runtime();
+    return true;
+}
+
 static bool timeout_expired(uint64_t start, uint64_t budget) {
     if (budget == UINT64_MAX) {
         return false;
@@ -1161,6 +1336,9 @@ static int save_live_process(struct process* proc, struct syscall_frame* frame) 
     proc->sig_mask = g_sig_mask;
     memcpy(proc->pending_signals, g_pending_signals, sizeof(g_pending_signals));
     proc->pending_count = g_pending_signal_count;
+    proc->itimer_real_active = g_itimer_real_active;
+    proc->itimer_real_deadline_tsc = g_itimer_real_deadline_tsc;
+    proc->itimer_real_interval_ns = g_itimer_real_interval_ns;
 
     uint64_t image_start = 0;
     uint64_t image_end = 0;
@@ -1200,6 +1378,9 @@ static void sync_current_process_runtime(void) {
     proc->sig_mask = g_sig_mask;
     memcpy(proc->pending_signals, g_pending_signals, sizeof(g_pending_signals));
     proc->pending_count = g_pending_signal_count;
+    proc->itimer_real_active = g_itimer_real_active;
+    proc->itimer_real_deadline_tsc = g_itimer_real_deadline_tsc;
+    proc->itimer_real_interval_ns = g_itimer_real_interval_ns;
     userland_get_image_span(&proc->image_start, &proc->image_end);
 }
 
@@ -1230,6 +1411,9 @@ static void load_process_runtime(struct process* proc) {
     g_sig_mask = proc->sig_mask;
     memcpy(g_pending_signals, proc->pending_signals, sizeof(g_pending_signals));
     g_pending_signal_count = proc->pending_count;
+    g_itimer_real_active = proc->itimer_real_active;
+    g_itimer_real_deadline_tsc = proc->itimer_real_deadline_tsc;
+    g_itimer_real_interval_ns = proc->itimer_real_interval_ns;
 
     userland_set_image_span(proc->image_start, proc->image_end);
     write_fs_base_current(proc->fs_base);
@@ -4618,6 +4802,10 @@ static int sys_recvfrom(int fd, void* buf, size_t count, int flags, void* addr, 
                 if (fd_is_nonblocking(fd) || (flags & MSG_DONTWAIT) != 0) {
                     return err(EAGAIN);
                 }
+                if (current_has_pending_signal()) {
+                    (void)deliver_current_signal(frame, err(EINTR));
+                    return err(EINTR);
+                }
                 __asm__ volatile("pause" : : : "memory");
             }
         }
@@ -4635,6 +4823,10 @@ static int sys_recvfrom(int fd, void* buf, size_t count, int flags, void* addr, 
                 if (fd_is_nonblocking(fd) || (flags & MSG_DONTWAIT) != 0) {
                     return err(EAGAIN);
                 }
+                if (current_has_pending_signal()) {
+                    (void)deliver_current_signal(frame, err(EINTR));
+                    return err(EINTR);
+                }
                 __asm__ volatile("pause" : : : "memory");
             }
         }
@@ -4649,6 +4841,10 @@ static int sys_recvfrom(int fd, void* buf, size_t count, int flags, void* addr, 
             }
             if (fd_is_nonblocking(fd) || (flags & MSG_DONTWAIT) != 0) {
                 return err(EAGAIN);
+            }
+            if (current_has_pending_signal()) {
+                (void)deliver_current_signal(frame, err(EINTR));
+                return err(EINTR);
             }
             __asm__ volatile("pause" : : : "memory");
         }
@@ -5133,6 +5329,9 @@ static int find_waitable_child_event(struct process* parent, int pid, int option
 static bool process_block_ready(const struct process* proc) {
     if (proc == NULL || proc->state != PROCESS_BLOCKED) {
         return false;
+    }
+    if (process_real_timer_expired((struct process*)proc)) {
+        return true;
     }
     if (proc->pending_count > 0) {
         return true;
@@ -5620,7 +5819,7 @@ static int sys_select_common(int nfds, void* readfds, void* writefds, void* exce
 
     for (;;) {
         service_keyboard_signal_for_tty();
-        if (g_pending_keyboard_signal != 0 && tty_is_foreground_group()) {
+        if ((g_pending_keyboard_signal != 0 && tty_is_foreground_group()) || current_has_pending_signal()) {
             return err(EINTR);
         }
 
@@ -5680,7 +5879,7 @@ static int sys_poll(struct linux_pollfd* fds, size_t nfds, int timeout_ms) {
 
     for (;;) {
         service_keyboard_signal_for_tty();
-        if (take_keyboard_signal() != 0) {
+        if (take_keyboard_signal() != 0 || current_has_pending_signal()) {
             return err(EINTR);
         }
 
@@ -6114,6 +6313,83 @@ static int sys_clock_gettime(struct linux_timespec* ts) {
     return 0;
 }
 
+static void fill_current_itimer(struct linux_itimerval* out) {
+    memset(out, 0, sizeof(*out));
+    if (g_itimer_real_interval_ns != 0u) {
+        out->it_interval.tv_sec = (int64_t)(g_itimer_real_interval_ns / 1000000000ull);
+        out->it_interval.tv_usec = (int64_t)((g_itimer_real_interval_ns % 1000000000ull) / 1000ull);
+    }
+    if (g_itimer_real_active) {
+        fill_timeval_remaining(g_itimer_real_deadline_tsc, &out->it_value);
+    }
+}
+
+static int sys_getitimer(int which, struct linux_itimerval* curr_value) {
+    if (which != 0) {
+        return err(EINVAL);
+    }
+    if (curr_value == NULL) {
+        return err(EFAULT);
+    }
+    current_real_timer_expired();
+    fill_current_itimer(curr_value);
+    return 0;
+}
+
+static int sys_setitimer(int which, const struct linux_itimerval* new_value, struct linux_itimerval* old_value) {
+    if (which != 0) {
+        return err(EINVAL);
+    }
+    if (new_value == NULL) {
+        return err(EFAULT);
+    }
+    int r = validate_timeval(&new_value->it_interval);
+    if (r != 0) {
+        return r;
+    }
+    r = validate_timeval(&new_value->it_value);
+    if (r != 0) {
+        return r;
+    }
+
+    current_real_timer_expired();
+    if (old_value != NULL) {
+        fill_current_itimer(old_value);
+    }
+
+    uint64_t value_ns = timeval_to_ns(&new_value->it_value);
+    g_itimer_real_interval_ns = timeval_to_ns(&new_value->it_interval);
+    if (value_ns == 0u) {
+        g_itimer_real_active = false;
+        g_itimer_real_deadline_tsc = 0;
+    } else {
+        uint64_t cycles = ns_to_tsc_cycles(value_ns);
+        if (cycles == 0u) {
+            cycles = 1u;
+        }
+        g_itimer_real_active = true;
+        g_itimer_real_deadline_tsc = read_tsc() + cycles;
+    }
+    sync_current_process_runtime();
+    return 0;
+}
+
+static uint32_t sys_alarm(uint32_t seconds) {
+    current_real_timer_expired();
+    struct linux_itimerval old_value;
+    fill_current_itimer(&old_value);
+    uint32_t old_seconds = 0;
+    if (old_value.it_value.tv_sec > 0 || old_value.it_value.tv_usec > 0) {
+        old_seconds = (uint32_t)old_value.it_value.tv_sec + (old_value.it_value.tv_usec > 0 ? 1u : 0u);
+    }
+
+    struct linux_itimerval next;
+    memset(&next, 0, sizeof(next));
+    next.it_value.tv_sec = seconds;
+    (void)sys_setitimer(0, &next, NULL);
+    return old_seconds;
+}
+
 static int sys_select(int nfds, void* readfds, void* writefds, void* exceptfds, struct linux_timeval* timeout, struct syscall_frame* frame) {
     if (timeout == NULL) {
         size_t bytes = (size_t)((nfds + 7) >> 3);
@@ -6261,7 +6537,7 @@ static int sys_nanosleep(const struct linux_timespec* req, struct linux_timespec
     uint64_t budget = timeout_to_tsc_cycles(req->tv_sec, req->tv_nsec);
     while (!timeout_expired(start, budget)) {
         service_keyboard_signal_for_tty();
-        if (g_pending_keyboard_signal != 0 && tty_is_foreground_group()) {
+        if ((g_pending_keyboard_signal != 0 && tty_is_foreground_group()) || current_has_pending_signal()) {
             if (rem != NULL) {
                 rem->tv_sec = 0;
                 rem->tv_nsec = 0;
@@ -7507,6 +7783,26 @@ static int sys_rt_sigprocmask(int how, const uint64_t* set, uint64_t* oldset, si
     return 0;
 }
 
+static uint64_t sys_rt_sigreturn(struct syscall_frame* frame) {
+    if (frame == NULL) {
+        return (uint64_t)err(EFAULT);
+    }
+
+    uint64_t* raw = (uint64_t*)(void*)frame;
+    struct linux_rt_sigframe_vibe* sigframe = (struct linux_rt_sigframe_vibe*)(uintptr_t)raw[IRET_SLOT_RSP];
+    struct syscall_frame restored = sigframe->regs;
+    *frame = restored;
+    raw = (uint64_t*)(void*)frame;
+    raw[IRET_SLOT_RIP] = sigframe->iret[0];
+    raw[IRET_SLOT_CS] = sigframe->iret[1];
+    raw[IRET_SLOT_RFLAGS] = sigframe->iret[2];
+    raw[IRET_SLOT_RSP] = sigframe->iret[3];
+    raw[IRET_SLOT_SS] = sigframe->iret[4];
+    g_sig_mask = sigframe->sig_mask;
+    sync_current_process_runtime();
+    return restored.rax;
+}
+
 static bool signal_default_action_ignores(int sig) {
     return sig == (int)SIGCHLD;
 }
@@ -7653,6 +7949,7 @@ static int signal_process(struct process* proc, int sig) {
         case SIGQUIT:
         case SIGABRT:
         case SIGPIPE:
+        case SIGALRM:
             terminate_process(proc, 128 + sig, sig & 0x7F);
             return 0;
         default:
@@ -7913,6 +8210,9 @@ void syscall_init(void) {
     g_zombie_count = 0;
     g_pending_signal_count = 0;
     g_sig_mask = 0;
+    g_itimer_real_active = false;
+    g_itimer_real_deadline_tsc = 0;
+    g_itimer_real_interval_ns = 0;
     memset(g_pipes, 0, sizeof(g_pipes));
     init_fb_cmap_defaults();
     init_default_tty_termios();
@@ -7994,6 +8294,8 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
             return (uint64_t)sys_rt_sigaction((int)a0, (const void*)(uintptr_t)a1, (void*)(uintptr_t)a2, (size_t)a3);
         case 14:
             return (uint64_t)sys_rt_sigprocmask((int)a0, (const uint64_t*)(uintptr_t)a1, (uint64_t*)(uintptr_t)a2, (size_t)a3);
+        case 15:
+            return sys_rt_sigreturn(frame);
         case 16:
             return (uint64_t)sys_ioctl((int)a0, a1, (void*)(uintptr_t)a2);
         case 17:
@@ -8022,6 +8324,13 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
             return (uint64_t)sys_dup_common((int)a0, (int)a1, true);
         case 35:
             return (uint64_t)sys_nanosleep((const struct linux_timespec*)(uintptr_t)a0, (struct linux_timespec*)(uintptr_t)a1, frame);
+        case 36:
+            return (uint64_t)sys_getitimer((int)a0, (struct linux_itimerval*)(uintptr_t)a1);
+        case 37:
+            return (uint64_t)sys_alarm((uint32_t)a0);
+        case 38:
+            return (uint64_t)sys_setitimer((int)a0, (const struct linux_itimerval*)(uintptr_t)a1,
+                                           (struct linux_itimerval*)(uintptr_t)a2);
         case 39:
             return (uint64_t)g_current_pid;
         case 40:
