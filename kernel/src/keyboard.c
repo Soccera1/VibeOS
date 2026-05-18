@@ -82,12 +82,7 @@ static int ctrl_modified_char(char c) {
     }
 }
 
-int keyboard_poll_char(void) {
-    int pending = dequeue_pending_char();
-    if (pending >= 0) {
-        return pending;
-    }
-
+static int poll_hardware_char(void) {
     if ((inb(0x64) & 1u) == 0) {
         return -1;
     }
@@ -156,6 +151,22 @@ int keyboard_poll_char(void) {
     }
 
     return (int)c;
+}
+
+int keyboard_poll_char(void) {
+    int pending = dequeue_pending_char();
+    if (pending >= 0) {
+        return pending;
+    }
+
+    while ((inb(0x64) & 1u) != 0) {
+        int c = poll_hardware_char();
+        if (c >= 0) {
+            return c;
+        }
+    }
+
+    return -1;
 }
 
 int keyboard_read_char_blocking(void) {
