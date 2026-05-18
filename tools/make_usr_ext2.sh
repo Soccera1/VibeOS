@@ -158,6 +158,8 @@ mkdir -p "$(dirname "$OUT_IMG")"
 
 BLOCK_SIZE=4096
 INODE_SIZE=256
+MIN_FREE_BLOCKS=256
+FREE_BLOCK_PERCENT=5
 
 count_root_inodes() {
   find "$ROOT" -printf '.' | wc -c
@@ -230,7 +232,13 @@ while (( LOWER_BLOCKS < UPPER_BLOCKS )); do
   fi
 done
 
-build_ext3_image "$OUT_IMG" "$LOWER_BLOCKS" || {
-  echo "Failed to build ext3 image with $LOWER_BLOCKS blocks" >&2
+FREE_BLOCKS=$(( (LOWER_BLOCKS * FREE_BLOCK_PERCENT + 99) / 100 ))
+if (( FREE_BLOCKS < MIN_FREE_BLOCKS )); then
+  FREE_BLOCKS="$MIN_FREE_BLOCKS"
+fi
+TARGET_BLOCKS=$(( LOWER_BLOCKS + FREE_BLOCKS ))
+
+build_ext3_image "$OUT_IMG" "$TARGET_BLOCKS" || {
+  echo "Failed to build ext3 image with $TARGET_BLOCKS blocks" >&2
   exit 1
 }

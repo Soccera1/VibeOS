@@ -81,15 +81,30 @@ struct ramdisk_node {
     char path[FS_MAX_PATH];
 };
 
+static bool g_ramdisk_initialized;
 static bool g_home_ramdisk_mounted;
+static bool g_tmp_ramdisk_mounted;
+static int g_usr_mount_error;
+static int g_home_mount_error;
 static struct ramdisk_node g_ramdisk_nodes[RAMDISK_MAX_NODES];
-static uint32_t g_ramdisk_next_inode = RAMDISK_ROOT_INODE;
+static uint32_t g_ramdisk_next_inode;
 
-static bool path_in_home_ramdisk(const char* path) {
-    if (!g_home_ramdisk_mounted || path == NULL) {
+static bool path_under_mount(const char* path, const char* mount_path) {
+    size_t len = strlen(mount_path);
+    return strcmp(path, mount_path) == 0 || (strncmp(path, mount_path, len) == 0 && path[len] == '/');
+}
+
+static bool path_in_ramdisk(const char* path) {
+    if (path == NULL) {
         return false;
     }
-    return strcmp(path, "/home") == 0 || strncmp(path, "/home/", 6) == 0;
+    return (g_home_ramdisk_mounted && path_under_mount(path, "/home")) ||
+           (g_tmp_ramdisk_mounted && path_under_mount(path, "/tmp"));
+}
+
+static bool path_is_ramdisk_root(const char* path) {
+    return (g_home_ramdisk_mounted && strcmp(path, "/home") == 0) ||
+           (g_tmp_ramdisk_mounted && strcmp(path, "/tmp") == 0);
 }
 
 static struct ramdisk_node* ramdisk_find_inode(uint32_t inode) {
@@ -114,7 +129,7 @@ static struct ramdisk_node* ramdisk_find_path(const char* path) {
 }
 
 static int ramdisk_split_parent(const char* path, char* parent, size_t parent_len, char* name, size_t name_len) {
-    if (!path_in_home_ramdisk(path) || strcmp(path, "/home") == 0 || parent == NULL || name == NULL ||
+    if (!path_in_ramdisk(path) || path_is_ramdisk_root(path) || parent == NULL || name == NULL ||
         parent_len == 0 || name_len == 0) {
         return -EINVAL;
     }
@@ -206,16 +221,46 @@ static int ramdisk_create_node(const char* path, uint32_t mode, const void* data
     return ramdisk_fill_entry(node, out);
 }
 
-static int ramdisk_mount_home(void) {
+static void ramdisk_init_storage(void) {
+    if (g_ramdisk_initialized) {
+        return;
+    }
     memset(g_ramdisk_nodes, 0, sizeof(g_ramdisk_nodes));
-    g_home_ramdisk_mounted = true;
-    g_ramdisk_next_inode = RAMDISK_ROOT_INODE;
-    g_ramdisk_nodes[0].used = true;
-    g_ramdisk_nodes[0].inode = RAMDISK_ROOT_INODE;
-    g_ramdisk_nodes[0].parent = RAMDISK_ROOT_INODE;
-    g_ramdisk_nodes[0].mode = FS_S_IFDIR | 0755u;
-    strcpy(g_ramdisk_nodes[0].path, "/home");
+    g_ramdisk_next_inode = RAMDISK_ROOT_INODE - 1u;
+    g_ramdisk_initialized = true;
+}
+
+static int ramdisk_mount_path(const char* path, uint32_t mode) {
+    ramdisk_init_storage();
+    if (ramdisk_find_path(path) != NULL) {
+        return 0;
+    }
+    struct ramdisk_node* node = ramdisk_alloc_node();
+    if (node == NULL) {
+        return -ENOMEM;
+    }
+    node->parent = node->inode;
+    node->mode = FS_S_IFDIR | (mode & 07777u);
+    strncpy(node->path, path, sizeof(node->path));
+    node->path[sizeof(node->path) - 1] = '\0';
+    if (strcmp(path, "/home") == 0) {
+        g_home_ramdisk_mounted = true;
+    } else if (strcmp(path, "/tmp") == 0) {
+        g_tmp_ramdisk_mounted = true;
+    }
     return 0;
+}
+
+static int ramdisk_mount_home(void) {
+    return ramdisk_mount_path("/home", 0755u);
+}
+
+static int ramdisk_mount_tmp(void) {
+    return ramdisk_mount_path("/tmp", 01777u);
+}
+
+static bool ramdisk_node_is_mount_root(const struct ramdisk_node* node) {
+    return node != NULL && node->parent == node->inode;
 }
 
 static int ramdisk_lookup(const char* path, struct fs_entry* out) {
@@ -321,10 +366,10 @@ static int ramdisk_replace_path_prefix(char* path, const char* old_prefix, const
 }
 
 static int ramdisk_rename(const char* oldpath, const char* newpath) {
-    if (!path_in_home_ramdisk(oldpath) || !path_in_home_ramdisk(newpath)) {
+    if (!path_in_ramdisk(oldpath) || !path_in_ramdisk(newpath)) {
         return -EXDEV;
     }
-    if (strcmp(oldpath, "/home") == 0) {
+    if (path_is_ramdisk_root(oldpath)) {
         return -EINVAL;
     }
     if (strcmp(oldpath, newpath) == 0) {
@@ -469,6 +514,10 @@ void fs_init(const uint8_t* usrfs_start, size_t usrfs_size) {
     bool usr_from_scsi = !usr_from_multiboot && virtio_scsi_disk_present(0u);
     size_t home_scsi_index = (usr_from_scsi || virtio_scsi_disk_present(1u)) ? 1u : 0u;
 
+    g_usr_mount_error = 0;
+    g_home_mount_error = 0;
+    (void)ramdisk_mount_tmp();
+
     struct boot_ext2_mount mounts[] = {
         {
             .mount_path = "/usr",
@@ -511,8 +560,10 @@ void fs_init(const uint8_t* usrfs_start, size_t usrfs_size) {
         }
         if (r != 0) {
             if (strcmp(mounts[i].mount_path, "/home") == 0) {
+                g_home_mount_error = r;
                 (void)ramdisk_mount_home();
             } else {
+                g_usr_mount_error = r;
                 (void)fs_mount_ext2_image(mounts[i].mount_path, NULL, 0, mounts[i].read_only);
             }
         }
@@ -529,6 +580,14 @@ bool fs_home_mount_ready(void) {
 
 bool fs_home_ramdisk_ready(void) {
     return g_home_ramdisk_mounted;
+}
+
+int fs_usr_mount_error(void) {
+    return g_usr_mount_error;
+}
+
+int fs_home_mount_error(void) {
+    return g_home_mount_error;
 }
 
 int fs_sync(void) {
@@ -572,7 +631,7 @@ int fs_lookup(const char* path, struct fs_entry* out) {
     if (path_in_ext2_mount(path)) {
         return ext2_lookup(path, out);
     }
-    if (path_in_home_ramdisk(path)) {
+    if (path_in_ramdisk(path)) {
         return ramdisk_lookup(path, out);
     }
 
@@ -718,7 +777,7 @@ int fs_create(const char* path, uint32_t mode, struct fs_entry* out) {
     if (path_in_ext2_mount(path)) {
         return ext2_create(path, mode, out);
     }
-    if (path_in_home_ramdisk(path)) {
+    if (path_in_ramdisk(path)) {
         uint32_t file_mode = (mode & FS_S_IFMT) == 0u ? (FS_S_IFREG | (mode & 07777u)) : mode;
         return ramdisk_create_node(path, file_mode, NULL, 0, out);
     }
@@ -729,7 +788,7 @@ int fs_mknod(const char* path, uint32_t mode, uint32_t rdev, struct fs_entry* ou
     if (path_in_ext2_mount(path)) {
         return ext2_mknod(path, mode, rdev, out);
     }
-    if (path_in_home_ramdisk(path)) {
+    if (path_in_ramdisk(path)) {
         (void)rdev;
         return ramdisk_create_node(path, mode, NULL, 0, out);
     }
@@ -740,7 +799,7 @@ int fs_mkdir(const char* path, uint32_t mode, struct fs_entry* out) {
     if (path_in_ext2_mount(path)) {
         return ext2_mkdir(path, mode, out);
     }
-    if (path_in_home_ramdisk(path)) {
+    if (path_in_ramdisk(path)) {
         return ramdisk_create_node(path, FS_S_IFDIR | (mode & 07777u), NULL, 0, out);
     }
     return -30;
@@ -750,7 +809,7 @@ int fs_symlink(const char* target, const char* linkpath, struct fs_entry* out) {
     if (path_in_ext2_mount(linkpath)) {
         return ext2_symlink(target, linkpath, out);
     }
-    if (path_in_home_ramdisk(linkpath)) {
+    if (path_in_ramdisk(linkpath)) {
         if (target == NULL) {
             return -EINVAL;
         }
@@ -763,7 +822,7 @@ int fs_link(const char* existing, const char* newpath) {
     if (path_in_ext2_mount(existing) && path_in_ext2_mount(newpath)) {
         return ext2_link(existing, newpath);
     }
-    if (path_in_home_ramdisk(existing) || path_in_home_ramdisk(newpath)) {
+    if (path_in_ramdisk(existing) || path_in_ramdisk(newpath)) {
         return -EXDEV;
     }
     return -30;
@@ -773,7 +832,7 @@ int fs_unlink(const char* path) {
     if (path_in_ext2_mount(path)) {
         return ext2_unlink(path);
     }
-    if (path_in_home_ramdisk(path)) {
+    if (path_in_ramdisk(path)) {
         struct ramdisk_node* node = ramdisk_find_path(path);
         if (node == NULL) {
             return -ENOENT;
@@ -794,7 +853,7 @@ int fs_rmdir(const char* path) {
     if (path_in_ext2_mount(path)) {
         return ext2_rmdir(path);
     }
-    if (path_in_home_ramdisk(path)) {
+    if (path_in_ramdisk(path)) {
         struct ramdisk_node* node = ramdisk_find_path(path);
         if (node == NULL) {
             return -ENOENT;
@@ -802,7 +861,7 @@ int fs_rmdir(const char* path) {
         if ((node->mode & FS_S_IFMT) != FS_S_IFDIR) {
             return -ENOTDIR;
         }
-        if (node->inode == RAMDISK_ROOT_INODE) {
+        if (ramdisk_node_is_mount_root(node)) {
             return -EINVAL;
         }
         if (ramdisk_has_children(node->inode)) {
@@ -818,7 +877,7 @@ int fs_rename(const char* oldpath, const char* newpath) {
     if (path_in_ext2_mount(oldpath) && path_in_ext2_mount(newpath)) {
         return ext2_rename(oldpath, newpath);
     }
-    if (path_in_home_ramdisk(oldpath) || path_in_home_ramdisk(newpath)) {
+    if (path_in_ramdisk(oldpath) || path_in_ramdisk(newpath)) {
         return ramdisk_rename(oldpath, newpath);
     }
     return -30;
@@ -828,7 +887,7 @@ int fs_chmod(const char* path, uint32_t mode) {
     if (path_in_ext2_mount(path)) {
         return ext2_chmod(path, mode);
     }
-    if (path_in_home_ramdisk(path)) {
+    if (path_in_ramdisk(path)) {
         struct ramdisk_node* node = ramdisk_find_path(path);
         if (node == NULL) {
             return -ENOENT;
@@ -843,7 +902,7 @@ int fs_chown(const char* path, uint32_t uid, uint32_t gid) {
     if (path_in_ext2_mount(path)) {
         return ext2_chown(path, uid, gid);
     }
-    if (path_in_home_ramdisk(path)) {
+    if (path_in_ramdisk(path)) {
         (void)uid;
         (void)gid;
         return ramdisk_find_path(path) == NULL ? -ENOENT : 0;
@@ -855,7 +914,7 @@ int fs_utime(const char* path, uint32_t atime, uint32_t mtime) {
     if (path_in_ext2_mount(path)) {
         return ext2_utime(path, atime, mtime);
     }
-    if (path_in_home_ramdisk(path)) {
+    if (path_in_ramdisk(path)) {
         return ramdisk_find_path(path) == NULL ? -ENOENT : 0;
     }
     return -30;
@@ -869,7 +928,7 @@ bool fs_path_has_child(const char* dir) {
     if (path_in_ext2_mount(dir)) {
         return ext2_path_has_child(dir);
     }
-    if (path_in_home_ramdisk(dir)) {
+    if (path_in_ramdisk(dir)) {
         struct ramdisk_node* node = ramdisk_find_path(dir);
         return node != NULL && ramdisk_has_children(node->inode);
     }
@@ -944,7 +1003,7 @@ size_t fs_collect_children(const char* dir, char names[][FS_MAX_NAME], uint8_t t
 
     }
 
-    if (path_in_home_ramdisk(dir)) {
+    if (path_in_ramdisk(dir)) {
         struct ramdisk_node* parent = ramdisk_find_path(dir);
         if (parent != NULL) {
             for (size_t i = 0; i < RAMDISK_MAX_NODES && count < max_children; ++i) {

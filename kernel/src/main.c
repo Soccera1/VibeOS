@@ -23,6 +23,28 @@ uint64_t kernel_exit_stack_top;
 
 static uint8_t post_user_stack[65536];
 
+static const char* errno_name(int error) {
+    if (error < 0) {
+        error = -error;
+    }
+    switch (error) {
+        case 2:
+            return "ENOENT";
+        case 12:
+            return "ENOMEM";
+        case 22:
+            return "EINVAL";
+        case 28:
+            return "ENOSPC";
+        case 30:
+            return "EROFS";
+        case 95:
+            return "ENOTSUP";
+        default:
+            return "error";
+    }
+}
+
 static void cpuid(uint32_t leaf, uint32_t subleaf, uint32_t* eax, uint32_t* ebx, uint32_t* ecx, uint32_t* edx) {
     __asm__ volatile("cpuid" : "=a"(*eax), "=b"(*ebx), "=c"(*ecx), "=d"(*edx) : "a"(leaf), "c"(subleaf));
 }
@@ -121,7 +143,11 @@ void kernel_main(uint64_t mb2_info) {
         }
     } else {
         if (usrfs_module != NULL) {
-            console_write("/usr: ext3 module present but mount failed\n");
+            console_printf("/usr: ext3 module present but mount failed (%s %d)\n", errno_name(fs_usr_mount_error()),
+                           fs_usr_mount_error());
+        } else if (usr_from_scsi) {
+            console_printf("/usr: ext3 SCSI disk mount failed (%s %d); /boot/usr.ext3 unavailable\n",
+                           errno_name(fs_usr_mount_error()), fs_usr_mount_error());
         } else {
             console_write("/usr: no ext3 module provided and /boot/usr.ext3 unavailable\n");
         }
@@ -134,7 +160,12 @@ void kernel_main(uint64_t mb2_info) {
             console_write("/home: ext3 SCSI disk mounted read-write\n");
         }
     } else if (fs_home_ramdisk_ready()) {
-        console_write("/home: ramdisk mounted read-write\n");
+        if (fs_home_mount_error() != 0) {
+            console_printf("/home: ext3 SCSI disk mount failed (%s %d); ramdisk mounted read-write\n",
+                           errno_name(fs_home_mount_error()), fs_home_mount_error());
+        } else {
+            console_write("/home: ramdisk mounted read-write\n");
+        }
     } else {
         console_write("/home: no writable ext3 disk attached\n");
     }

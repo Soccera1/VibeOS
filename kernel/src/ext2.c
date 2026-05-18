@@ -3457,9 +3457,10 @@ int ext2_write(struct fs_entry* entry, size_t offset, const void* buf, size_t co
         ext2_pop_mount(saved);
         return r;
     }
-    int r = finish_mutation(wr);
-    if (r >= 0 && end > file_size) {
-        entry->size = end;
+    int r = finish_mutation(0);
+    if (r == 0) {
+        entry->size = end > file_size ? end : file_size;
+        r = wr;
     }
     ext2_pop_mount(saved);
     return r;

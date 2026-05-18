@@ -51,6 +51,8 @@ bool fs_mount_ready(const char* mount_path);
 bool fs_usr_mount_ready(void);
 bool fs_home_mount_ready(void);
 bool fs_home_ramdisk_ready(void);
+int fs_usr_mount_error(void);
+int fs_home_mount_error(void);
 int fs_sync(void);
 int fs_shutdown(void);
 int fs_mount_ext2_image(const char* mount_path, const uint8_t* image, size_t size, bool read_only);

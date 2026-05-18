@@ -38,7 +38,8 @@ and then the machine halts.
 
 The root initramfs and shipped @file{/usr} image are read-only.  @file{/home}
 is writable when backed by the default SCSI ext3 image, and falls back to a
-volatile writable ramdisk if no home disk is attached.
+volatile writable ramdisk if no home disk is attached.  @file{/tmp} is always
+backed by a volatile writable ramdisk.
 
 The namespace can expose files, directories, symlinks, pipes, pathname
 Unix-domain socket nodes, TTYs, a null device, and possibly a framebuffer
