@@ -110,6 +110,9 @@ struct process {
     uint64_t sig_mask;
     int pending_signals[MAX_PENDING_SIGNALS];
     int pending_count;
+    bool itimer_real_active;
+    uint64_t itimer_real_deadline_tsc;
+    uint64_t itimer_real_interval_ns;
 
     struct syscall_frame saved_frame;
     uint64_t saved_iret[5];
