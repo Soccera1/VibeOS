@@ -26,12 +26,14 @@ const struct net_ipv4_config* net_config(void);
 int net_udp_bind(uint16_t requested_port);
 int net_udp_send(uint16_t local_port, uint32_t dst_ip, uint16_t dst_port, const void* data, size_t len);
 int net_udp_recv(uint16_t local_port, void* data, size_t len, uint32_t* src_ip, uint16_t* src_port);
+int net_udp_peek(uint16_t local_port, void* data, size_t len, uint32_t* src_ip, uint16_t* src_port);
 size_t net_udp_pending(uint16_t local_port);
 
 uint16_t net_ephemeral_port(void);
 int net_tcp_open(uint16_t local_port, uint32_t dst_ip, uint16_t dst_port);
 int net_tcp_send(uint16_t local_port, const void* data, size_t len);
 int net_tcp_recv(uint16_t local_port, void* data, size_t len);
+int net_tcp_peek(uint16_t local_port, void* data, size_t len);
 bool net_tcp_connected(uint16_t local_port);
 bool net_tcp_closed(uint16_t local_port);
 size_t net_tcp_pending(uint16_t local_port);

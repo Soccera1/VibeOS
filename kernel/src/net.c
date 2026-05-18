@@ -481,6 +481,23 @@ int net_udp_recv(uint16_t local_port, void* data, size_t len, uint32_t* src_ip, 
     return (int)n;
 }
 
+int net_udp_peek(uint16_t local_port, void* data, size_t len, uint32_t* src_ip, uint16_t* src_port) {
+    struct udp_binding* binding = find_udp_binding(local_port);
+    if (binding == NULL || binding->count == 0u) {
+        return -1;
+    }
+    struct udp_packet* packet = &binding->packets[binding->head];
+    size_t n = len < packet->len ? len : packet->len;
+    memcpy(data, packet->data, n);
+    if (src_ip != NULL) {
+        *src_ip = packet->src_ip;
+    }
+    if (src_port != NULL) {
+        *src_port = packet->src_port;
+    }
+    return (int)n;
+}
+
 size_t net_udp_pending(uint16_t local_port) {
     struct udp_binding* binding = find_udp_binding(local_port);
     if (binding == NULL || binding->count == 0u) {
@@ -704,6 +721,26 @@ int net_tcp_recv(uint16_t local_port, void* data, size_t len) {
     }
     conn->read_off = (conn->read_off + n) % TCP_BUFFER_CAPACITY;
     conn->read_size -= n;
+    return (int)n;
+}
+
+int net_tcp_peek(uint16_t local_port, void* data, size_t len) {
+    struct tcp_connection* conn = tcp_find(local_port, 0u, 0u);
+    if (conn == NULL) {
+        return -1;
+    }
+    if (conn->read_size == 0u) {
+        return conn->state == TCP_CLOSE_WAIT || conn->state == TCP_CLOSED ? 0 : -1;
+    }
+    size_t n = len < conn->read_size ? len : conn->read_size;
+    size_t first = n;
+    if (first > TCP_BUFFER_CAPACITY - conn->read_off) {
+        first = TCP_BUFFER_CAPACITY - conn->read_off;
+    }
+    memcpy(data, &conn->read_buf[conn->read_off], first);
+    if (n > first) {
+        memcpy((uint8_t*)data + first, conn->read_buf, n - first);
+    }
     return (int)n;
 }
 

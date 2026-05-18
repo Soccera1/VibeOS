@@ -117,7 +117,10 @@
 #define POLLNVAL 0x0020
 
 #define MSG_DONTWAIT 0x40
+#define MSG_PEEK 0x2
 #define MSG_NOSIGNAL 0x4000
+#define UTIME_NOW 0x3fffffffu
+#define UTIME_OMIT 0x3ffffffeu
 
 #define MAX_FDS 64
 #define MAX_CHILDREN 256
@@ -359,6 +362,11 @@ struct linux_timespec {
 struct linux_timeval {
     int64_t tv_sec;
     int64_t tv_usec;
+};
+
+struct linux_utimbuf {
+    int64_t actime;
+    int64_t modtime;
 };
 
 struct linux_itimerval {
@@ -4705,12 +4713,16 @@ static int sys_shutdown(int fd, int how) {
     return 0;
 }
 
-static bool socket_flags_supported(int flags) {
+static bool socket_send_flags_supported(int flags) {
     return (flags & ~(MSG_DONTWAIT | MSG_NOSIGNAL)) == 0;
 }
 
+static bool socket_recv_flags_supported(int flags) {
+    return (flags & ~(MSG_DONTWAIT | MSG_PEEK | MSG_NOSIGNAL)) == 0;
+}
+
 static int sys_sendto(int fd, const void* buf, size_t count, int flags, const void* addr, uint32_t addrlen, struct syscall_frame* frame) {
-    if (!socket_flags_supported(flags)) {
+    if (!socket_send_flags_supported(flags)) {
         return err(EOPNOTSUPP);
     }
     if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
@@ -4770,7 +4782,7 @@ static int sys_sendto(int fd, const void* buf, size_t count, int flags, const vo
 }
 
 static int sys_recvfrom(int fd, void* buf, size_t count, int flags, void* addr, uint32_t* addrlen, struct syscall_frame* frame) {
-    if (!socket_flags_supported(flags)) {
+    if (!socket_recv_flags_supported(flags)) {
         return err(EOPNOTSUPP);
     }
     if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
@@ -4792,7 +4804,9 @@ static int sys_recvfrom(int fd, void* buf, size_t count, int flags, void* addr, 
             uint16_t src_port = 0;
             for (;;) {
                 net_poll();
-                int rr = net_udp_recv(sock->local_port, buf, count, &src_ip, &src_port);
+                int rr = (flags & MSG_PEEK) != 0
+                             ? net_udp_peek(sock->local_port, buf, count, &src_ip, &src_port)
+                             : net_udp_recv(sock->local_port, buf, count, &src_ip, &src_port);
                 if (rr >= 0) {
                     if (addr != NULL) {
                         (void)write_sockaddr_in(src_ip, src_port, addr, addrlen);
@@ -4810,6 +4824,9 @@ static int sys_recvfrom(int fd, void* buf, size_t count, int flags, void* addr, 
             }
         }
         if (sock->type == SOCK_RAW) {
+            if ((flags & MSG_PEEK) != 0) {
+                return err(EOPNOTSUPP);
+            }
             uint32_t src_ip = 0;
             for (;;) {
                 net_poll();
@@ -4835,7 +4852,8 @@ static int sys_recvfrom(int fd, void* buf, size_t count, int flags, void* addr, 
         }
         for (;;) {
             net_poll();
-            int rr = net_tcp_recv(sock->local_port, buf, count);
+            int rr = (flags & MSG_PEEK) != 0 ? net_tcp_peek(sock->local_port, buf, count)
+                                             : net_tcp_recv(sock->local_port, buf, count);
             if (rr >= 0) {
                 return rr;
             }
@@ -4851,6 +4869,9 @@ static int sys_recvfrom(int fd, void* buf, size_t count, int flags, void* addr, 
     }
     if (g_fds[fd].kind != FD_UNIX) {
         return err(ENOTSOCK);
+    }
+    if ((flags & MSG_PEEK) != 0) {
+        return err(EOPNOTSUPP);
     }
     if (addr != NULL && addrlen == NULL) {
         return err(EFAULT);
@@ -6105,6 +6126,158 @@ static int sys_fchown(int fd, uint32_t uid, uint32_t gid) {
     return fs_chown(g_fds[fd].entry.path, uid, gid);
 }
 
+static uint32_t current_time_sec32(void) {
+    return (uint32_t)(synthetic_time_ns() / 1000000000ull);
+}
+
+static int clamp_time_sec(int64_t sec, uint32_t* out) {
+    if (out == NULL || sec < 0 || sec > UINT32_MAX) {
+        return err(EINVAL);
+    }
+    *out = (uint32_t)sec;
+    return 0;
+}
+
+static int apply_utime_path(const char* path, uint32_t atime, bool set_atime, uint32_t mtime, bool set_mtime) {
+    struct fs_entry entry;
+    int r = fs_lookup(path, &entry);
+    if (r != 0) {
+        return r;
+    }
+
+    atime = set_atime ? atime : FS_UTIME_OMIT;
+    mtime = set_mtime ? mtime : FS_UTIME_OMIT;
+    return fs_utime(path, atime, mtime);
+}
+
+static int sys_utime(const char* path_user, const struct linux_utimbuf* times) {
+    char path[128];
+    int r = resolve_user_path(AT_FDCWD, path_user, true, path, sizeof(path));
+    if (r != 0) {
+        return r;
+    }
+
+    if (times == NULL) {
+        uint32_t now = current_time_sec32();
+        return apply_utime_path(path, now, true, now, true);
+    }
+
+    uint32_t atime = 0;
+    uint32_t mtime = 0;
+    r = clamp_time_sec(times->actime, &atime);
+    if (r != 0) {
+        return r;
+    }
+    r = clamp_time_sec(times->modtime, &mtime);
+    if (r != 0) {
+        return r;
+    }
+    return apply_utime_path(path, atime, true, mtime, true);
+}
+
+static int sys_utimes_at(int dirfd, const char* path_user, const struct linux_timeval* times) {
+    char path[128];
+    int r = resolve_user_path(dirfd, path_user, true, path, sizeof(path));
+    if (r != 0) {
+        return r;
+    }
+
+    if (times == NULL) {
+        uint32_t now = current_time_sec32();
+        return apply_utime_path(path, now, true, now, true);
+    }
+
+    if (times[0].tv_usec < 0 || times[0].tv_usec >= 1000000 || times[1].tv_usec < 0 || times[1].tv_usec >= 1000000) {
+        return err(EINVAL);
+    }
+    uint32_t atime = 0;
+    uint32_t mtime = 0;
+    r = clamp_time_sec(times[0].tv_sec, &atime);
+    if (r != 0) {
+        return r;
+    }
+    r = clamp_time_sec(times[1].tv_sec, &mtime);
+    if (r != 0) {
+        return r;
+    }
+    return apply_utime_path(path, atime, true, mtime, true);
+}
+
+static int sys_utimensat(int dirfd, const char* path_user, const struct linux_timespec* times, uint32_t flags) {
+    if ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH)) != 0u) {
+        return err(EINVAL);
+    }
+
+    char path[128];
+    if ((flags & AT_EMPTY_PATH) != 0u) {
+        char path_input[128];
+        int cr = copy_user_string(path_user, path_input, sizeof(path_input));
+        if (cr != 0) {
+            return cr;
+        }
+        if (path_input[0] == '\0') {
+            if (dirfd < 0 || dirfd >= MAX_FDS || g_fds[dirfd].kind == FD_FREE) {
+                return err(EBADF);
+            }
+            if (g_fds[dirfd].kind != FD_FILE && g_fds[dirfd].kind != FD_DIR) {
+                return err(ENOTDIR);
+            }
+            strncpy(path, g_fds[dirfd].entry.path, sizeof(path));
+            path[sizeof(path) - 1] = '\0';
+            goto have_path;
+        }
+    }
+
+    int r = resolve_user_path(dirfd, path_user, (flags & AT_SYMLINK_NOFOLLOW) == 0u, path, sizeof(path));
+    if (r != 0) {
+        return r;
+    }
+
+have_path:
+    if (times == NULL) {
+        uint32_t now = current_time_sec32();
+        return apply_utime_path(path, now, true, now, true);
+    }
+
+    uint32_t atime = 0;
+    uint32_t mtime = 0;
+    bool set_atime = true;
+    bool set_mtime = true;
+
+    if (times[0].tv_nsec == UTIME_OMIT) {
+        set_atime = false;
+    } else if (times[0].tv_nsec == UTIME_NOW) {
+        atime = current_time_sec32();
+    } else {
+        if (times[0].tv_nsec < 0 || times[0].tv_nsec >= 1000000000) {
+            return err(EINVAL);
+        }
+        r = clamp_time_sec(times[0].tv_sec, &atime);
+        if (r != 0) {
+            return r;
+        }
+    }
+
+    if (times[1].tv_nsec == UTIME_OMIT) {
+        set_mtime = false;
+    } else if (times[1].tv_nsec == UTIME_NOW) {
+        mtime = current_time_sec32();
+    } else {
+        if (times[1].tv_nsec < 0 || times[1].tv_nsec >= 1000000000) {
+            return err(EINVAL);
+        }
+        r = clamp_time_sec(times[1].tv_sec, &mtime);
+        if (r != 0) {
+            return r;
+        }
+    }
+
+    if (!set_atime && !set_mtime) {
+        return fs_lookup(path, &(struct fs_entry){0});
+    }
+    return apply_utime_path(path, atime, set_atime, mtime, set_mtime);
+}
+
 static int sys_readlinkat(int dirfd, const char* path_user, char* out, size_t bufsz) {
     char path[128];
     int r = resolve_user_path(dirfd, path_user, false, path, sizeof(path));
@@ -6310,6 +6483,14 @@ static int sys_clock_gettime(struct linux_timespec* ts) {
     uint64_t now = synthetic_time_ns();
     ts->tv_sec = (int64_t)(now / 1000000000ull);
     ts->tv_nsec = (int64_t)(now % 1000000000ull);
+    return 0;
+}
+
+static int sys_clock_getres(struct linux_timespec* ts) {
+    if (ts != NULL) {
+        ts->tv_sec = 0;
+        ts->tv_nsec = 1000000;
+    }
     return 0;
 }
 
@@ -8449,6 +8630,8 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
             return (uint64_t)sys_setsid();
         case 121:
             return (uint64_t)sys_getpgid((int)a0);
+        case 132:
+            return (uint64_t)sys_utime((const char*)(uintptr_t)a0, (const struct linux_utimbuf*)(uintptr_t)a1);
         case 131:
             return (uint64_t)sys_sigaltstack((const struct linux_stack_t*)(uintptr_t)a0, (struct linux_stack_t*)(uintptr_t)a1);
         case 157:
@@ -8470,8 +8653,12 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
             return (uint64_t)sys_set_tid_address(a0);
         case 228:
             return (uint64_t)sys_clock_gettime((struct linux_timespec*)(uintptr_t)a1);
+        case 229:
+            return (uint64_t)sys_clock_getres((struct linux_timespec*)(uintptr_t)a1);
         case 231:
             return sys_exit_common(frame, a0);
+        case 235:
+            return (uint64_t)sys_utimes_at(AT_FDCWD, (const char*)(uintptr_t)a0, (const struct linux_timeval*)(uintptr_t)a1);
         case 257:
             return (uint64_t)sys_openat((int)a0, (const char*)(uintptr_t)a1, (uint32_t)a2, (uint32_t)a3);
         case 258:
@@ -8480,6 +8667,8 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
             return (uint64_t)sys_mknodat((int)a0, (const char*)(uintptr_t)a1, (uint32_t)a2, (uint32_t)a3);
         case 260:
             return (uint64_t)sys_chownat((int)a0, (const char*)(uintptr_t)a1, (uint32_t)a2, (uint32_t)a3, (uint32_t)a4);
+        case 261:
+            return (uint64_t)sys_utimes_at((int)a0, (const char*)(uintptr_t)a1, (const struct linux_timeval*)(uintptr_t)a2);
         case 262:
             return (uint64_t)sys_newfstatat((int)a0, (const char*)(uintptr_t)a1, (struct linux_stat*)(uintptr_t)a2,
                                             (uint32_t)a3);
@@ -8503,6 +8692,9 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
                                           (const struct linux_pselect_sigmask*)(uintptr_t)a5, frame);
         case 273:
             return (uint64_t)sys_set_robust_list(a0, (size_t)a1);
+        case 280:
+            return (uint64_t)sys_utimensat((int)a0, (const char*)(uintptr_t)a1, (const struct linux_timespec*)(uintptr_t)a2,
+                                           (uint32_t)a3);
         case 288:
             return (uint64_t)sys_accept4((int)a0, (void*)(uintptr_t)a1, (uint32_t*)(uintptr_t)a2, (uint32_t)a3, frame);
         case 292:

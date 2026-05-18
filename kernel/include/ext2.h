@@ -40,6 +40,7 @@ int ext2_rmdir(const char* path);
 int ext2_rename(const char* oldpath, const char* newpath);
 int ext2_chmod(const char* path, uint32_t mode);
 int ext2_chown(const char* path, uint32_t uid, uint32_t gid);
+int ext2_utime(const char* path, uint32_t atime, uint32_t mtime);
 
 bool ext2_path_has_child(const char* dir);
 size_t ext2_collect_children(const char* dir, char names[][FS_MAX_NAME], uint8_t types[], size_t max_children);
