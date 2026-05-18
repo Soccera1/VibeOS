@@ -72,6 +72,9 @@ mounted read-only, while @file{/home} is mounted read-write when a writable SCSI
 disk image is attached.  If no writable home disk is available, the kernel falls
 back to a volatile in-memory @file{/home} ramdisk.
 
+The @file{/tmp} tree is a separate volatile in-memory ramdisk and is mounted
+writable during filesystem initialization.
+
 The kernel backend itself supports both non-journaled ext2 and journaled ext3
 filesystems.
 
@@ -104,8 +107,8 @@ The routing rule is intentionally small:
 @itemize @bullet
 @item If the path belongs to a mounted ext2/ext3 tree such as @file{/usr} or
 @file{/home}, use that ext2/ext3 mount.
-@item If @file{/home} is backed by the ramdisk fallback, use the ramdisk
-backend for @file{/home} paths.
+@item If the path belongs to a ramdisk tree such as @file{/tmp} or the
+@file{/home} fallback, use the ramdisk backend.
 @item Otherwise use the initramfs backend.
 @end itemize
 
@@ -182,7 +185,7 @@ The shipped root initramfs and @file{/usr} mount are read-only in the current
 boot configuration.  The default QEMU run path attaches @file{build/home.ext3}
 as a writable SCSI disk and mounts it at @file{/home}.  When that disk is not
 present, @file{/home} is still writable but volatile because it is backed by an
-in-memory ramdisk.
+in-memory ramdisk.  @file{/tmp} is always writable and volatile.
 
 You can:
 
@@ -193,7 +196,8 @@ You can:
 @item traverse directories,
 @item read symlinks,
 @item access synthetic device-like paths, and
-@item create, modify, rename, and remove files under writable @file{/home}.
+@item create, modify, rename, and remove files under writable @file{/home} and
+@file{/tmp}.
 @end itemize
 
 The ext2/ext3 backend has read-write support for regular-file data, block and

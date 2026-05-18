@@ -2867,9 +2867,7 @@ static int sys_openat(int dirfd, const char* path_user, uint32_t flags, uint32_t
         } else {
             return r;
         }
-    }
-
-    if ((flags & (O_CREAT | O_EXCL)) == (O_CREAT | O_EXCL)) {
+    } else if ((flags & (O_CREAT | O_EXCL)) == (O_CREAT | O_EXCL)) {
         return err(EEXIST);
     }
 
@@ -3407,8 +3405,13 @@ static int sys_write(int fd, const void* buf, size_t count, struct syscall_frame
         if ((g_fds[fd].flags & O_APPEND) != 0u) {
             g_fds[fd].offset = g_fds[fd].entry.size;
         }
-        int n = fs_write(&g_fds[fd].entry, g_fds[fd].offset, buf, count);
+        size_t write_off = g_fds[fd].offset;
+        int n = fs_write(&g_fds[fd].entry, write_off, buf, count);
         if (n > 0) {
+            size_t end = write_off + (size_t)n;
+            if (end > g_fds[fd].entry.size) {
+                g_fds[fd].entry.size = end;
+            }
             g_fds[fd].offset += (size_t)n;
             refresh_open_file_sizes(&g_fds[fd].entry);
         }
@@ -3584,6 +3587,10 @@ static int sys_pwrite64(int fd, const void* buf, size_t count, int64_t offset) {
 
     int n = fs_write(&g_fds[fd].entry, (size_t)offset, buf, count);
     if (n > 0) {
+        size_t end = (size_t)offset + (size_t)n;
+        if (end > g_fds[fd].entry.size) {
+            g_fds[fd].entry.size = end;
+        }
         refresh_open_file_sizes(&g_fds[fd].entry);
     }
     return n;

@@ -228,6 +228,8 @@ static void test_identity_and_paths(void) {
 static void test_file_io_and_mmap(void) {
     int fd = -1;
     int rofd = -1;
+    int homefd = -1;
+    int exclfd = -1;
     int dirfd = -1;
     int pipefd[2] = { -1, -1 };
     unsigned char elf[8];
@@ -237,6 +239,8 @@ static void test_file_io_and_mmap(void) {
     ssize_t n = 0;
     void* map = MAP_FAILED;
     char motd[128];
+    char tmpbuf[32];
+    char homebuf[32];
 
     fd = open(k_helper_path, O_RDONLY);
     REQUIRE(fd >= 0, "open(%s) failed: %s", k_helper_path, strerror(errno));
@@ -262,6 +266,43 @@ static void test_file_io_and_mmap(void) {
 
     errno = 0;
     REQUIRE(unlink(k_helper_link) < 0 && errno == EROFS, "unlink on read-only /usr errno=%d", errno);
+
+    (void)unlink("/tmp/kernel-tests.tmp");
+    rofd = open("/tmp/kernel-tests.tmp", O_RDWR | O_CREAT | O_TRUNC, 0600);
+    REQUIRE(rofd >= 0, "create on writable /tmp failed: %s", strerror(errno));
+    REQUIRE(write(rofd, "tmpfs-ok", 8) == 8, "write(/tmp/kernel-tests.tmp) failed: %s", strerror(errno));
+    REQUIRE(lseek(rofd, 0, SEEK_SET) == 0, "seek(/tmp/kernel-tests.tmp) failed: %s", strerror(errno));
+    memset(tmpbuf, 0, sizeof(tmpbuf));
+    REQUIRE(read(rofd, tmpbuf, sizeof(tmpbuf)) == 8, "read(/tmp/kernel-tests.tmp) failed: %s", strerror(errno));
+    REQUIRE(strcmp(tmpbuf, "tmpfs-ok") == 0, "/tmp contents were not preserved");
+    close(rofd);
+    rofd = -1;
+    REQUIRE(unlink("/tmp/kernel-tests.tmp") == 0, "unlink(/tmp/kernel-tests.tmp) failed: %s", strerror(errno));
+
+    (void)unlink("/tmp/kernel-tests.excl");
+    exclfd = open("/tmp/kernel-tests.excl", O_RDWR | O_CREAT | O_EXCL, 0600);
+    REQUIRE(exclfd >= 0, "exclusive create on /tmp failed: %s", strerror(errno));
+    REQUIRE(write(exclfd, "exclusive", 9) == 9, "write(/tmp/kernel-tests.excl) failed: %s", strerror(errno));
+    close(exclfd);
+    exclfd = -1;
+    errno = 0;
+    exclfd = open("/tmp/kernel-tests.excl", O_RDWR | O_CREAT | O_EXCL, 0600);
+    REQUIRE(exclfd < 0 && errno == EEXIST, "second exclusive create returned fd=%d errno=%d", exclfd, errno);
+    REQUIRE(unlink("/tmp/kernel-tests.excl") == 0, "unlink(/tmp/kernel-tests.excl) failed: %s", strerror(errno));
+
+    (void)unlink("/home/kernel-tests.write");
+    homefd = open("/home/kernel-tests.write", O_RDWR | O_CREAT | O_TRUNC, 0600);
+    REQUIRE(homefd >= 0, "create on writable /home failed: %s", strerror(errno));
+    REQUIRE(write(homefd, "home-write", 10) == 10, "write(/home/kernel-tests.write) failed: %s", strerror(errno));
+    REQUIRE(pwrite(homefd, "OK", 2, 5) == 2, "pwrite(/home/kernel-tests.write) failed: %s", strerror(errno));
+    REQUIRE(lseek(homefd, 0, SEEK_SET) == 0, "seek(/home/kernel-tests.write) failed: %s", strerror(errno));
+    memset(homebuf, 0, sizeof(homebuf));
+    n = read(homefd, homebuf, sizeof(homebuf));
+    REQUIRE(n == 10, "read(/home/kernel-tests.write) returned %zd, expected 10: %s", n, strerror(errno));
+    REQUIRE(strcmp(homebuf, "home-OKite") == 0, "/home contents were not preserved");
+    close(homefd);
+    homefd = -1;
+    REQUIRE(unlink("/home/kernel-tests.write") == 0, "unlink(/home/kernel-tests.write) failed: %s", strerror(errno));
 
     memset(elf, 0, sizeof(elf));
     REQUIRE(pread(fd, elf, sizeof(elf), 0) == (ssize_t)sizeof(elf), "pread helper ELF header failed: %s", strerror(errno));

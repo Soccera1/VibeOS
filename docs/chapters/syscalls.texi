@@ -301,9 +301,9 @@ implementation.  Common values include @code{EINVAL}, @code{ENOENT},
 Important semantic caveats to remember:
 
 @itemize @bullet
-@item Filesystem mutation is limited to writable ext2/ext3 mounts and the
-@file{/home} ramdisk fallback; the root initramfs and shipped @file{/usr} are
-read-only.
+@item Filesystem mutation is limited to writable ext2/ext3 mounts, the
+@file{/home} ramdisk fallback, and the @file{/tmp} ramdisk; the root initramfs
+and shipped @file{/usr} are read-only.
 @item @code{poll}, @code{select}, and @code{nanosleep} are not driven by a
 preemptive timer interrupt.  Wall-clock time is seeded from RTC state when
 available and then advanced from the TSC.
