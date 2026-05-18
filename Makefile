@@ -56,13 +56,17 @@ USER_LIBPIPELINE := $(BUILD_DIR)/userspace/libpipeline
 USER_GDBM := $(BUILD_DIR)/userspace/gdbm
 USER_GROFF := $(BUILD_DIR)/userspace/groff
 USER_MAN_DB := $(BUILD_DIR)/userspace/man-db
-USER_LIBRESSL := $(BUILD_DIR)/userspace/libressl
+USER_GMP := $(BUILD_DIR)/userspace/gmp
+USER_NETTLE := $(BUILD_DIR)/userspace/nettle
+USER_GNUTLS := $(BUILD_DIR)/userspace/gnutls
 USER_WGET := $(BUILD_DIR)/userspace/wget
 USER_TESTS := $(BUILD_DIR)/userspace/kernel-tests-root
 BASH_SRC := external/bash-src
 NCURSES_SRC := external/ncurses-src
 NCURSES_BUILD := $(NCURSES_SRC)/build-musl
-LIBRESSL_SRC := external/libressl-src
+GNUTLS_SRC := external/gnutls-src
+GMP_TARBALL := /var/cache/distfiles/gmp-6.3.0.tar.xz
+NETTLE_TARBALL := /var/cache/distfiles/nettle-3.10.2.tar.gz
 SL_SRC := external/sl-src
 FILE_SRC := external/file-src
 NANO_SRC := external/nano-src
@@ -175,11 +179,17 @@ $(USER_GROFF): | $(BUILD_DIR)
 $(USER_MAN_DB): $(USER_LIBPIPELINE) $(USER_GDBM) $(USER_GROFF) tools/build_man_db.sh | $(BUILD_DIR)
 	./tools/build_man_db.sh $@ "$(MAN_DB_SRC)" "$(USER_LIBPIPELINE)" "$(USER_GDBM)" "$(USER_GROFF)"
 
-$(USER_LIBRESSL): tools/build_libressl.sh | $(BUILD_DIR)
-	./tools/build_libressl.sh $@ "$(LIBRESSL_SRC)"
+$(USER_GMP): tools/build_gmp.sh $(GMP_TARBALL) | $(BUILD_DIR)
+	./tools/build_gmp.sh $@ "$(GMP_TARBALL)"
 
-$(USER_WGET): $(USER_LIBRESSL) $(WGET_SRC_FILES) tools/build_wget.sh $(CA_CERT_BUNDLE) | $(BUILD_DIR)
-	./tools/build_wget.sh $@ "$(WGET_SRC)" "$(USER_LIBRESSL)" "$(CA_CERT_BUNDLE)"
+$(USER_NETTLE): $(USER_GMP) tools/build_nettle.sh $(NETTLE_TARBALL) | $(BUILD_DIR)
+	./tools/build_nettle.sh $@ "$(NETTLE_TARBALL)" "$(USER_GMP)"
+
+$(USER_GNUTLS): $(USER_NETTLE) $(USER_GMP) tools/build_gnutls.sh | $(BUILD_DIR)
+	./tools/build_gnutls.sh $@ "$(GNUTLS_SRC)" "$(USER_NETTLE)" "$(USER_GMP)"
+
+$(USER_WGET): $(USER_GNUTLS) $(USER_NETTLE) $(USER_GMP) $(WGET_SRC_FILES) tools/build_wget.sh $(CA_CERT_BUNDLE) | $(BUILD_DIR)
+	./tools/build_wget.sh $@ "$(WGET_SRC)" "$(USER_GNUTLS)" "$(USER_NETTLE)" "$(USER_GMP)" "$(CA_CERT_BUNDLE)"
 
 $(USER_TESTS): $(TESTS_SRC) tools/build_kernel_tests.sh | $(BUILD_DIR)
 	./tools/build_kernel_tests.sh $@ tests
@@ -224,4 +234,4 @@ docs: $(DOCS_SRC) | $(DOCS_OUT)
 	texi2pdf --quiet --build=clean --build-dir=$(DOCS_PDF_BUILD) --output=$(DOCS_PDF) $(DOCS_SRC)
 
 clean:
-	rm -rf $(BUILD_DIR) $(DOCS_OUT) $(ZIG_GLOBAL_CACHE) $(ZIG_LOCAL_CACHE) $(COREUTILS_ZIG_GLOBAL_CACHE) $(COREUTILS_ZIG_LOCAL_CACHE) $(LIBRESSL_SRC)/build-musl $(WGET_SRC)/build-musl
+	rm -rf $(BUILD_DIR) $(DOCS_OUT) $(ZIG_GLOBAL_CACHE) $(ZIG_LOCAL_CACHE) $(COREUTILS_ZIG_GLOBAL_CACHE) $(COREUTILS_ZIG_LOCAL_CACHE) $(GNUTLS_SRC)/build-musl $(WGET_SRC)/build-musl
