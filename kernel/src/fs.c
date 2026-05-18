@@ -24,6 +24,8 @@
 #define RAMDISK_MAX_NODES 256u
 #define RAMDISK_ROOT_INODE 1u
 
+static const uint8_t g_resolv_conf[] = "nameserver 10.0.2.3\n";
+
 static bool path_immediate_child(const char* dir, const char* full, char* child_out, size_t child_out_len) {
     if (strcmp(full, "/") == 0) {
         return false;
@@ -576,7 +578,21 @@ int fs_lookup(const char* path, struct fs_entry* out) {
 
     struct initramfs_entry entry;
     if (initramfs_find(path, &entry) != 0) {
-        return -2;
+        if (strcmp(path, "/etc/resolv.conf") != 0) {
+            return -2;
+        }
+        if (out != NULL) {
+            memset(out, 0, sizeof(*out));
+            strncpy(out->path, path, sizeof(out->path));
+            out->path[sizeof(out->path) - 1] = '\0';
+            out->data = g_resolv_conf;
+            out->size = sizeof(g_resolv_conf) - 1u;
+            out->mode = FS_S_IFREG | 0644u;
+            out->inode = 0;
+            out->backend = FS_BACKEND_INITRAMFS;
+            out->read_only = true;
+        }
+        return 0;
     }
 
     if (out != NULL) {

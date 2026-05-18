@@ -200,6 +200,8 @@ run: disk $(USR_EXT3) $(HOME_EXT3)
 		-device scsi-hd,drive=usr,bus=scsi0.0,scsi-id=0,lun=0 \
 		-drive format=raw,file=$(HOME_EXT3),if=none,id=home \
 		-device scsi-hd,drive=home,bus=scsi0.0,scsi-id=1,lun=0 \
+		-netdev user,id=net0 \
+		-device virtio-net-pci-transitional,netdev=net0 \
 		-serial stdio
 
 docs: $(DOCS_SRC) | $(DOCS_OUT)

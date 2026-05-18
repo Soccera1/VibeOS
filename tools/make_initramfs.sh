@@ -119,6 +119,10 @@ VibeOS monolithic kernel prototype
 Type: help
 MOTD
 
+cat > "$ROOT/etc/resolv.conf" <<'RESOLV'
+nameserver 10.0.2.3
+RESOLV
+
 cat > "$ROOT/.bashrc" <<'BASHRC'
 if command -v dircolors >/dev/null 2>&1; then
   eval "$(dircolors -b)"
