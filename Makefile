@@ -56,23 +56,29 @@ USER_LIBPIPELINE := $(BUILD_DIR)/userspace/libpipeline
 USER_GDBM := $(BUILD_DIR)/userspace/gdbm
 USER_GROFF := $(BUILD_DIR)/userspace/groff
 USER_MAN_DB := $(BUILD_DIR)/userspace/man-db
+USER_LIBRESSL := $(BUILD_DIR)/userspace/libressl
+USER_WGET := $(BUILD_DIR)/userspace/wget
 USER_TESTS := $(BUILD_DIR)/userspace/kernel-tests-root
 BASH_SRC := external/bash-src
 NCURSES_SRC := external/ncurses-src
 NCURSES_BUILD := $(NCURSES_SRC)/build-musl
+LIBRESSL_SRC := external/libressl-src
 SL_SRC := external/sl-src
 FILE_SRC := external/file-src
 NANO_SRC := external/nano-src
 LESS_SRC := external/less-src
+WGET_SRC := external/wget-src
 MAN_PAGES_SRC := external/man-pages-src
 LIBPIPELINE_SRC := external/libpipeline-src
 GDBM_SRC := external/gdbm-src
 GROFF_SRC := external/groff-src
 MAN_DB_SRC := external/man-db-src
+CA_CERT_BUNDLE ?= /etc/ssl/certs/ca-certificates.crt
 USER_SL := $(BUILD_DIR)/userspace/sl
 HELP_SRC := userspace/help.c
 TESTS_SRC := $(shell find tests -type f | sort)
 LESS_SRC_FILES := $(shell find $(LESS_SRC) -path "$(LESS_SRC)/build-musl" -prune -o -type f -print | sort)
+WGET_SRC_FILES := $(shell find $(WGET_SRC) -path "$(WGET_SRC)/build-musl" -prune -o -type f -print | sort)
 
 export STRIP_BINARIES ?= 1
 export STRIP
@@ -169,14 +175,20 @@ $(USER_GROFF): | $(BUILD_DIR)
 $(USER_MAN_DB): $(USER_LIBPIPELINE) $(USER_GDBM) $(USER_GROFF) tools/build_man_db.sh | $(BUILD_DIR)
 	./tools/build_man_db.sh $@ "$(MAN_DB_SRC)" "$(USER_LIBPIPELINE)" "$(USER_GDBM)" "$(USER_GROFF)"
 
+$(USER_LIBRESSL): tools/build_libressl.sh | $(BUILD_DIR)
+	./tools/build_libressl.sh $@ "$(LIBRESSL_SRC)"
+
+$(USER_WGET): $(USER_LIBRESSL) $(WGET_SRC_FILES) tools/build_wget.sh $(CA_CERT_BUNDLE) | $(BUILD_DIR)
+	./tools/build_wget.sh $@ "$(WGET_SRC)" "$(USER_LIBRESSL)" "$(CA_CERT_BUNDLE)"
+
 $(USER_TESTS): $(TESTS_SRC) tools/build_kernel_tests.sh | $(BUILD_DIR)
 	./tools/build_kernel_tests.sh $@ tests
 
 $(INITRAMFS): tools/make_initramfs.sh $(USER_BUSYBOX) $(USER_HELP) $(USER_COREUTILS) $(USER_COREUTILS_PROGS)
 	./tools/make_initramfs.sh $@ $(USER_BUSYBOX) $(USER_HELP) $(USER_COREUTILS) $(USER_COREUTILS_PROGS)
 
-$(USR_EXT3): tools/make_usr_ext2.sh $(USER_BASH) $(USER_HELP) $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO) $(USER_LESS) $(USER_COREUTILS) $(USER_COREUTILS_PROGS) $(USER_MAN_PAGES) $(USER_GROFF) $(USER_MAN_DB) $(USER_TESTS)
-	./tools/make_usr_ext2.sh $@ $(USER_BASH) $(USER_HELP) $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO) $(USER_LESS) $(USER_COREUTILS) $(USER_COREUTILS_PROGS) $(USER_MAN_PAGES) $(USER_GROFF) $(USER_MAN_DB) $(USER_TESTS)
+$(USR_EXT3): tools/make_usr_ext2.sh $(USER_BASH) $(USER_HELP) $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO) $(USER_LESS) $(USER_COREUTILS) $(USER_COREUTILS_PROGS) $(USER_MAN_PAGES) $(USER_GROFF) $(USER_MAN_DB) $(USER_WGET) $(USER_TESTS)
+	./tools/make_usr_ext2.sh $@ $(USER_BASH) $(USER_HELP) $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO) $(USER_LESS) $(USER_COREUTILS) $(USER_COREUTILS_PROGS) $(USER_MAN_PAGES) $(USER_GROFF) $(USER_MAN_DB) $(USER_WGET) $(USER_TESTS)
 
 $(HOME_EXT3): tools/make_home_ext2.sh | $(BUILD_DIR)
 	./tools/make_home_ext2.sh $@
@@ -212,4 +224,4 @@ docs: $(DOCS_SRC) | $(DOCS_OUT)
 	texi2pdf --quiet --build=clean --build-dir=$(DOCS_PDF_BUILD) --output=$(DOCS_PDF) $(DOCS_SRC)
 
 clean:
-	rm -rf $(BUILD_DIR) $(DOCS_OUT) $(ZIG_GLOBAL_CACHE) $(ZIG_LOCAL_CACHE) $(COREUTILS_ZIG_GLOBAL_CACHE) $(COREUTILS_ZIG_LOCAL_CACHE)
+	rm -rf $(BUILD_DIR) $(DOCS_OUT) $(ZIG_GLOBAL_CACHE) $(ZIG_LOCAL_CACHE) $(COREUTILS_ZIG_GLOBAL_CACHE) $(COREUTILS_ZIG_LOCAL_CACHE) $(LIBRESSL_SRC)/build-musl $(WGET_SRC)/build-musl

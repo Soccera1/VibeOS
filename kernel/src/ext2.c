@@ -4120,6 +4120,48 @@ int ext2_chown(const char* path, uint32_t uid, uint32_t gid) {
     return r;
 }
 
+int ext2_utime(const char* path, uint32_t atime, uint32_t mtime) {
+    struct ext2_mount* saved = NULL;
+    int sr = ext2_push_mount_for_path(path, &saved);
+    if (sr != 0) {
+        return sr;
+    }
+    if (g_ext2.read_only) {
+        ext2_pop_mount(saved);
+        return -EROFS;
+    }
+    int mr = ext2_begin_mutation();
+    if (mr != 0) {
+        ext2_pop_mount(saved);
+        return mr;
+    }
+
+    uint32_t inode_num = 0;
+    int r = lookup_inode_number(path, &inode_num);
+    if (r != 0) {
+        int fr = finish_mutation(r);
+        ext2_pop_mount(saved);
+        return fr;
+    }
+    struct ext2_inode inode;
+    r = read_inode(inode_num, &inode);
+    if (r != 0) {
+        int fr = finish_mutation(r);
+        ext2_pop_mount(saved);
+        return fr;
+    }
+    if (atime != FS_UTIME_OMIT) {
+        inode.i_atime = atime;
+    }
+    if (mtime != FS_UTIME_OMIT) {
+        inode.i_mtime = mtime;
+    }
+    inode.i_ctime = (uint32_t)(mtime != FS_UTIME_OMIT ? mtime : atime);
+    r = finish_mutation(write_inode(inode_num, &inode));
+    ext2_pop_mount(saved);
+    return r;
+}
+
 int ext2_rename(const char* oldpath, const char* newpath) {
     struct ext2_mount* saved = NULL;
     int sr = ext2_push_mount_for_path(oldpath, &saved);

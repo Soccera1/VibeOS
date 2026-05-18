@@ -25,6 +25,8 @@
 #define FS_DT_LNK 10
 #define FS_DT_SOCK 12
 
+#define FS_UTIME_OMIT UINT32_MAX
+
 enum fs_backend {
     FS_BACKEND_NONE = 0,
     FS_BACKEND_INITRAMFS,
@@ -72,6 +74,7 @@ int fs_rmdir(const char* path);
 int fs_rename(const char* oldpath, const char* newpath);
 int fs_chmod(const char* path, uint32_t mode);
 int fs_chown(const char* path, uint32_t uid, uint32_t gid);
+int fs_utime(const char* path, uint32_t atime, uint32_t mtime);
 
 bool fs_path_has_child(const char* dir);
 size_t fs_collect_children(const char* dir, char names[][FS_MAX_NAME], uint8_t types[], size_t max_children);

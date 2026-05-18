@@ -851,6 +851,16 @@ int fs_chown(const char* path, uint32_t uid, uint32_t gid) {
     return -30;
 }
 
+int fs_utime(const char* path, uint32_t atime, uint32_t mtime) {
+    if (path_in_ext2_mount(path)) {
+        return ext2_utime(path, atime, mtime);
+    }
+    if (path_in_home_ramdisk(path)) {
+        return ramdisk_find_path(path) == NULL ? -ENOENT : 0;
+    }
+    return -30;
+}
+
 bool fs_path_has_child(const char* dir) {
     if (dir == NULL) {
         return false;
