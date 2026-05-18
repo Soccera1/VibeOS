@@ -10,6 +10,7 @@
 #include "input.h"
 #include "io.h"
 #include "kmalloc.h"
+#include "net.h"
 #include "power.h"
 #include "process.h"
 #include "string.h"
@@ -70,13 +71,20 @@
 
 #define AF_UNIX 1
 #define AF_LOCAL AF_UNIX
+#define AF_INET 2
 
 #define SOCK_STREAM 1
 #define SOCK_DGRAM 2
+#define SOCK_RAW 3
 #define SOCK_SEQPACKET 5
 #define SOCK_TYPE_MASK 0x0Fu
 #define SOCK_NONBLOCK O_NONBLOCK
 #define SOCK_CLOEXEC O_CLOEXEC
+
+#define IPPROTO_IP 0
+#define IPPROTO_ICMP 1
+#define IPPROTO_TCP 6
+#define IPPROTO_UDP 17
 
 #define ARCH_SET_FS 0x1002u
 #define ARCH_GET_FS 0x1003u
@@ -107,6 +115,9 @@
 #define POLLERR 0x0008
 #define POLLHUP 0x0010
 #define POLLNVAL 0x0020
+
+#define MSG_DONTWAIT 0x40
+#define MSG_NOSIGNAL 0x4000
 
 #define MAX_FDS 64
 #define MAX_CHILDREN 256
@@ -155,6 +166,7 @@
 #define ENOTCONN 107
 #define ETIMEDOUT 110
 #define ECONNREFUSED 111
+#define EINPROGRESS 115
 
 #define IRET_SLOT_RIP 15u
 #define IRET_SLOT_CS 16u
@@ -286,6 +298,7 @@
 #define MAX_UNIX_CONNECTIONS 128
 #define UNIX_SOCKET_BUFFER_CAPACITY 65536
 #define UNIX_SOCKET_BACKLOG_MAX 32
+#define MAX_INET_SOCKETS 64
 
 #define EXEC_MAX_ARGS 64
 #define EXEC_MAX_ENVS 64
@@ -309,6 +322,17 @@
 struct linux_iovec {
     uint64_t base;
     uint64_t len;
+};
+
+struct linux_msghdr {
+    void* msg_name;
+    uint32_t msg_namelen;
+    uint32_t __pad1;
+    struct linux_iovec* msg_iov;
+    uint64_t msg_iovlen;
+    void* msg_control;
+    uint64_t msg_controllen;
+    uint32_t msg_flags;
 };
 
 struct linux_winsize {
@@ -506,6 +530,13 @@ struct linux_sockaddr_un {
     char sun_path[108];
 };
 
+struct linux_sockaddr_in {
+    uint16_t sin_family;
+    uint16_t sin_port;
+    uint32_t sin_addr;
+    uint8_t sin_zero[8];
+};
+
 struct elf64_ehdr {
     uint8_t e_ident[16];
     uint16_t e_type;
@@ -556,6 +587,7 @@ enum fd_kind {
     FD_PIPE_R,
     FD_PIPE_W,
     FD_UNIX,
+    FD_INET,
 };
 
 struct fd_state {
@@ -611,6 +643,20 @@ struct unix_connection_state {
     char local_path[2][FS_MAX_PATH];
 };
 
+struct inet_socket_state {
+    bool used;
+    int type;
+    int protocol;
+    bool bound;
+    bool connected;
+    bool tcp_opened;
+    uint16_t local_port;
+    uint32_t local_ip;
+    uint16_t remote_port;
+    uint32_t remote_ip;
+    int raw_id;
+};
+
 static struct fd_state g_fds[MAX_FDS];
 static char g_cwd[128] = "/";
 static uint64_t g_brk_current = VM_USER_BRK_BASE;
@@ -632,6 +678,7 @@ static int g_pending_keyboard_signal;
 static struct pipe_state g_pipes[MAX_PIPES];
 static struct unix_socket_state g_unix_sockets[MAX_UNIX_SOCKETS];
 static struct unix_connection_state g_unix_connections[MAX_UNIX_CONNECTIONS];
+static struct inet_socket_state g_inet_sockets[MAX_INET_SOCKETS];
 static uint64_t g_tid_address;
 static uint64_t g_altstack_sp;
 static uint64_t g_altstack_size;
@@ -689,6 +736,8 @@ static int signal_process(struct process* proc, int sig);
 static int map_exec_segment(struct vm_space* space, uint64_t vaddr, size_t memsz, const void* src, size_t filesz, uint32_t prot);
 static void close_cloexec_fds(void);
 static int sys_close(int fd);
+static int sys_sendto(int fd, const void* buf, size_t count, int flags, const void* addr, uint32_t addrlen, struct syscall_frame* frame);
+static int sys_recvfrom(int fd, void* buf, size_t count, int flags, void* addr, uint32_t* addrlen, struct syscall_frame* frame);
 
 __attribute__((noreturn)) static void do_shutdown(void);
 __attribute__((noreturn)) static void do_halt(void);
@@ -1628,6 +1677,17 @@ static int alloc_unix_connection_slot(void) {
     return err(ENOMEM);
 }
 
+static int alloc_inet_socket_slot(void) {
+    for (int i = 0; i < MAX_INET_SOCKETS; ++i) {
+        if (!g_inet_sockets[i].used) {
+            memset(&g_inet_sockets[i], 0, sizeof(g_inet_sockets[i]));
+            g_inet_sockets[i].used = true;
+            return i;
+        }
+    }
+    return err(ENOMEM);
+}
+
 static void unix_socket_buffer_discard(struct unix_socket_buffer* buf) {
     if (buf == NULL) {
         return;
@@ -1759,6 +1819,56 @@ static void unix_socket_cleanup_if_unreferenced(int socket_id) {
     unix_connection_maybe_destroy(conn_id);
 }
 
+static bool inet_socket_is_referenced_in_fd_table(const struct fd_state* fds, int socket_id) {
+    for (int fd = 0; fd < MAX_FDS; ++fd) {
+        if (fds[fd].kind == FD_INET && fds[fd].socket_id == socket_id) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool inet_socket_is_referenced_in_process_fd_table(const struct process_fd* fds, int socket_id) {
+    for (int fd = 0; fd < PROCESS_MAX_FDS; ++fd) {
+        if (fds[fd].kind == FD_INET && fds[fd].socket_id == socket_id) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool inet_socket_is_referenced(int socket_id) {
+    if (socket_id < 0 || socket_id >= MAX_INET_SOCKETS) {
+        return false;
+    }
+    if (inet_socket_is_referenced_in_fd_table(g_fds, socket_id)) {
+        return true;
+    }
+    for (int i = 0; i < MAX_PROCESSES; ++i) {
+        struct process* proc = process_at(i);
+        if (proc == current_process() || !process_holds_pipe_refs(proc)) {
+            continue;
+        }
+        if (inet_socket_is_referenced_in_process_fd_table(proc->fds, socket_id)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void inet_socket_cleanup_if_unreferenced(int socket_id) {
+    if (socket_id < 0 || socket_id >= MAX_INET_SOCKETS || !g_inet_sockets[socket_id].used || inet_socket_is_referenced(socket_id)) {
+        return;
+    }
+    if (g_inet_sockets[socket_id].tcp_opened) {
+        net_tcp_close(g_inet_sockets[socket_id].local_port);
+    }
+    if (g_inet_sockets[socket_id].type == SOCK_RAW) {
+        net_icmp_close(g_inet_sockets[socket_id].raw_id);
+    }
+    memset(&g_inet_sockets[socket_id], 0, sizeof(g_inet_sockets[socket_id]));
+}
+
 static void release_process_fds(struct process* proc) {
     if (proc == NULL) {
         return;
@@ -1768,6 +1878,8 @@ static void release_process_fds(struct process* proc) {
     size_t pipe_count = 0;
     int socket_ids[PROCESS_MAX_FDS];
     size_t socket_count = 0;
+    int inet_socket_ids[PROCESS_MAX_FDS];
+    size_t inet_socket_count = 0;
     for (int fd = 0; fd < PROCESS_MAX_FDS; ++fd) {
         if ((proc->fds[fd].kind == FD_PIPE_R || proc->fds[fd].kind == FD_PIPE_W) && proc->fds[fd].pipe_id >= 0) {
             int pipe_id = proc->fds[fd].pipe_id;
@@ -1795,6 +1907,19 @@ static void release_process_fds(struct process* proc) {
                 socket_ids[socket_count++] = socket_id;
             }
         }
+        if (proc->fds[fd].kind == FD_INET && proc->fds[fd].socket_id >= 0) {
+            int socket_id = proc->fds[fd].socket_id;
+            bool seen = false;
+            for (size_t i = 0; i < inet_socket_count; ++i) {
+                if (inet_socket_ids[i] == socket_id) {
+                    seen = true;
+                    break;
+                }
+            }
+            if (!seen && inet_socket_count < ARRAY_LEN(inet_socket_ids)) {
+                inet_socket_ids[inet_socket_count++] = socket_id;
+            }
+        }
         memset(&proc->fds[fd], 0, sizeof(proc->fds[fd]));
         proc->fds[fd].pipe_id = -1;
         proc->fds[fd].socket_id = -1;
@@ -1808,6 +1933,9 @@ static void release_process_fds(struct process* proc) {
     }
     for (size_t i = 0; i < socket_count; ++i) {
         unix_socket_cleanup_if_unreferenced(socket_ids[i]);
+    }
+    for (size_t i = 0; i < inet_socket_count; ++i) {
+        inet_socket_cleanup_if_unreferenced(inet_socket_ids[i]);
     }
 }
 
@@ -2618,6 +2746,9 @@ static int sys_close(int fd) {
     if (kind == FD_UNIX) {
         unix_socket_cleanup_if_unreferenced(socket_id);
     }
+    if (kind == FD_INET) {
+        inet_socket_cleanup_if_unreferenced(socket_id);
+    }
     sync_current_process_runtime();
     return 0;
 }
@@ -2962,6 +3093,10 @@ static int sys_read(int fd, void* buf, size_t count, struct syscall_frame* frame
         return unix_stream_recv_fd(fd, buf, count, frame);
     }
 
+    if (g_fds[fd].kind == FD_INET) {
+        return sys_recvfrom(fd, buf, count, 0, NULL, NULL, frame);
+    }
+
     if (g_fds[fd].kind == FD_DIR) {
         return err(EISDIR);
     }
@@ -3051,6 +3186,10 @@ static int sys_write(int fd, const void* buf, size_t count, struct syscall_frame
         return unix_stream_send_fd(fd, buf, count, frame);
     }
 
+    if (g_fds[fd].kind == FD_INET) {
+        return sys_sendto(fd, buf, count, 0, NULL, 0, frame);
+    }
+
     if (g_fds[fd].kind == FD_FB) {
         struct console_framebuffer_info fb;
         if (!get_fb_info(&fb)) {
@@ -3136,7 +3275,7 @@ static int64_t sys_lseek(int fd, int64_t offset, int whence) {
     }
 
     if (g_fds[fd].kind == FD_TTY || g_fds[fd].kind == FD_NULL || g_fds[fd].kind == FD_PIPE_R || g_fds[fd].kind == FD_PIPE_W ||
-        g_fds[fd].kind == FD_UNIX) {
+        g_fds[fd].kind == FD_UNIX || g_fds[fd].kind == FD_INET) {
         return err(ESPIPE);
     }
 
@@ -3176,7 +3315,7 @@ static int sys_pread64(int fd, void* buf, size_t count, int64_t offset) {
         return err(EINVAL);
     }
     if (g_fds[fd].kind == FD_TTY || g_fds[fd].kind == FD_NULL || g_fds[fd].kind == FD_PIPE_R || g_fds[fd].kind == FD_PIPE_W ||
-        g_fds[fd].kind == FD_UNIX) {
+        g_fds[fd].kind == FD_UNIX || g_fds[fd].kind == FD_INET) {
         return err(ESPIPE);
     }
     if (g_fds[fd].kind == FD_DIR) {
@@ -3220,7 +3359,7 @@ static int sys_pwrite64(int fd, const void* buf, size_t count, int64_t offset) {
         return err(EINVAL);
     }
     if (g_fds[fd].kind == FD_TTY || g_fds[fd].kind == FD_NULL || g_fds[fd].kind == FD_PIPE_R || g_fds[fd].kind == FD_PIPE_W ||
-        g_fds[fd].kind == FD_UNIX) {
+        g_fds[fd].kind == FD_UNIX || g_fds[fd].kind == FD_INET) {
         return err(ESPIPE);
     }
     if (g_fds[fd].kind == FD_DIR) {
@@ -3493,6 +3632,29 @@ static int sys_ioctl(int fd, uint64_t req, void* argp) {
         return 0;
     }
 
+    if (g_fds[fd].kind == FD_INET) {
+        if (req != FIONREAD) {
+            return err(ENOTTY);
+        }
+        if (argp == NULL) {
+            return err(EFAULT);
+        }
+        net_poll();
+        int socket_id = g_fds[fd].socket_id;
+        if (socket_id < 0 || socket_id >= MAX_INET_SOCKETS || !g_inet_sockets[socket_id].used) {
+            return err(ENOTSOCK);
+        }
+        struct inet_socket_state* sock = &g_inet_sockets[socket_id];
+        if (sock->type == SOCK_DGRAM) {
+            *(int*)(uintptr_t)argp = sock->bound ? (int)net_udp_pending(sock->local_port) : 0;
+        } else if (sock->type == SOCK_RAW) {
+            *(int*)(uintptr_t)argp = (int)net_icmp_pending(sock->raw_id);
+        } else {
+            *(int*)(uintptr_t)argp = sock->tcp_opened ? (int)net_tcp_pending(sock->local_port) : 0;
+        }
+        return 0;
+    }
+
     if (g_fds[fd].kind != FD_TTY) {
         return err(ENOTTY);
     }
@@ -3696,7 +3858,146 @@ static int parse_unix_socket_type(int type, int* socktype_out, uint32_t* fd_open
     return 0;
 }
 
+static uint16_t sys_ntohs(uint16_t value) {
+    return (uint16_t)((value << 8) | (value >> 8));
+}
+
+static uint16_t sys_htons(uint16_t value) {
+    return sys_ntohs(value);
+}
+
+static uint32_t sys_ntohl(uint32_t value) {
+    return ((value & 0x000000FFu) << 24) | ((value & 0x0000FF00u) << 8) | ((value & 0x00FF0000u) >> 8) |
+           ((value & 0xFF000000u) >> 24);
+}
+
+static uint32_t sys_htonl(uint32_t value) {
+    return sys_ntohl(value);
+}
+
+static int parse_inet_socket_type(int type, int protocol, int* socktype_out, uint32_t* fd_open_flags_out, uint32_t* fd_flags_out) {
+    if ((type & ~(SOCK_TYPE_MASK | SOCK_NONBLOCK | SOCK_CLOEXEC)) != 0) {
+        return err(EINVAL);
+    }
+    int socktype = type & SOCK_TYPE_MASK;
+    if (socktype == SOCK_DGRAM) {
+        if (protocol != 0 && protocol != IPPROTO_IP && protocol != IPPROTO_UDP) {
+            return err(EPROTOTYPE);
+        }
+    } else if (socktype == SOCK_STREAM) {
+        if (protocol != 0 && protocol != IPPROTO_IP && protocol != IPPROTO_TCP) {
+            return err(EPROTOTYPE);
+        }
+    } else if (socktype == SOCK_RAW) {
+        if (protocol != IPPROTO_ICMP) {
+            return err(EPROTOTYPE);
+        }
+    } else {
+        return err(EPROTOTYPE);
+    }
+    *socktype_out = socktype;
+    *fd_open_flags_out = O_RDWR | ((type & SOCK_NONBLOCK) != 0 ? O_NONBLOCK : 0u);
+    *fd_flags_out = ((type & SOCK_CLOEXEC) != 0) ? FD_CLOEXEC : 0u;
+    return 0;
+}
+
+static int read_sockaddr_in(const void* addr, uint32_t addrlen, uint32_t* ip_out, uint16_t* port_out) {
+    if (addr == NULL || addrlen < sizeof(struct linux_sockaddr_in)) {
+        return err(EINVAL);
+    }
+    const struct linux_sockaddr_in* in = (const struct linux_sockaddr_in*)addr;
+    if (in->sin_family != AF_INET) {
+        return err(EAFNOSUPPORT);
+    }
+    if (ip_out != NULL) {
+        *ip_out = sys_ntohl(in->sin_addr);
+    }
+    if (port_out != NULL) {
+        *port_out = sys_ntohs(in->sin_port);
+    }
+    return 0;
+}
+
+static int write_sockaddr_in(uint32_t ip, uint16_t port, void* addr, uint32_t* addrlen) {
+    if (addr == NULL || addrlen == NULL) {
+        return err(EFAULT);
+    }
+    uint32_t original_len = *addrlen;
+    *addrlen = sizeof(struct linux_sockaddr_in);
+    if (original_len < sizeof(struct linux_sockaddr_in)) {
+        return 0;
+    }
+    struct linux_sockaddr_in out;
+    memset(&out, 0, sizeof(out));
+    out.sin_family = AF_INET;
+    out.sin_port = sys_htons(port);
+    out.sin_addr = sys_htonl(ip);
+    memcpy(addr, &out, sizeof(out));
+    return 0;
+}
+
+static int inet_ensure_bound(struct inet_socket_state* sock) {
+    if (sock == NULL) {
+        return err(ENOTSOCK);
+    }
+    if (sock->bound) {
+        return 0;
+    }
+    uint16_t port = net_ephemeral_port();
+    if (sock->type == SOCK_DGRAM) {
+        int r = net_udp_bind(port);
+        if (r < 0) {
+            return err(EADDRINUSE);
+        }
+        port = (uint16_t)r;
+    }
+    const struct net_ipv4_config* cfg = net_config();
+    sock->local_ip = cfg->address;
+    sock->local_port = port;
+    sock->bound = true;
+    return 0;
+}
+
 static int sys_socket(int domain, int type, int protocol) {
+    if (domain == AF_INET) {
+        int socktype = 0;
+        uint32_t fd_open_flags = 0;
+        uint32_t fd_flags = 0;
+        int pr = parse_inet_socket_type(type, protocol, &socktype, &fd_open_flags, &fd_flags);
+        if (pr != 0) {
+            return pr;
+        }
+        int fd = alloc_fd();
+        if (fd < 0) {
+            return fd;
+        }
+        int socket_id = alloc_inet_socket_slot();
+        if (socket_id < 0) {
+            return socket_id;
+        }
+        g_inet_sockets[socket_id].type = socktype;
+        g_inet_sockets[socket_id].protocol = protocol;
+        g_inet_sockets[socket_id].raw_id = -1;
+        if (socktype == SOCK_RAW) {
+            int raw_id = net_icmp_open();
+            if (raw_id < 0) {
+                memset(&g_inet_sockets[socket_id], 0, sizeof(g_inet_sockets[socket_id]));
+                return err(ENOMEM);
+            }
+            g_inet_sockets[socket_id].raw_id = raw_id;
+        }
+        g_fds[fd].kind = FD_INET;
+        g_fds[fd].flags = fd_open_flags;
+        g_fds[fd].fd_flags = fd_flags;
+        g_fds[fd].offset = 0;
+        g_fds[fd].pipe_id = -1;
+        g_fds[fd].socket_id = socket_id;
+        memset(&g_fds[fd].entry, 0, sizeof(g_fds[fd].entry));
+        strcpy(g_fds[fd].path, "socket:[inet]");
+        sync_current_process_runtime();
+        return fd;
+    }
+
     if (domain != AF_UNIX && domain != AF_LOCAL) {
         return err(EAFNOSUPPORT);
     }
@@ -3839,6 +4140,36 @@ static int sys_bind(int fd, const void* addr, uint32_t addrlen) {
     if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
         return err(EBADF);
     }
+    if (g_fds[fd].kind == FD_INET) {
+        int socket_id = g_fds[fd].socket_id;
+        if (socket_id < 0 || socket_id >= MAX_INET_SOCKETS || !g_inet_sockets[socket_id].used) {
+            return err(ENOTSOCK);
+        }
+        struct inet_socket_state* sock = &g_inet_sockets[socket_id];
+        if (sock->bound) {
+            return err(EINVAL);
+        }
+        uint32_t ip = 0;
+        uint16_t port = 0;
+        int rr = read_sockaddr_in(addr, addrlen, &ip, &port);
+        if (rr != 0) {
+            return rr;
+        }
+        if (sock->type == SOCK_DGRAM) {
+            int br = net_udp_bind(port);
+            if (br < 0) {
+                return err(EADDRINUSE);
+            }
+            port = (uint16_t)br;
+        } else if (port == 0u) {
+            port = net_ephemeral_port();
+        }
+        const struct net_ipv4_config* cfg = net_config();
+        sock->local_ip = ip != 0u ? ip : cfg->address;
+        sock->local_port = port;
+        sock->bound = true;
+        return 0;
+    }
     if (g_fds[fd].kind != FD_UNIX) {
         return err(ENOTSOCK);
     }
@@ -3922,6 +4253,51 @@ static int sys_listen(int fd, int backlog) {
 static int sys_connect(int fd, const void* addr, uint32_t addrlen) {
     if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
         return err(EBADF);
+    }
+    if (g_fds[fd].kind == FD_INET) {
+        int socket_id = g_fds[fd].socket_id;
+        if (socket_id < 0 || socket_id >= MAX_INET_SOCKETS || !g_inet_sockets[socket_id].used) {
+            return err(ENOTSOCK);
+        }
+        struct inet_socket_state* sock = &g_inet_sockets[socket_id];
+        uint32_t ip = 0;
+        uint16_t port = 0;
+        int rr = read_sockaddr_in(addr, addrlen, &ip, &port);
+        if (rr != 0) {
+            return rr;
+        }
+        if (port == 0u || ip == 0u) {
+            return err(EADDRNOTAVAIL);
+        }
+        int br = inet_ensure_bound(sock);
+        if (br != 0) {
+            return br;
+        }
+        sock->remote_ip = ip;
+        sock->remote_port = port;
+        sock->connected = true;
+        if (sock->type == SOCK_DGRAM || sock->type == SOCK_RAW) {
+            return 0;
+        }
+        int opened = net_tcp_open(sock->local_port, ip, port);
+        if (opened < 0) {
+            return err(ECONNREFUSED);
+        }
+        sock->local_port = (uint16_t)opened;
+        sock->tcp_opened = true;
+        for (;;) {
+            net_poll();
+            if (net_tcp_connected(sock->local_port)) {
+                return 0;
+            }
+            if (net_tcp_closed(sock->local_port)) {
+                return err(ECONNREFUSED);
+            }
+            if (fd_is_nonblocking(fd)) {
+                return err(EINPROGRESS);
+            }
+            __asm__ volatile("pause" : : : "memory");
+        }
     }
     if (g_fds[fd].kind != FD_UNIX) {
         return err(ENOTSOCK);
@@ -4029,6 +4405,15 @@ static int sys_getsockname(int fd, void* addr, uint32_t* addrlen) {
     if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
         return err(EBADF);
     }
+    if (g_fds[fd].kind == FD_INET) {
+        int socket_id = g_fds[fd].socket_id;
+        if (socket_id < 0 || socket_id >= MAX_INET_SOCKETS || !g_inet_sockets[socket_id].used) {
+            return err(ENOTSOCK);
+        }
+        struct inet_socket_state* sock = &g_inet_sockets[socket_id];
+        const struct net_ipv4_config* cfg = net_config();
+        return write_sockaddr_in(sock->local_ip != 0u ? sock->local_ip : cfg->address, sock->local_port, addr, addrlen);
+    }
     if (g_fds[fd].kind != FD_UNIX) {
         return err(ENOTSOCK);
     }
@@ -4056,6 +4441,17 @@ static int sys_getpeername(int fd, void* addr, uint32_t* addrlen) {
     if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
         return err(EBADF);
     }
+    if (g_fds[fd].kind == FD_INET) {
+        int socket_id = g_fds[fd].socket_id;
+        if (socket_id < 0 || socket_id >= MAX_INET_SOCKETS || !g_inet_sockets[socket_id].used) {
+            return err(ENOTSOCK);
+        }
+        struct inet_socket_state* sock = &g_inet_sockets[socket_id];
+        if (!sock->connected) {
+            return err(ENOTCONN);
+        }
+        return write_sockaddr_in(sock->remote_ip, sock->remote_port, addr, addrlen);
+    }
     if (g_fds[fd].kind != FD_UNIX) {
         return err(ENOTSOCK);
     }
@@ -4081,6 +4477,19 @@ static int sys_getpeername(int fd, void* addr, uint32_t* addrlen) {
 static int sys_shutdown(int fd, int how) {
     if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
         return err(EBADF);
+    }
+    if (g_fds[fd].kind == FD_INET) {
+        if (how < 0 || how > 2) {
+            return err(EINVAL);
+        }
+        int socket_id = g_fds[fd].socket_id;
+        if (socket_id < 0 || socket_id >= MAX_INET_SOCKETS || !g_inet_sockets[socket_id].used) {
+            return err(ENOTSOCK);
+        }
+        if (g_inet_sockets[socket_id].tcp_opened && (how == 1 || how == 2)) {
+            net_tcp_close(g_inet_sockets[socket_id].local_port);
+        }
+        return 0;
     }
     if (g_fds[fd].kind != FD_UNIX) {
         return err(ENOTSOCK);
@@ -4112,12 +4521,60 @@ static int sys_shutdown(int fd, int how) {
     return 0;
 }
 
+static bool socket_flags_supported(int flags) {
+    return (flags & ~(MSG_DONTWAIT | MSG_NOSIGNAL)) == 0;
+}
+
 static int sys_sendto(int fd, const void* buf, size_t count, int flags, const void* addr, uint32_t addrlen, struct syscall_frame* frame) {
-    if (flags != 0) {
+    if (!socket_flags_supported(flags)) {
         return err(EOPNOTSUPP);
     }
     if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
         return err(EBADF);
+    }
+    if (g_fds[fd].kind == FD_INET) {
+        (void)frame;
+        int socket_id = g_fds[fd].socket_id;
+        if (socket_id < 0 || socket_id >= MAX_INET_SOCKETS || !g_inet_sockets[socket_id].used) {
+            return err(ENOTSOCK);
+        }
+        struct inet_socket_state* sock = &g_inet_sockets[socket_id];
+        int br = inet_ensure_bound(sock);
+        if (br != 0) {
+            return br;
+        }
+        if (sock->type == SOCK_DGRAM) {
+            uint32_t ip = sock->remote_ip;
+            uint16_t port = sock->remote_port;
+            if (addr != NULL && addrlen != 0u) {
+                int rr = read_sockaddr_in(addr, addrlen, &ip, &port);
+                if (rr != 0) {
+                    return rr;
+                }
+            } else if (!sock->connected) {
+                return err(EDESTADDRREQ);
+            }
+            int sr = net_udp_send(sock->local_port, ip, port, buf, count);
+            return sr < 0 ? err(EIO) : sr;
+        }
+        if (sock->type == SOCK_RAW) {
+            uint32_t ip = sock->remote_ip;
+            if (addr != NULL && addrlen != 0u) {
+                int rr = read_sockaddr_in(addr, addrlen, &ip, NULL);
+                if (rr != 0) {
+                    return rr;
+                }
+            } else if (!sock->connected) {
+                return err(EDESTADDRREQ);
+            }
+            int sr = net_icmp_send(ip, buf, count);
+            return sr < 0 ? err(EIO) : sr;
+        }
+        if (!sock->tcp_opened || !net_tcp_connected(sock->local_port)) {
+            return err(ENOTCONN);
+        }
+        int sr = net_tcp_send(sock->local_port, buf, count);
+        return sr < 0 ? err(EIO) : sr;
     }
     if (g_fds[fd].kind != FD_UNIX) {
         return err(ENOTSOCK);
@@ -4129,11 +4586,72 @@ static int sys_sendto(int fd, const void* buf, size_t count, int flags, const vo
 }
 
 static int sys_recvfrom(int fd, void* buf, size_t count, int flags, void* addr, uint32_t* addrlen, struct syscall_frame* frame) {
-    if (flags != 0) {
+    if (!socket_flags_supported(flags)) {
         return err(EOPNOTSUPP);
     }
     if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
         return err(EBADF);
+    }
+    if (g_fds[fd].kind == FD_INET) {
+        (void)frame;
+        int socket_id = g_fds[fd].socket_id;
+        if (socket_id < 0 || socket_id >= MAX_INET_SOCKETS || !g_inet_sockets[socket_id].used) {
+            return err(ENOTSOCK);
+        }
+        struct inet_socket_state* sock = &g_inet_sockets[socket_id];
+        int br = inet_ensure_bound(sock);
+        if (br != 0) {
+            return br;
+        }
+        if (sock->type == SOCK_DGRAM) {
+            uint32_t src_ip = 0;
+            uint16_t src_port = 0;
+            for (;;) {
+                net_poll();
+                int rr = net_udp_recv(sock->local_port, buf, count, &src_ip, &src_port);
+                if (rr >= 0) {
+                    if (addr != NULL) {
+                        (void)write_sockaddr_in(src_ip, src_port, addr, addrlen);
+                    }
+                    return rr;
+                }
+                if (fd_is_nonblocking(fd) || (flags & MSG_DONTWAIT) != 0) {
+                    return err(EAGAIN);
+                }
+                __asm__ volatile("pause" : : : "memory");
+            }
+        }
+        if (sock->type == SOCK_RAW) {
+            uint32_t src_ip = 0;
+            for (;;) {
+                net_poll();
+                int rr = net_icmp_recv(sock->raw_id, buf, count, &src_ip);
+                if (rr >= 0) {
+                    if (addr != NULL) {
+                        (void)write_sockaddr_in(src_ip, 0, addr, addrlen);
+                    }
+                    return rr;
+                }
+                if (fd_is_nonblocking(fd) || (flags & MSG_DONTWAIT) != 0) {
+                    return err(EAGAIN);
+                }
+                __asm__ volatile("pause" : : : "memory");
+            }
+        }
+        if (!sock->tcp_opened) {
+            return err(ENOTCONN);
+        }
+        for (;;) {
+            net_poll();
+            int rr = net_tcp_recv(sock->local_port, buf, count);
+            if (rr >= 0) {
+                return rr;
+            }
+            if (fd_is_nonblocking(fd) || (flags & MSG_DONTWAIT) != 0) {
+                return err(EAGAIN);
+            }
+            __asm__ volatile("pause" : : : "memory");
+        }
     }
     if (g_fds[fd].kind != FD_UNIX) {
         return err(ENOTSOCK);
@@ -4147,6 +4665,128 @@ static int sys_recvfrom(int fd, void* buf, size_t count, int flags, void* addr, 
         return r;
     }
     return sys_getpeername(fd, addr, addrlen) == 0 ? r : r;
+}
+
+static int sys_sendmsg(int fd, const struct linux_msghdr* msg, int flags, struct syscall_frame* frame) {
+    if (msg == NULL) {
+        return err(EFAULT);
+    }
+    if (msg->msg_iovlen > 1024u) {
+        return err(EINVAL);
+    }
+
+    if (fd >= 0 && fd < MAX_FDS && g_fds[fd].kind == FD_INET) {
+        uint8_t packet[4096];
+        size_t total_len = 0;
+        for (uint64_t i = 0; i < msg->msg_iovlen; ++i) {
+            size_t len = (size_t)msg->msg_iov[i].len;
+            if (len > sizeof(packet) - total_len) {
+                return err(EINVAL);
+            }
+            memcpy(packet + total_len, (const void*)(uintptr_t)msg->msg_iov[i].base, len);
+            total_len += len;
+        }
+        return sys_sendto(fd, packet, total_len, flags, msg->msg_name, msg->msg_namelen, frame);
+    }
+
+    int total = 0;
+    for (uint64_t i = 0; i < msg->msg_iovlen; ++i) {
+        const void* base = (const void*)(uintptr_t)msg->msg_iov[i].base;
+        size_t len = (size_t)msg->msg_iov[i].len;
+        int n = sys_sendto(fd, base, len, flags, msg->msg_name, msg->msg_namelen, frame);
+        if (n < 0) {
+            return total > 0 ? total : n;
+        }
+        total += n;
+        if ((size_t)n != len) {
+            break;
+        }
+    }
+    return total;
+}
+
+static int sys_recvmsg(int fd, struct linux_msghdr* msg, int flags, struct syscall_frame* frame) {
+    if (msg == NULL) {
+        return err(EFAULT);
+    }
+    if (msg->msg_iovlen > 1024u) {
+        return err(EINVAL);
+    }
+
+    uint32_t addrlen = msg->msg_namelen;
+    if (fd >= 0 && fd < MAX_FDS && g_fds[fd].kind == FD_INET) {
+        uint8_t packet[4096];
+        int n = sys_recvfrom(fd, packet, sizeof(packet), flags, msg->msg_name, msg->msg_name != NULL ? &addrlen : NULL, frame);
+        if (n < 0) {
+            return n;
+        }
+
+        size_t copied = 0;
+        size_t packet_len = (size_t)n;
+        for (uint64_t i = 0; i < msg->msg_iovlen && copied < packet_len; ++i) {
+            size_t len = (size_t)msg->msg_iov[i].len;
+            if (len > packet_len - copied) {
+                len = packet_len - copied;
+            }
+            memcpy((void*)(uintptr_t)msg->msg_iov[i].base, packet + copied, len);
+            copied += len;
+        }
+        msg->msg_namelen = addrlen;
+        msg->msg_controllen = 0;
+        msg->msg_flags = copied < packet_len ? 0x20u : 0u;  // MSG_TRUNC
+        return (int)copied;
+    }
+
+    int total = 0;
+    for (uint64_t i = 0; i < msg->msg_iovlen; ++i) {
+        void* base = (void*)(uintptr_t)msg->msg_iov[i].base;
+        size_t len = (size_t)msg->msg_iov[i].len;
+        int n = sys_recvfrom(fd, base, len, flags, msg->msg_name, msg->msg_name != NULL ? &addrlen : NULL, frame);
+        if (n < 0) {
+            return total > 0 ? total : n;
+        }
+        total += n;
+        if ((size_t)n != len) {
+            break;
+        }
+    }
+    msg->msg_namelen = addrlen;
+    msg->msg_controllen = 0;
+    msg->msg_flags = 0;
+    return total;
+}
+
+static int sys_setsockopt(int fd, int level, int optname, const void* optval, uint32_t optlen) {
+    (void)level;
+    (void)optname;
+    (void)optval;
+    (void)optlen;
+    if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
+        return err(EBADF);
+    }
+    if (g_fds[fd].kind != FD_UNIX && g_fds[fd].kind != FD_INET) {
+        return err(ENOTSOCK);
+    }
+    return 0;
+}
+
+static int sys_getsockopt(int fd, int level, int optname, void* optval, uint32_t* optlen) {
+    (void)level;
+    (void)optname;
+    if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
+        return err(EBADF);
+    }
+    if (g_fds[fd].kind != FD_UNIX && g_fds[fd].kind != FD_INET) {
+        return err(ENOTSOCK);
+    }
+    if (optval == NULL || optlen == NULL) {
+        return err(EFAULT);
+    }
+    if (*optlen >= sizeof(int)) {
+        *(int*)optval = 0;
+        *optlen = sizeof(int);
+    }
+    return 0;
 }
 
 static int sys_getcwd(char* buf, size_t size) {
@@ -4285,6 +4925,44 @@ static uint16_t poll_revents_for_fd(const struct linux_pollfd* pfd) {
                 revents |= POLLERR;
             } else if ((events & POLLOUT) != 0u && conn->inbound[peer].size < UNIX_SOCKET_BUFFER_CAPACITY) {
                 revents |= POLLOUT;
+            }
+            break;
+        }
+
+        case FD_INET:
+        {
+            net_poll();
+            int socket_id = g_fds[fd].socket_id;
+            if (socket_id < 0 || socket_id >= MAX_INET_SOCKETS || !g_inet_sockets[socket_id].used) {
+                revents |= POLLNVAL;
+                break;
+            }
+            struct inet_socket_state* sock = &g_inet_sockets[socket_id];
+            if (sock->type == SOCK_DGRAM) {
+                if ((events & (POLLIN | POLLPRI)) != 0u && sock->bound && net_udp_pending(sock->local_port) > 0u) {
+                    revents |= POLLIN;
+                }
+                if ((events & POLLOUT) != 0u) {
+                    revents |= POLLOUT;
+                }
+            } else if (sock->type == SOCK_RAW) {
+                if ((events & (POLLIN | POLLPRI)) != 0u && net_icmp_pending(sock->raw_id) > 0u) {
+                    revents |= POLLIN;
+                }
+                if ((events & POLLOUT) != 0u) {
+                    revents |= POLLOUT;
+                }
+            } else {
+                if ((events & (POLLIN | POLLPRI)) != 0u && sock->tcp_opened &&
+                    (net_tcp_pending(sock->local_port) > 0u || net_tcp_closed(sock->local_port))) {
+                    revents |= POLLIN;
+                }
+                if ((events & POLLOUT) != 0u && sock->tcp_opened && net_tcp_connected(sock->local_port)) {
+                    revents |= POLLOUT;
+                }
+                if (sock->tcp_opened && net_tcp_closed(sock->local_port)) {
+                    revents |= POLLHUP;
+                }
             }
             break;
         }
@@ -5277,7 +5955,7 @@ static int fd_mode_size(int fd, uint32_t* mode_out, size_t* size_out) {
         size = fb.size;
     } else if (g_fds[fd].kind == FD_DIR) {
         mode = S_IFDIR | 0755u;
-    } else if (g_fds[fd].kind == FD_UNIX) {
+    } else if (g_fds[fd].kind == FD_UNIX || g_fds[fd].kind == FD_INET) {
         mode = S_IFSOCK | 0777u;
     } else if (g_fds[fd].kind == FD_PIPE_R || g_fds[fd].kind == FD_PIPE_W) {
         mode = S_IFIFO | 0600u;
@@ -7360,6 +8038,10 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
         case 45:
             return (uint64_t)sys_recvfrom((int)a0, (void*)(uintptr_t)a1, (size_t)a2, (int)a3, (void*)(uintptr_t)a4,
                                           (uint32_t*)(uintptr_t)a5, frame);
+        case 46:
+            return (uint64_t)sys_sendmsg((int)a0, (const struct linux_msghdr*)(uintptr_t)a1, (int)a2, frame);
+        case 47:
+            return (uint64_t)sys_recvmsg((int)a0, (struct linux_msghdr*)(uintptr_t)a1, (int)a2, frame);
         case 48:
             return (uint64_t)sys_shutdown((int)a0, (int)a1);
         case 49:
@@ -7372,6 +8054,10 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
             return (uint64_t)sys_getpeername((int)a0, (void*)(uintptr_t)a1, (uint32_t*)(uintptr_t)a2);
         case 53:
             return (uint64_t)sys_socketpair((int)a0, (int)a1, (int)a2, (int*)(uintptr_t)a3);
+        case 54:
+            return (uint64_t)sys_setsockopt((int)a0, (int)a1, (int)a2, (const void*)(uintptr_t)a3, (uint32_t)a4);
+        case 55:
+            return (uint64_t)sys_getsockopt((int)a0, (int)a1, (int)a2, (void*)(uintptr_t)a3, (uint32_t*)(uintptr_t)a4);
         case 56:
             return (uint64_t)sys_fork_like(frame, a0, a1, a3, a4, true);
         case 57:
