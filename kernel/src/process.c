@@ -145,6 +145,13 @@ void process_queue_signal(struct process* proc, int sig) {
     proc->pending_signals[proc->pending_count++] = sig;
 }
 
+static uint64_t signal_mask_bit(int sig) {
+    if (sig < 1 || sig >= MAX_SIGNALS) {
+        return 0;
+    }
+    return 1ull << (sig - 1);
+}
+
 bool process_has_pending_signal(struct process* proc) {
     if (proc == NULL || proc->pending_count == 0) {
         return false;
@@ -154,7 +161,7 @@ bool process_has_pending_signal(struct process* proc) {
         int sig = proc->pending_signals[i];
         if (sig >= 1 && sig < MAX_SIGNALS) {
             struct sigaction_data* sa = &proc->sig_actions[sig];
-            if (sa->handler != SIGNAL_HANDLER_IGN) {
+            if ((proc->sig_mask & signal_mask_bit(sig)) == 0u && sa->handler != SIGNAL_HANDLER_IGN) {
                 return true;
             }
         }
@@ -167,19 +174,20 @@ int process_take_pending_signal(struct process* proc) {
         return 0;
     }
 
-    while (proc->pending_count > 0) {
-        int sig = proc->pending_signals[0];
-        for (int i = 1; i < proc->pending_count; ++i) {
-            proc->pending_signals[i - 1] = proc->pending_signals[i];
+    for (int i = 0; i < proc->pending_count; ++i) {
+        int sig = proc->pending_signals[i];
+        if (sig < 1 || sig >= MAX_SIGNALS) {
+            continue;
         }
-        proc->pending_count--;
-
-        if (sig >= 1 && sig < MAX_SIGNALS) {
-            struct sigaction_data* sa = &proc->sig_actions[sig];
-            if (sa->handler != SIGNAL_HANDLER_IGN) {
-                return sig;
-            }
+        struct sigaction_data* sa = &proc->sig_actions[sig];
+        if ((proc->sig_mask & signal_mask_bit(sig)) != 0u || sa->handler == SIGNAL_HANDLER_IGN) {
+            continue;
         }
+        for (int j = i + 1; j < proc->pending_count; ++j) {
+            proc->pending_signals[j - 1] = proc->pending_signals[j];
+        }
+        proc->pending_signals[--proc->pending_count] = 0;
+        return sig;
     }
     return 0;
 }

@@ -77,10 +77,6 @@ static int normalize_input_char(int c) {
 }
 
 int input_poll_char(void) {
-    if (keyboard_peek_signal() != KEYBOARD_COMBO_SIGNAL_NONE) {
-        return -1;
-    }
-
     int response = dequeue_response_char();
     if (response >= 0) {
         return response;
@@ -102,10 +98,6 @@ int input_poll_char(void) {
 
 int input_read_char_blocking(void) {
     for (;;) {
-        if (keyboard_peek_signal() != KEYBOARD_COMBO_SIGNAL_NONE) {
-            return -1;
-        }
-
         int c = input_poll_char();
         if (c >= 0) {
             return c;

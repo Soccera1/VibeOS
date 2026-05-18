@@ -224,7 +224,8 @@ run: disk $(USR_EXT3) $(HOME_EXT3)
 		-device scsi-hd,drive=home,bus=scsi0.0,scsi-id=1,lun=0 \
 		-netdev user,id=net0 \
 		-device virtio-net-pci-transitional,netdev=net0 \
-		-serial stdio
+		-chardev stdio,id=serial0,signal=off \
+		-serial chardev:serial0
 
 docs: $(DOCS_SRC) | $(DOCS_OUT)
 	rm -rf $(DOCS_HTML_SPLIT) $(DOCS_PDF_BUILD)

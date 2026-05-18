@@ -97,6 +97,8 @@
 #define TIOCSPGRP 0x5410u
 #define TIOCGWINSZ 0x5413u
 #define FIONREAD 0x541Bu
+#define TIOCSETD 0x5423u
+#define TIOCGETD 0x5424u
 #define FBIOGET_VSCREENINFO 0x4600u
 #define FBIOPUT_VSCREENINFO 0x4601u
 #define FBIOGET_FSCREENINFO 0x4602u
@@ -108,6 +110,8 @@
 #define FB_TYPE_PACKED_PIXELS 0u
 #define FB_VISUAL_TRUECOLOR 2u
 #define FB_ACCEL_NONE 0u
+
+#define N_TTY 0
 
 #define POLLIN 0x0001
 #define POLLPRI 0x0002
@@ -756,6 +760,8 @@ static bool process_block_ready(const struct process* proc);
 static uint64_t schedule_away(struct syscall_frame* frame);
 static int signal_process_group(int pgid, int sig);
 static int signal_process(struct process* proc, int sig);
+static int tty_signal_for_char(int c);
+static int tty_normalize_char(int c);
 static void queue_signal_for_process(struct process* proc, int sig);
 static void terminate_process(struct process* proc, int exit_code, int wait_status);
 static int map_exec_segment(struct vm_space* space, uint64_t vaddr, size_t memsz, const void* src, size_t filesz, uint32_t prot);
@@ -823,16 +829,28 @@ static bool tty_is_foreground_group(void) {
 
 static void service_keyboard_signal_for_tty(void) {
     int signal = input_peek_signal();
-    if (signal == 0) {
-        return;
-    }
-
-    if (tty_is_foreground_group()) {
+    if (signal != 0) {
         queue_keyboard_signal(input_poll_signal());
         return;
     }
 
-    (void)input_poll_signal();
+    if (!input_char_ready()) {
+        return;
+    }
+
+    int c = input_poll_char();
+    if (c < 0) {
+        return;
+    }
+
+    c = tty_normalize_char(c);
+    int tty_sig = tty_signal_for_char(c);
+    if (tty_sig != 0) {
+        queue_keyboard_signal(tty_sig);
+        return;
+    }
+
+    input_enqueue_response_char((char)c);
 }
 
 static bool fd_is_nonblocking(int fd) {
@@ -912,6 +930,17 @@ static int handle_pending_keyboard_signal(struct syscall_frame* frame) {
     }
 
     return err(EINTR);
+}
+
+static bool deliver_pending_keyboard_signal_to_foreground(void) {
+    service_keyboard_signal_for_tty();
+    if (g_pending_keyboard_signal == 0) {
+        return false;
+    }
+
+    int sig = take_keyboard_signal();
+    (void)signal_process_group(g_terminal_fg_pgrp, sig);
+    return true;
 }
 
 static int tty_signal_for_char(int c) {
@@ -1070,22 +1099,37 @@ static bool current_real_timer_expired(void) {
     return true;
 }
 
+static uint64_t signal_mask_bit(int sig) {
+    if (sig < 1 || sig >= (int)NSIG) {
+        return 0;
+    }
+    return 1ull << (sig - 1);
+}
+
 static bool current_has_pending_signal(void) {
     current_real_timer_expired();
-    return g_pending_signal_count > 0;
+    for (int i = 0; i < g_pending_signal_count; ++i) {
+        int sig = g_pending_signals[i];
+        if (sig >= 1 && sig < (int)NSIG && (g_sig_mask & signal_mask_bit(sig)) == 0u &&
+            g_sig_actions[sig].handler != SIGNAL_HANDLER_IGN) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static int take_current_pending_signal(void) {
-    while (g_pending_signal_count > 0) {
-        int sig = g_pending_signals[0];
-        for (int i = 1; i < g_pending_signal_count; ++i) {
-            g_pending_signals[i - 1] = g_pending_signals[i];
+    for (int i = 0; i < g_pending_signal_count; ++i) {
+        int sig = g_pending_signals[i];
+        if (sig < 1 || sig >= (int)NSIG || (g_sig_mask & signal_mask_bit(sig)) != 0u ||
+            g_sig_actions[sig].handler == SIGNAL_HANDLER_IGN) {
+            continue;
+        }
+        for (int j = i + 1; j < g_pending_signal_count; ++j) {
+            g_pending_signals[j - 1] = g_pending_signals[j];
         }
         g_pending_signals[--g_pending_signal_count] = 0;
-        if (sig >= 1 && sig < (int)NSIG && (g_sig_mask & (1ull << sig)) == 0u &&
-            g_sig_actions[sig].handler != SIGNAL_HANDLER_IGN) {
-            return sig;
-        }
+        return sig;
     }
     return 0;
 }
@@ -1128,7 +1172,7 @@ static bool deliver_current_signal(struct syscall_frame* frame, int64_t syscall_
     sigframe->iret[4] = raw[IRET_SLOT_SS];
     sigframe->sig_mask = g_sig_mask;
 
-    g_sig_mask |= action->mask | (1ull << sig);
+    g_sig_mask |= action->mask | signal_mask_bit(sig);
     frame->rdi = (uint64_t)sig;
     frame->rsi = 0;
     frame->rdx = 0;
@@ -3904,6 +3948,21 @@ static int sys_ioctl(int fd, uint64_t req, void* argp) {
         return 0;
     }
 
+    if (req == TIOCGETD) {
+        if (argp != NULL) {
+            *(int*)(uintptr_t)argp = N_TTY;
+        }
+        return 0;
+    }
+
+    if (req == TIOCSETD) {
+        if (argp == NULL) {
+            return err(EFAULT);
+        }
+        int ldisc = *(const int*)(uintptr_t)argp;
+        return ldisc == N_TTY ? 0 : err(EINVAL);
+    }
+
     if (req == TCSETS || req == TCSETSW || req == TCSETSF) {
         if (argp != NULL) {
             memcpy(&g_tty_termios, argp, sizeof(g_tty_termios));
@@ -4736,7 +4795,6 @@ static int sys_sendto(int fd, const void* buf, size_t count, int flags, const vo
         return err(EBADF);
     }
     if (g_fds[fd].kind == FD_INET) {
-        (void)frame;
         int socket_id = g_fds[fd].socket_id;
         if (socket_id < 0 || socket_id >= MAX_INET_SOCKETS || !g_inet_sockets[socket_id].used) {
             return err(ENOTSOCK);
@@ -4823,6 +4881,9 @@ static int sys_recvfrom(int fd, void* buf, size_t count, int flags, void* addr, 
                 if (fd_is_nonblocking(fd) || (flags & MSG_DONTWAIT) != 0) {
                     return err(EAGAIN);
                 }
+                if (deliver_pending_keyboard_signal_to_foreground()) {
+                    return err(EINTR);
+                }
                 if (current_has_pending_signal()) {
                     (void)deliver_current_signal(frame, err(EINTR));
                     return err(EINTR);
@@ -4847,6 +4908,9 @@ static int sys_recvfrom(int fd, void* buf, size_t count, int flags, void* addr, 
                 if (fd_is_nonblocking(fd) || (flags & MSG_DONTWAIT) != 0) {
                     return err(EAGAIN);
                 }
+                if (deliver_pending_keyboard_signal_to_foreground()) {
+                    return err(EINTR);
+                }
                 if (current_has_pending_signal()) {
                     (void)deliver_current_signal(frame, err(EINTR));
                     return err(EINTR);
@@ -4866,6 +4930,9 @@ static int sys_recvfrom(int fd, void* buf, size_t count, int flags, void* addr, 
             }
             if (fd_is_nonblocking(fd) || (flags & MSG_DONTWAIT) != 0) {
                 return err(EAGAIN);
+            }
+            if (deliver_pending_keyboard_signal_to_foreground()) {
+                return err(EINTR);
             }
             if (current_has_pending_signal()) {
                 (void)deliver_current_signal(frame, err(EINTR));
@@ -5358,10 +5425,14 @@ static bool process_block_ready(const struct process* proc) {
     if (proc == NULL || proc->state != PROCESS_BLOCKED) {
         return false;
     }
+    (void)deliver_pending_keyboard_signal_to_foreground();
+    if (proc->state != PROCESS_BLOCKED) {
+        return false;
+    }
     if (process_real_timer_expired((struct process*)proc)) {
         return true;
     }
-    if (proc->pending_count > 0) {
+    if (process_has_pending_signal((struct process*)proc)) {
         return true;
     }
 
@@ -5466,8 +5537,7 @@ static int try_complete_wait4(struct process* proc) {
     int status = 0;
     int pid = find_waitable_child_event(proc, proc->wait.aux0, proc->wait.aux1, &status);
     if (pid == 0) {
-        if (proc->pending_count > 0) {
-            (void)process_take_pending_signal(proc);
+        if (process_has_pending_signal(proc)) {
             unblock_process(proc, err(EINTR));
             return 0;
         }
@@ -5499,8 +5569,7 @@ static int try_complete_tty_read(struct process* proc) {
     if (proc->state == PROCESS_STOPPED || proc->state == PROCESS_ZOMBIE) {
         return 0;
     }
-    if (proc->pending_count > 0) {
-        (void)process_take_pending_signal(proc);
+    if (process_has_pending_signal(proc)) {
         unblock_process(proc, err(EINTR));
         return 0;
     }
@@ -5540,8 +5609,7 @@ static int try_complete_tty_read(struct process* proc) {
 }
 
 static int try_complete_pipe_read(struct process* proc) {
-    if (proc->pending_count > 0) {
-        (void)process_take_pending_signal(proc);
+    if (process_has_pending_signal(proc)) {
         unblock_process(proc, err(EINTR));
         return 0;
     }
@@ -5581,8 +5649,7 @@ static int try_complete_pipe_read(struct process* proc) {
 }
 
 static int try_complete_pipe_write(struct process* proc) {
-    if (proc->pending_count > 0) {
-        (void)process_take_pending_signal(proc);
+    if (process_has_pending_signal(proc)) {
         unblock_process(proc, err(EINTR));
         return 0;
     }
@@ -5622,8 +5689,7 @@ static int try_complete_pipe_write(struct process* proc) {
 }
 
 static int try_complete_unix_accept(struct process* proc) {
-    if (proc->pending_count > 0) {
-        (void)process_take_pending_signal(proc);
+    if (process_has_pending_signal(proc)) {
         unblock_process(proc, err(EINTR));
         return 0;
     }
@@ -5638,8 +5704,7 @@ static int try_complete_unix_accept(struct process* proc) {
 }
 
 static int try_complete_unix_recv(struct process* proc) {
-    if (proc->pending_count > 0) {
-        (void)process_take_pending_signal(proc);
+    if (process_has_pending_signal(proc)) {
         unblock_process(proc, err(EINTR));
         return 0;
     }
@@ -5653,8 +5718,7 @@ static int try_complete_unix_recv(struct process* proc) {
 }
 
 static int try_complete_unix_send(struct process* proc) {
-    if (proc->pending_count > 0) {
-        (void)process_take_pending_signal(proc);
+    if (process_has_pending_signal(proc)) {
         unblock_process(proc, err(EINTR));
         return 0;
     }
@@ -5676,8 +5740,7 @@ static int try_complete_select(struct process* proc) {
     if (proc->state == PROCESS_STOPPED || proc->state == PROCESS_ZOMBIE) {
         return 0;
     }
-    if (proc->pending_count > 0) {
-        (void)process_take_pending_signal(proc);
+    if (process_has_pending_signal(proc)) {
         unblock_process(proc, err(EINTR));
         return 0;
     }
@@ -5726,8 +5789,7 @@ static int try_complete_select(struct process* proc) {
 }
 
 static int try_complete_nanosleep(struct process* proc) {
-    if (proc->pending_count > 0) {
-        (void)process_take_pending_signal(proc);
+    if (process_has_pending_signal(proc)) {
         unblock_process(proc, err(EINTR));
         return 0;
     }
@@ -5740,8 +5802,7 @@ static int try_complete_nanosleep(struct process* proc) {
 }
 
 static int try_complete_futex(struct process* proc) {
-    if (proc->pending_count > 0) {
-        (void)process_take_pending_signal(proc);
+    if (process_has_pending_signal(proc)) {
         unblock_process(proc, err(EINTR));
         return 0;
     }
@@ -5815,7 +5876,7 @@ static uint64_t schedule_away(struct syscall_frame* frame) {
 }
 
 static int sys_select_common(int nfds, void* readfds, void* writefds, void* exceptfds, bool has_timeout, int64_t timeout_sec,
-                             int64_t timeout_nsec) {
+                             int64_t timeout_nsec, struct syscall_frame* frame) {
     if (nfds < 0 || nfds > 1024) {
         return err(EINVAL);
     }
@@ -5846,8 +5907,12 @@ static int sys_select_common(int nfds, void* readfds, void* writefds, void* exce
     uint64_t budget = has_timeout ? timeout_to_tsc_cycles(timeout_sec, timeout_nsec) : UINT64_MAX;
 
     for (;;) {
-        service_keyboard_signal_for_tty();
-        if ((g_pending_keyboard_signal != 0 && tty_is_foreground_group()) || current_has_pending_signal()) {
+        bool keyboard_signal = deliver_pending_keyboard_signal_to_foreground();
+        if (keyboard_signal || current_has_pending_signal()) {
+            struct process* current = current_process();
+            if (current != NULL && (current->state == PROCESS_STOPPED || current->state == PROCESS_ZOMBIE) && frame != NULL) {
+                return (int)schedule_away(frame);
+            }
             return err(EINTR);
         }
 
@@ -5894,7 +5959,7 @@ static int sys_select_common(int nfds, void* readfds, void* writefds, void* exce
     }
 }
 
-static int sys_poll(struct linux_pollfd* fds, size_t nfds, int timeout_ms) {
+static int sys_poll(struct linux_pollfd* fds, size_t nfds, int timeout_ms, struct syscall_frame* frame) {
     if (nfds > 1024u) {
         return err(EINVAL);
     }
@@ -5906,8 +5971,12 @@ static int sys_poll(struct linux_pollfd* fds, size_t nfds, int timeout_ms) {
     }
 
     for (;;) {
-        service_keyboard_signal_for_tty();
-        if (take_keyboard_signal() != 0 || current_has_pending_signal()) {
+        bool keyboard_signal = deliver_pending_keyboard_signal_to_foreground();
+        if (keyboard_signal || current_has_pending_signal()) {
+            struct process* current = current_process();
+            if (current != NULL && (current->state == PROCESS_STOPPED || current->state == PROCESS_ZOMBIE) && frame != NULL) {
+                return (int)schedule_away(frame);
+            }
             return err(EINTR);
         }
 
@@ -6619,7 +6688,7 @@ static int sys_select(int nfds, void* readfds, void* writefds, void* exceptfds, 
             return ready;
         }
         if (frame == NULL || !has_other_runnable_process(current_process())) {
-            return sys_select_common(nfds, readfds, writefds, exceptfds, false, 0, 0);
+            return sys_select_common(nfds, readfds, writefds, exceptfds, false, 0, 0, frame);
         }
 
         struct process* proc = current_process();
@@ -6645,7 +6714,7 @@ static int sys_select(int nfds, void* readfds, void* writefds, void* exceptfds, 
         }
         return (int)schedule_away(frame);
     }
-    int r = sys_select_common(nfds, readfds, writefds, exceptfds, true, timeout->tv_sec, timeout->tv_usec * 1000);
+    int r = sys_select_common(nfds, readfds, writefds, exceptfds, true, timeout->tv_sec, timeout->tv_usec * 1000, frame);
     if (r != 0 || frame == NULL || !has_other_runnable_process(current_process())) {
         return r;
     }
@@ -6682,7 +6751,7 @@ static int sys_pselect6(int nfds, void* readfds, void* writefds, void* exceptfds
     if (timeout == NULL) {
         return sys_select(nfds, readfds, writefds, exceptfds, NULL, frame);
     }
-    int r = sys_select_common(nfds, readfds, writefds, exceptfds, true, timeout->tv_sec, timeout->tv_nsec);
+    int r = sys_select_common(nfds, readfds, writefds, exceptfds, true, timeout->tv_sec, timeout->tv_nsec, frame);
     if (r != 0 || frame == NULL || !has_other_runnable_process(current_process())) {
         return r;
     }
@@ -6724,11 +6793,15 @@ static int sys_nanosleep(const struct linux_timespec* req, struct linux_timespec
     uint64_t start = read_tsc();
     uint64_t budget = timeout_to_tsc_cycles(req->tv_sec, req->tv_nsec);
     while (!timeout_expired(start, budget)) {
-        service_keyboard_signal_for_tty();
-        if ((g_pending_keyboard_signal != 0 && tty_is_foreground_group()) || current_has_pending_signal()) {
+        bool keyboard_signal = deliver_pending_keyboard_signal_to_foreground();
+        if (keyboard_signal || current_has_pending_signal()) {
             if (rem != NULL) {
                 rem->tv_sec = 0;
                 rem->tv_nsec = 0;
+            }
+            struct process* current = current_process();
+            if (current != NULL && (current->state == PROCESS_STOPPED || current->state == PROCESS_ZOMBIE) && frame != NULL) {
+                return (int)schedule_away(frame);
             }
             return err(EINTR);
         }
@@ -7965,7 +8038,7 @@ static int sys_rt_sigprocmask(int how, const uint64_t* set, uint64_t* oldset, si
             default:
                 return err(EINVAL);
         }
-        g_sig_mask &= ~((1ull << SIGKILL) | (1ull << SIGSTOP));
+        g_sig_mask &= ~(signal_mask_bit(SIGKILL) | signal_mask_bit(SIGSTOP));
     }
 
     return 0;
@@ -8436,7 +8509,7 @@ void syscall_init(void) {
 
 }
 
-uint64_t syscall_dispatch(struct syscall_frame* frame) {
+static uint64_t syscall_dispatch_body(struct syscall_frame* frame) {
     uint64_t nr = frame->rax;
     uint64_t a0 = frame->rdi;
     uint64_t a1 = frame->rsi;
@@ -8467,7 +8540,7 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
         case 6:
             return (uint64_t)sys_stat_compat((const char*)(uintptr_t)a0, (struct linux_stat*)(uintptr_t)a1, false);
         case 7:
-            return (uint64_t)sys_poll((struct linux_pollfd*)(uintptr_t)a0, (size_t)a1, (int)(int64_t)a2);
+            return (uint64_t)sys_poll((struct linux_pollfd*)(uintptr_t)a0, (size_t)a1, (int)(int64_t)a2, frame);
         case 8:
             return (uint64_t)sys_lseek((int)a0, (int64_t)a1, (int)a2);
         case 9:
@@ -8725,4 +8798,23 @@ uint64_t syscall_dispatch(struct syscall_frame* frame) {
         default:
             return (uint64_t)err(ENOSYS);
     }
+}
+
+uint64_t syscall_dispatch(struct syscall_frame* frame) {
+    uint64_t result = syscall_dispatch_body(frame);
+    struct process* current = current_process();
+    if (current != NULL && (current->state == PROCESS_STOPPED || current->state == PROCESS_ZOMBIE)) {
+        return schedule_away(frame);
+    }
+
+    if (current_has_pending_signal()) {
+        (void)deliver_current_signal(frame, (int64_t)result);
+        current = current_process();
+        if (current != NULL && (current->state == PROCESS_STOPPED || current->state == PROCESS_ZOMBIE)) {
+            return schedule_away(frame);
+        }
+        return frame != NULL ? frame->rax : result;
+    }
+
+    return result;
 }

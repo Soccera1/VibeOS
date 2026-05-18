@@ -85,8 +85,8 @@ effects:
 
 @itemize @bullet
 @item kernel diagnostics survive even when graphical output is unavailable, and
-@item QEMU's @code{-serial stdio} option becomes a reliable way to watch the
-system boot and interact with it.
+@item QEMU's stdio chardev becomes a reliable way to watch the system boot and
+interact with it when host signal handling is disabled.
 @end itemize
 
 Serial input is also part of the generic input path.
@@ -121,10 +121,10 @@ The generic input layer then normalizes:
 @item serial DEL to backspace.
 @end itemize
 
-Keyboard-generated signal peek and poll hooks exist in the interface, but the
-current keyboard implementation returns @code{KEYBOARD_COMBO_SIGNAL_NONE}; the
-job-control signal generation used by the TTY layer is driven instead by the
-characters read through the terminal path.
+Keyboard and serial-console control input can also be latched through signal
+peek and poll hooks, allowing terminal job-control signals such as
+@code{SIGINT} and @code{SIGTSTP} to reach the foreground process group even
+when it is blocked outside the terminal read path.
 
 @node TTY and Framebuffer Devices
 @section TTY and Framebuffer Devices
