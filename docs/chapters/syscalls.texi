@@ -130,27 +130,38 @@ multiplexing.
 @item 33 @tab @code{dup2} @tab Duplicate to an exact descriptor.
 @item 40 @tab @code{sendfile} @tab File-to-descriptor copy helper.
 @item 41 @tab @code{socket} @tab Supports pathname @code{AF_UNIX}
-@code{SOCK_STREAM} sockets.
+@code{SOCK_STREAM} sockets plus limited @code{AF_INET} stream, datagram, and
+raw ICMP sockets.
 @item 42 @tab @code{connect} @tab Connects a Unix-domain stream socket to a
-listening pathname endpoint.
+listening pathname endpoint, or records/connects an IPv4 remote endpoint for
+@code{AF_INET} sockets.
 @item 43 @tab @code{accept} @tab Accepts pending Unix-domain stream
 connections.
-@item 44 @tab @code{sendto} @tab Connected-socket send path for Unix-domain
-stream sockets.
-@item 45 @tab @code{recvfrom} @tab Connected-socket receive path for
-Unix-domain stream sockets.
+@item 44 @tab @code{sendto} @tab Send path for Unix-domain stream sockets and
+limited IPv4 TCP, UDP, and raw ICMP sockets.
+@item 45 @tab @code{recvfrom} @tab Receive path for Unix-domain stream sockets
+and limited IPv4 TCP, UDP, and raw ICMP sockets.
+@item 46 @tab @code{sendmsg} @tab Vector send helper layered over
+@code{sendto}; @code{AF_INET} data is flattened into one bounded packet buffer.
+@item 47 @tab @code{recvmsg} @tab Vector receive helper layered over
+@code{recvfrom}; control-message handling is not implemented.
 @item 48 @tab @code{shutdown} @tab Read-side and write-side shutdown for
-connected Unix-domain stream sockets.
+connected Unix-domain stream sockets, and write-side close for connected IPv4
+TCP sockets.
 @item 49 @tab @code{bind} @tab Binds a Unix-domain stream socket to a pathname
-in the synthetic namespace.
+in the synthetic namespace, or binds an IPv4 socket to a local port/address.
 @item 50 @tab @code{listen} @tab Marks a bound Unix-domain stream socket as a
 listener with a bounded pending queue.
 @item 51 @tab @code{getsockname} @tab Reports the bound or connected local
-Unix-domain pathname.
-@item 52 @tab @code{getpeername} @tab Reports the connected peer pathname where
-available.
+Unix-domain pathname, or the IPv4 local address and port.
+@item 52 @tab @code{getpeername} @tab Reports the connected peer pathname or
+IPv4 address and port where available.
 @item 53 @tab @code{socketpair} @tab Builds a connected Unix-domain stream
 pair.
+@item 54 @tab @code{setsockopt} @tab Accepts options as compatibility no-ops on
+socket descriptors.
+@item 55 @tab @code{getsockopt} @tab Returns a zero integer value for
+recognized socket descriptors when the caller supplies enough space.
 @item 72 @tab @code{fcntl} @tab Limited support for duplication and flag
 queries or updates.
 @item 270 @tab @code{pselect6} @tab Same scan model as @code{select}.
@@ -162,9 +173,12 @@ restricted.
 @end multitable
 
 The kernel understands TTY descriptors, @file{/dev/null}, a framebuffer
-descriptor, directories, regular files, pipes, and pathname
-@code{AF_UNIX}/@code{SOCK_STREAM} sockets.  That is enough to support a small
-shell environment with redirection, pipelines, and local stream IPC.
+descriptor, directories, regular files, pipes, pathname
+@code{AF_UNIX}/@code{SOCK_STREAM} sockets, and limited IPv4 sockets over the
+in-tree network stack.  The IPv4 path currently covers ARP, DHCP configuration,
+ICMP echo traffic, UDP datagrams, and client-side TCP streams; it is sufficient
+for basic tools such as statically linked @code{wget}, but it is not a complete
+Linux network stack.
 
 @node Process and Signal Calls
 @section Process and Signal Calls
@@ -175,8 +189,15 @@ Process-management and signal-related calls include:
 @headitem Nr @tab Name @tab Notes
 @item 13 @tab @code{rt_sigaction} @tab Install or query handlers.
 @item 14 @tab @code{rt_sigprocmask} @tab Modify blocked-signal mask.
+@item 15 @tab @code{rt_sigreturn} @tab Restore user context after signal
+delivery.
 @item 35 @tab @code{nanosleep} @tab Busy-wait or scheduler-assisted sleep using
 a synthetic time base.
+@item 36 @tab @code{getitimer} @tab Reports the synthetic real interval timer.
+@item 37 @tab @code{alarm} @tab Sets the synthetic real interval timer in
+seconds.
+@item 38 @tab @code{setitimer} @tab Configures the synthetic real interval
+timer.
 @item 39 @tab @code{getpid} @tab Returns the current PID.
 @item 56 @tab @code{clone} @tab Restricted clone implementation.
 @item 57 @tab @code{fork} @tab Fork-like VM clone.
@@ -222,10 +243,18 @@ Miscellaneous calls include:
 @headitem Nr @tab Name @tab Notes
 @item 63 @tab @code{uname} @tab Returns VibeOS identity strings.
 @item 97 @tab @code{getrlimit} @tab Limited resource-limit reporting.
+@item 132 @tab @code{utime} @tab Updates path timestamps through the VFS.
 @item 162 @tab @code{sync} @tab Flushes writable ext2/ext3 mounts.
 @item 186 @tab @code{gettid} @tab Returns the current PID; VibeOS does not have
 separate thread IDs.
 @item 228 @tab @code{clock_gettime} @tab Synthetic time source.
+@item 229 @tab @code{clock_getres} @tab Reports a fixed synthetic clock
+resolution.
+@item 235 @tab @code{utimes} @tab Updates path timestamps through the VFS.
+@item 261 @tab @code{futimesat} @tab Updates path timestamps relative to a
+directory fd.
+@item 280 @tab @code{utimensat} @tab Updates path timestamps with
+@code{UTIME_NOW}, @code{UTIME_OMIT}, and selected @code{AT_*} flags.
 @item 302 @tab @code{prlimit64} @tab Limited resource-limit interface.
 @item 318 @tab @code{getrandom} @tab Pseudorandom bytes from a simple internal
 generator.
@@ -285,6 +314,7 @@ fault reporting is still primitive.
 @item @code{futex}, @code{sigaltstack}, and @code{set_robust_list} implement
 useful state and wait/wake behavior, but not the full Linux threading/runtime
 contract.
-@item Socket support is currently limited to pathname Unix-domain stream
-sockets; there is no Internet stack or datagram socket support.
+@item Socket support includes pathname Unix-domain stream sockets and a small
+IPv4 stack, but the Internet socket behavior is intentionally narrow and does
+not provide complete Linux networking semantics.
 @end itemize

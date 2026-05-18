@@ -47,11 +47,12 @@ bootable Unix-like environment:
 @item a process table and blocking scheduler,
 @item signals, process groups, and sessions,
 @item TTY and pipe file descriptors,
+@item virtio-net networking with a small IPv4 stack,
 @item a filesystem namespace with read-only root and @file{/usr} images plus a
 writable @file{/home} mount or ramdisk fallback,
 @item an ELF loader with shebang support, and
 @item enough Linux syscalls to run static BusyBox, Bash, coreutils, man-db,
-less, and related utilities.
+less, wget, and related utilities.
 @end itemize
 
 @node Execution Model

@@ -153,6 +153,8 @@ Root contains the essential boot path:
 @item Linux man-pages,
 @item @code{file},
 @item @code{nano},
+@item @code{less},
+@item @code{wget},
 @item @code{sl}, and
 @item the in-tree @code{help} helper.
 @end itemize

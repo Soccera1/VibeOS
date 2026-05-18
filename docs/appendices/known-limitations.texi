@@ -66,8 +66,9 @@ Known gaps include:
 @item partial signal semantics,
 @item restricted @code{clone} behavior,
 @item limited @code{statx} behavior,
-@item socket support limited to pathname @code{AF_UNIX}
-@code{SOCK_STREAM} semantics,
+@item networking limited to a small virtio-net IPv4 stack with ARP, DHCP, UDP,
+client-side TCP streams, and raw ICMP rather than a complete Linux network
+implementation,
 @item no real thread implementation,
 @item no writable shared-library runtime staging, and
 @item synthetic handling of @file{/proc/self/exe}.
