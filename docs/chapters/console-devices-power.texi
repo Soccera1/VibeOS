@@ -9,8 +9,9 @@
 @findex console_init
 @findex serial_init
 @findex power_shutdown
-@vindex CONSOLE_FONT_WIDTH
-@vindex CONSOLE_FONT_HEIGHT
+@vindex CONSOLE_FONT_MAX_WIDTH
+@vindex CONSOLE_FONT_MAX_HEIGHT
+@vindex CONSOLE_FONT_VARIANT_COUNT
 
 @menu
 * Console Model::
@@ -25,7 +26,12 @@
 @section Console Model
 
 The console implementation in @file{kernel/src/console.c} uses an internal
-80x25 text-cell model regardless of whether the physical display is:
+text-cell model backed by VGA-style cells.  VGA text mode is fixed at 80x25.
+Framebuffer consoles keep the height at 25 rows and derive the column count
+from the display aspect ratio so the text cell width slaves to the fixed text
+height.  Virtio GPU framebuffers also poll display configuration events so host
+resolution changes can rebuild the scanout and redraw the console while the
+system is running.
 
 @itemize @bullet
 @item VGA text memory at @code{0xB8000}, or
@@ -44,7 +50,8 @@ The text-cell model stores:
 @end itemize
 
 When a framebuffer is present, the console renders characters by drawing the
-built-in 12x25 bitmap font from @file{kernel/src/console_font.c}.
+best-fitting built-in bitmap font variant from @file{kernel/src/console_font.c}
+and scaling that bitmap into the current framebuffer cell size.
 
 @node ANSI and Terminal Features
 @section ANSI and Terminal Features

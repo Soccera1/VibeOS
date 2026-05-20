@@ -11,10 +11,19 @@ struct pci_device {
     uint16_t device_id;
 };
 
+struct pci_virtio_cap {
+    uint8_t cfg_type;
+    uint8_t bar;
+    uint32_t offset;
+    uint32_t length;
+    uint32_t notify_off_multiplier;
+};
+
 bool pci_find_device(uint16_t vendor_id, uint16_t device_id, struct pci_device* out);
 uint32_t pci_read_config32(const struct pci_device* dev, uint8_t offset);
 void pci_write_config32(const struct pci_device* dev, uint8_t offset, uint32_t value);
 uint16_t pci_read_config16(const struct pci_device* dev, uint8_t offset);
 void pci_write_config16(const struct pci_device* dev, uint8_t offset, uint16_t value);
 uint16_t pci_io_bar(const struct pci_device* dev, uint8_t bar);
-
+uint32_t pci_mem_bar(const struct pci_device* dev, uint8_t bar);
+bool pci_find_virtio_cap(const struct pci_device* dev, uint8_t cfg_type, struct pci_virtio_cap* out);

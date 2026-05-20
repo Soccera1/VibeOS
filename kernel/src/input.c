@@ -4,6 +4,7 @@
 
 #include "keyboard.h"
 #include "serial.h"
+#include "virtio_gpu.h"
 
 #define INPUT_RESPONSE_QUEUE_CAPACITY 64
 
@@ -102,6 +103,7 @@ int input_read_char_blocking(void) {
         if (c >= 0) {
             return c;
         }
+        virtio_gpu_poll();
         __asm__ volatile("pause");
     }
 }

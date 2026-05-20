@@ -14,11 +14,12 @@
 
 #define VGA_WIDTH 80
 #define VGA_HEIGHT 25
+#define FRAMEBUFFER_TEXT_ROWS VGA_HEIGHT
+#define FONT_NATURAL_WIDTH 12u
+#define FONT_NATURAL_HEIGHT 25u
 #define FB_MAX_COLS 512
 #define FB_MAX_ROWS 256
 #define TAB_WIDTH 8
-#define FONT_WIDTH CONSOLE_FONT_WIDTH
-#define FONT_HEIGHT CONSOLE_FONT_HEIGHT
 #define TEXT_CELL_CAPACITY (FB_MAX_COLS * FB_MAX_ROWS)
 #define TAB_STOP_CAPACITY FB_MAX_COLS
 #define CELL_FLAG_UNDERLINE 0x01u
@@ -34,6 +35,8 @@ static uint16_t text_cells[TEXT_CELL_CAPACITY];
 static uint8_t text_cell_flags[TEXT_CELL_CAPACITY];
 static uint16_t main_vga[TEXT_CELL_CAPACITY];
 static uint8_t main_vga_flags[TEXT_CELL_CAPACITY];
+static uint16_t resize_cells[TEXT_CELL_CAPACITY];
+static uint8_t resize_cell_flags[TEXT_CELL_CAPACITY];
 static size_t text_cols = VGA_WIDTH;
 static size_t text_rows = VGA_HEIGHT;
 static size_t cursor_row;
@@ -70,7 +73,12 @@ static struct console_framebuffer_info g_fb_info;
 static volatile uint8_t* g_fb_base;
 static size_t g_fb_origin_x;
 static size_t g_fb_origin_y;
+static size_t g_fb_cell_width = 12u;
+static size_t g_fb_cell_height = 25u;
+static const struct console_font_variant* g_fb_font = &g_console_font_variants[0];
 static uint32_t g_fb_palette[16];
+static console_framebuffer_flush_fn g_fb_flush_callback;
+static bool g_fb_bulk_present;
 static bool cursor_visible = true;
 static bool soft_cursor_drawn;
 static size_t soft_cursor_row;
@@ -109,6 +117,12 @@ static size_t cell_count(void) {
     return text_cols * text_rows;
 }
 
+static void clamp_cursor(void);
+
+static size_t max_size(size_t a, size_t b) {
+    return (a > b) ? a : b;
+}
+
 static void set_text_geometry(size_t cols, size_t rows) {
     if (cols == 0u || rows == 0u) {
         cols = VGA_WIDTH;
@@ -124,6 +138,125 @@ static void set_text_geometry(size_t cols, size_t rows) {
     text_rows = rows;
     scroll_top = 0;
     scroll_bottom = text_rows - 1u;
+}
+
+static void resize_cell_buffer(uint16_t* cells, uint8_t* flags, size_t old_cols, size_t old_rows, size_t new_cols,
+                               size_t new_rows) {
+    uint16_t blank = blank_cell();
+    size_t copy_cols = (old_cols < new_cols) ? old_cols : new_cols;
+    size_t copy_rows = (old_rows < new_rows) ? old_rows : new_rows;
+
+    for (size_t row = 0; row < new_rows; ++row) {
+        for (size_t col = 0; col < new_cols; ++col) {
+            size_t dst = row * new_cols + col;
+            if (row < copy_rows && col < copy_cols) {
+                size_t src = row * old_cols + col;
+                resize_cells[dst] = cells[src];
+                resize_cell_flags[dst] = flags[src];
+            } else {
+                resize_cells[dst] = blank;
+                resize_cell_flags[dst] = 0u;
+            }
+        }
+    }
+
+    for (size_t i = 0; i < new_cols * new_rows; ++i) {
+        cells[i] = resize_cells[i];
+        flags[i] = resize_cell_flags[i];
+    }
+}
+
+static void resize_text_geometry(size_t cols, size_t rows) {
+    size_t old_cols = text_cols;
+    size_t old_rows = text_rows;
+
+    if (cols == 0u || rows == 0u) {
+        cols = VGA_WIDTH;
+        rows = VGA_HEIGHT;
+    }
+    if (cols > FB_MAX_COLS) {
+        cols = FB_MAX_COLS;
+    }
+    if (rows > FB_MAX_ROWS) {
+        rows = FB_MAX_ROWS;
+    }
+    if (cols == old_cols && rows == old_rows) {
+        return;
+    }
+
+    resize_cell_buffer(text_cells, text_cell_flags, old_cols, old_rows, cols, rows);
+    resize_cell_buffer(main_vga, main_vga_flags, old_cols, old_rows, cols, rows);
+    set_text_geometry(cols, rows);
+    clamp_cursor();
+}
+
+static size_t framebuffer_text_cols_for_size(uint32_t width, uint32_t height) {
+    if (height == 0u) {
+        return VGA_WIDTH;
+    }
+
+    size_t cell_height = max_size((size_t)height / FRAMEBUFFER_TEXT_ROWS, 1u);
+    size_t cell_width = max_size((cell_height * FONT_NATURAL_WIDTH + FONT_NATURAL_HEIGHT / 2u) / FONT_NATURAL_HEIGHT, 1u);
+    size_t cols = (size_t)width / cell_width;
+    if (cols == 0u) {
+        cols = 1u;
+    }
+    return cols;
+}
+
+static const struct console_font_variant* choose_framebuffer_font(size_t cell_width, size_t cell_height) {
+    const struct console_font_variant* best = &g_console_font_variants[0];
+    size_t best_score = (size_t)-1;
+
+    for (size_t i = 0; i < CONSOLE_FONT_VARIANT_COUNT; ++i) {
+        const struct console_font_variant* candidate = &g_console_font_variants[i];
+        size_t width_delta = (candidate->width > cell_width) ? candidate->width - cell_width : cell_width - candidate->width;
+        size_t height_delta = (candidate->height > cell_height) ? candidate->height - cell_height : cell_height - candidate->height;
+        size_t upsample_penalty = (candidate->width < cell_width ? cell_width - candidate->width : 0u) +
+                                  (candidate->height < cell_height ? cell_height - candidate->height : 0u);
+        size_t downsample_penalty = (candidate->width > cell_width ? candidate->width - cell_width : 0u) * 3u +
+                                    (candidate->height > cell_height ? candidate->height - cell_height : 0u) * 3u;
+        size_t score = width_delta * 64u + height_delta * 32u + upsample_penalty + downsample_penalty;
+        if (score < best_score) {
+            best = candidate;
+            best_score = score;
+        }
+    }
+
+    return best;
+}
+
+static void update_framebuffer_text_metrics(void) {
+    if (!framebuffer_active()) {
+        g_fb_origin_x = 0;
+        g_fb_origin_y = 0;
+        g_fb_cell_width = FONT_NATURAL_WIDTH;
+        g_fb_cell_height = FONT_NATURAL_HEIGHT;
+        g_fb_font = &g_console_font_variants[0];
+        return;
+    }
+
+    g_fb_cell_height = max_size(g_fb_info.height / text_rows, 1u);
+    g_fb_cell_width = max_size(g_fb_info.width / text_cols, 1u);
+    g_fb_font = choose_framebuffer_font(g_fb_cell_width, g_fb_cell_height);
+    g_fb_origin_x = (g_fb_info.width - text_cols * g_fb_cell_width) / 2u;
+    g_fb_origin_y = (g_fb_info.height - text_rows * g_fb_cell_height) / 2u;
+}
+
+static void framebuffer_flush_rect(size_t x, size_t y, size_t width, size_t height) {
+    if (g_fb_flush_callback == NULL || !framebuffer_active() || width == 0u || height == 0u) {
+        return;
+    }
+    if (x >= g_fb_info.width || y >= g_fb_info.height) {
+        return;
+    }
+    if (width > g_fb_info.width - x) {
+        width = g_fb_info.width - x;
+    }
+    if (height > g_fb_info.height - y) {
+        height = g_fb_info.height - y;
+    }
+    g_fb_flush_callback((uint32_t)x, (uint32_t)y, (uint32_t)width, (uint32_t)height);
 }
 
 static uint32_t scale_channel(uint8_t value, uint8_t bits) {
@@ -174,21 +307,24 @@ static void draw_framebuffer_cell(size_t row, size_t col, uint16_t cell, uint8_t
     uint8_t attr = (uint8_t)(cell >> 8);
     uint32_t fg = g_fb_palette[attr & 0x0fu];
     uint32_t bg = g_fb_palette[(attr >> 4) & 0x07u];
-    size_t x0 = g_fb_origin_x + col * FONT_WIDTH;
-    size_t y0 = g_fb_origin_y + row * FONT_HEIGHT;
+    size_t x0 = g_fb_origin_x + col * g_fb_cell_width;
+    size_t y0 = g_fb_origin_y + row * g_fb_cell_height;
 
-    for (size_t glyph_row = 0; glyph_row < FONT_HEIGHT; ++glyph_row) {
-        console_font_row_t bits = g_console_font[ch][glyph_row];
-        for (size_t glyph_col = 0; glyph_col < FONT_WIDTH; ++glyph_col) {
-            console_font_row_t mask = (console_font_row_t)(1u << (FONT_WIDTH - 1u - glyph_col));
+    for (size_t py = 0; py < g_fb_cell_height; ++py) {
+        size_t glyph_row = (py * g_fb_font->height) / g_fb_cell_height;
+        console_font_row_t bits = g_fb_font->glyphs[ch][glyph_row];
+        for (size_t px = 0; px < g_fb_cell_width; ++px) {
+            size_t glyph_col = (px * g_fb_font->width) / g_fb_cell_width;
+            console_font_row_t mask = (console_font_row_t)(1u << (g_fb_font->width - 1u - glyph_col));
             uint32_t pixel = ((bits & mask) != 0u) ? fg : bg;
-            if ((flags & CELL_FLAG_UNDERLINE) != 0u && glyph_row + 2u >= FONT_HEIGHT) {
+            if ((flags & CELL_FLAG_UNDERLINE) != 0u && glyph_row + 2u >= g_fb_font->height) {
                 pixel = fg;
             }
-            if (cursor_overlay && glyph_row >= FONT_HEIGHT - SOFT_CURSOR_HEIGHT) {
+            if (cursor_overlay &&
+                py + max_size((SOFT_CURSOR_HEIGHT * g_fb_cell_height) / g_fb_font->height, 1u) >= g_fb_cell_height) {
                 pixel = fg;
             }
-            fb_store_pixel(x0 + glyph_col, y0 + glyph_row, pixel);
+            fb_store_pixel(x0 + px, y0 + py, pixel);
         }
     }
 }
@@ -200,6 +336,10 @@ static void draw_cell(size_t row, size_t col, uint16_t cell) {
     }
 
     draw_framebuffer_cell(row, col, cell, text_cell_flags[cell_index(row, col)], false);
+    if (!g_fb_bulk_present) {
+        framebuffer_flush_rect(g_fb_origin_x + col * g_fb_cell_width, g_fb_origin_y + row * g_fb_cell_height,
+                               g_fb_cell_width, g_fb_cell_height);
+    }
 }
 
 static void restore_soft_cursor(void) {
@@ -221,6 +361,8 @@ static void draw_soft_cursor(void) {
     draw_framebuffer_cell(cursor_row, cursor_col, text_cells[cell_index(cursor_row, cursor_col)],
                           text_cell_flags[cell_index(cursor_row, cursor_col)], true);
     soft_cursor_drawn = true;
+    framebuffer_flush_rect(g_fb_origin_x + cursor_col * g_fb_cell_width, g_fb_origin_y + cursor_row * g_fb_cell_height,
+                           g_fb_cell_width, g_fb_cell_height);
 }
 
 static void present_row_range(size_t row, size_t start_col, size_t end_col) {
@@ -249,7 +391,10 @@ static void present_all(void) {
     if (framebuffer_active()) {
         fb_fill_rect(0, 0, g_fb_info.width, g_fb_info.height, g_fb_palette[0]);
     }
+    g_fb_bulk_present = true;
     present_rows(0, text_rows);
+    g_fb_bulk_present = false;
+    framebuffer_flush_rect(0, 0, g_fb_info.width, g_fb_info.height);
 }
 
 static void apply_text_attributes(void) {
@@ -812,36 +957,40 @@ static void reset_console_state(void) {
     reset_text_attributes();
 }
 
-static void setup_framebuffer(const struct mb2_framebuffer_info* fb) {
+static bool setup_framebuffer_info(const struct console_framebuffer_info* info, console_framebuffer_flush_fn flush_callback) {
+    bool had_framebuffer = framebuffer_active();
     memset(&g_fb_info, 0, sizeof(g_fb_info));
     g_fb_base = NULL;
     g_fb_origin_x = 0;
     g_fb_origin_y = 0;
-    set_text_geometry(VGA_WIDTH, VGA_HEIGHT);
+    g_fb_cell_width = FONT_NATURAL_WIDTH;
+    g_fb_cell_height = FONT_NATURAL_HEIGHT;
+    g_fb_font = &g_console_font_variants[0];
+    g_fb_flush_callback = NULL;
 
-    if (fb == NULL || fb->addr == 0 || fb->addr >= (1ull << 32) || fb->width < FONT_WIDTH || fb->height < FONT_HEIGHT) {
-        return;
+    if (info == NULL || !info->present || info->phys_addr == 0 || info->phys_addr >= (1ull << 32) ||
+        info->width < VGA_WIDTH || info->height < VGA_HEIGHT) {
+        set_text_geometry(VGA_WIDTH, VGA_HEIGHT);
+        return false;
     }
-    if (fb->bpp != 15u && fb->bpp != 16u && fb->bpp != 24u && fb->bpp != 32u) {
-        return;
+    if (info->bpp != 15u && info->bpp != 16u && info->bpp != 24u && info->bpp != 32u) {
+        if (!had_framebuffer) {
+            set_text_geometry(VGA_WIDTH, VGA_HEIGHT);
+        }
+        return false;
     }
 
-    g_fb_info.present = true;
-    g_fb_info.phys_addr = fb->addr;
-    g_fb_info.pitch = fb->pitch;
-    g_fb_info.width = fb->width;
-    g_fb_info.height = fb->height;
-    set_text_geometry(fb->width / FONT_WIDTH, fb->height / FONT_HEIGHT);
+    size_t framebuffer_cols = framebuffer_text_cols_for_size(info->width, info->height);
+    if (had_framebuffer) {
+        resize_text_geometry(framebuffer_cols, FRAMEBUFFER_TEXT_ROWS);
+    } else {
+        set_text_geometry(framebuffer_cols, FRAMEBUFFER_TEXT_ROWS);
+    }
+
+    g_fb_info = *info;
     g_fb_info.text_cols = (uint32_t)text_cols;
     g_fb_info.text_rows = (uint32_t)text_rows;
-    g_fb_info.bpp = fb->bpp;
-    g_fb_info.size = fb->pitch * fb->height;
-    g_fb_info.red_offset = fb->red_field_position;
-    g_fb_info.red_length = fb->red_mask_size;
-    g_fb_info.green_offset = fb->green_field_position;
-    g_fb_info.green_length = fb->green_mask_size;
-    g_fb_info.blue_offset = fb->blue_field_position;
-    g_fb_info.blue_length = fb->blue_mask_size;
+    g_fb_info.size = info->pitch * info->height;
 
     uint32_t used_mask = 0u;
     if (g_fb_info.red_length != 0u) {
@@ -853,8 +1002,8 @@ static void setup_framebuffer(const struct mb2_framebuffer_info* fb) {
     if (g_fb_info.blue_length != 0u) {
         used_mask |= ((1u << g_fb_info.blue_length) - 1u) << g_fb_info.blue_offset;
     }
-    if (fb->bpp <= 32u) {
-        for (uint8_t bit = 0; bit < fb->bpp; ++bit) {
+    if (info->bpp <= 32u && g_fb_info.transp_length == 0u) {
+        for (uint8_t bit = 0; bit < info->bpp; ++bit) {
             if ((used_mask & (1u << bit)) == 0u) {
                 if (g_fb_info.transp_length == 0u) {
                     g_fb_info.transp_offset = bit;
@@ -864,12 +1013,35 @@ static void setup_framebuffer(const struct mb2_framebuffer_info* fb) {
         }
     }
 
-    g_fb_base = (volatile uint8_t*)(uintptr_t)fb->addr;
-    g_fb_origin_x = (fb->width - text_cols * FONT_WIDTH) / 2u;
-    g_fb_origin_y = (fb->height - text_rows * FONT_HEIGHT) / 2u;
+    g_fb_base = (volatile uint8_t*)(uintptr_t)info->phys_addr;
+    g_fb_flush_callback = flush_callback;
+    update_framebuffer_text_metrics();
     for (size_t i = 0; i < 16; ++i) {
         g_fb_palette[i] = pack_fb_color(g_vga_palette_rgb[i][0], g_vga_palette_rgb[i][1], g_vga_palette_rgb[i][2]);
     }
+    return true;
+}
+
+static void setup_framebuffer(const struct mb2_framebuffer_info* fb) {
+    struct console_framebuffer_info info;
+    memset(&info, 0, sizeof(info));
+    if (fb == NULL) {
+        (void)setup_framebuffer_info(NULL, NULL);
+        return;
+    }
+    info.present = true;
+    info.phys_addr = fb->addr;
+    info.pitch = fb->pitch;
+    info.width = fb->width;
+    info.height = fb->height;
+    info.bpp = fb->bpp;
+    info.red_offset = fb->red_field_position;
+    info.red_length = fb->red_mask_size;
+    info.green_offset = fb->green_field_position;
+    info.green_length = fb->green_mask_size;
+    info.blue_offset = fb->blue_field_position;
+    info.blue_length = fb->blue_mask_size;
+    (void)setup_framebuffer_info(&info, NULL);
 }
 
 static void enter_alt_mode(void) {
@@ -1229,10 +1401,23 @@ void console_init(uint64_t mb2_info) {
     } else {
         memset(&g_fb_info, 0, sizeof(g_fb_info));
         g_fb_base = NULL;
+        g_fb_flush_callback = NULL;
         set_text_geometry(VGA_WIDTH, VGA_HEIGHT);
     }
     reset_console_state();
     console_clear();
+}
+
+bool console_configure_framebuffer(const struct console_framebuffer_info* info, console_framebuffer_flush_fn flush_callback) {
+    soft_cursor_drawn = false;
+    if (!setup_framebuffer_info(info, flush_callback)) {
+        return false;
+    }
+    clamp_cursor();
+    reset_tab_stops();
+    present_all();
+    update_hw_cursor();
+    return true;
 }
 
 void console_set_color(unsigned fg, unsigned bg) {

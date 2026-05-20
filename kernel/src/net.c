@@ -6,6 +6,7 @@
 
 #include "console.h"
 #include "string.h"
+#include "virtio_gpu.h"
 #include "virtio_net.h"
 
 #define ETH_TYPE_IPV4 0x0800u
@@ -331,6 +332,7 @@ static bool resolve_mac(uint32_t dst_ip, uint8_t mac[6]) {
         if (arp_lookup(next_hop, mac)) {
             return true;
         }
+        virtio_gpu_poll();
         __asm__ volatile("pause" : : : "memory");
     }
     return false;
@@ -971,6 +973,7 @@ static void dhcp_start(void) {
         if ((spins % 500000u) == 499999u) {
             dhcp_send(1u, 0u, 0u);
         }
+        virtio_gpu_poll();
         __asm__ volatile("pause" : : : "memory");
     }
     if (!g_config.configured) {
