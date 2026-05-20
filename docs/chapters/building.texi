@@ -179,8 +179,8 @@ The ext3 image contains the larger optional userspace:
 @itemize @bullet
 @item Bash,
 @item the remaining coreutils,
-@item @code{help}, @code{sl}, @code{file}, @code{less}, @code{nano}, and
-@code{wget},
+@item @code{help}, @code{sl}, @code{file}, @code{less}, @code{nano},
+@code{vim}, and @code{wget},
 @item groff and man-db runtime files,
 @item Linux man-pages, and
 @item terminfo, the CA bundle and @code{wgetrc}, kernel regression tests, and

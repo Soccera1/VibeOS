@@ -1,16 +1,16 @@
 /* This is a generated file, don't edit */
 
-#define NUM_APPLETS 395
+#define NUM_APPLETS 394
 #define KNOWN_APPNAME_OFFSETS 8
 
 const uint16_t applet_nameofs[] ALIGN2 = {
 305,
 653,
-995,
+990,
 1321,
 1674,
-2059,
-2390,
+2049,
+2385,
 };
 
 const char applet_names[] ALIGN1 = ""
@@ -392,7 +392,6 @@ const char applet_names[] ALIGN1 = ""
 "uudecode" "\0"
 "uuencode" "\0"
 "vconfig" "\0"
-"vi" "\0"
 "vlock" "\0"
 "volname" "\0"
 "watch" "\0"
@@ -775,23 +774,22 @@ const char applet_names[] ALIGN1 = ""
 #define APPLET_NO_uudecode 375
 #define APPLET_NO_uuencode 376
 #define APPLET_NO_vconfig 377
-#define APPLET_NO_vi 378
-#define APPLET_NO_vlock 379
-#define APPLET_NO_volname 380
-#define APPLET_NO_watch 381
-#define APPLET_NO_watchdog 382
-#define APPLET_NO_wc 383
-#define APPLET_NO_wget 384
-#define APPLET_NO_which 385
-#define APPLET_NO_whoami 386
-#define APPLET_NO_whois 387
-#define APPLET_NO_xargs 388
-#define APPLET_NO_xxd 389
-#define APPLET_NO_xz 390
-#define APPLET_NO_xzcat 391
-#define APPLET_NO_yes 392
-#define APPLET_NO_zcat 393
-#define APPLET_NO_zcip 394
+#define APPLET_NO_vlock 378
+#define APPLET_NO_volname 379
+#define APPLET_NO_watch 380
+#define APPLET_NO_watchdog 381
+#define APPLET_NO_wc 382
+#define APPLET_NO_wget 383
+#define APPLET_NO_which 384
+#define APPLET_NO_whoami 385
+#define APPLET_NO_whois 386
+#define APPLET_NO_xargs 387
+#define APPLET_NO_xxd 388
+#define APPLET_NO_xz 389
+#define APPLET_NO_xzcat 390
+#define APPLET_NO_yes 391
+#define APPLET_NO_zcat 392
+#define APPLET_NO_zcip 393
 
 #ifndef SKIP_applet_main
 int (*const applet_main[])(int argc, char **argv) = {
@@ -1173,7 +1171,6 @@ usleep_main,
 uudecode_main,
 uuencode_main,
 vconfig_main,
-vi_main,
 vlock_main,
 volname_main,
 watch_main,
@@ -1290,9 +1287,9 @@ const uint8_t applet_flags[] ALIGN1 = {
 0x38,
 0x08,
 0x00,
-0x3c,
-0x0a,
-0x02,
+0x8f,
+0x82,
+0x00,
 };
 
 const uint8_t applet_suid[] ALIGN1 = {
@@ -1390,7 +1387,7 @@ const uint8_t applet_suid[] ALIGN1 = {
 0x00,
 0x00,
 0x00,
-0x80,
+0x20,
 0x00,
 0x00,
 0x00,
@@ -1587,13 +1584,12 @@ const uint8_t applet_install_loc[] ALIGN1 = {
 0x33,
 0x31,
 0x23,
-0x31,
-0x13,
-0x32,
+0x33,
+0x21,
 0x33,
 0x33,
 0x33,
 0x33,
-0x13,
-0x02,
+0x33,
+0x21,
 };

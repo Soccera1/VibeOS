@@ -8668,6 +8668,23 @@ static int sys_rt_sigprocmask(int how, const uint64_t* set, uint64_t* oldset, si
     return 0;
 }
 
+static int sys_rt_sigpending(uint64_t* set, size_t sigsetsize) {
+    if (sigsetsize != sizeof(uint64_t)) {
+        return err(EINVAL);
+    }
+    if (set == NULL) {
+        return err(EFAULT);
+    }
+
+    current_real_timer_expired();
+    uint64_t pending = 0;
+    for (int i = 0; i < g_pending_signal_count; ++i) {
+        pending |= signal_mask_bit(g_pending_signals[i]);
+    }
+    *set = pending;
+    return 0;
+}
+
 static uint64_t sys_rt_sigreturn(struct syscall_frame* frame) {
     if (frame == NULL) {
         return (uint64_t)err(EFAULT);
@@ -9595,6 +9612,8 @@ static uint64_t syscall_dispatch_body(struct syscall_frame* frame) {
             return (uint64_t)sys_setfsuid((uint32_t)a0);
         case 123:
             return (uint64_t)sys_setfsgid((uint32_t)a0);
+        case 127:
+            return (uint64_t)sys_rt_sigpending((uint64_t*)(uintptr_t)a0, (size_t)a1);
         case 132:
             return (uint64_t)sys_utime((const char*)(uintptr_t)a0, (const struct linux_utimbuf*)(uintptr_t)a1);
         case 131:

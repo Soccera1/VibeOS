@@ -209,6 +209,7 @@ cat > "$ROOT/sbin/root-shell" <<'ROOTSHELL'
 if [ -x /usr/bin/bash ]; then
   export SHELL=/usr/bin/bash
   exec /usr/bin/bash -i
+  echo "/sbin/root-shell: /usr/bin/bash failed, falling back to BusyBox sh" >&2
 fi
 export SHELL=/bin/sh
 exec /bin/busybox sh -i

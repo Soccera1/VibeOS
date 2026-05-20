@@ -51,6 +51,7 @@ USER_FILE := $(BUILD_DIR)/userspace/file
 USER_FILE_MAGIC := $(BUILD_DIR)/userspace/file-magic.mgc
 USER_NANO := $(BUILD_DIR)/userspace/nano
 USER_LESS := $(BUILD_DIR)/userspace/less
+USER_VIM := $(BUILD_DIR)/userspace/vim
 USER_MAN_PAGES := $(BUILD_DIR)/userspace/man-pages
 USER_LIBPIPELINE := $(BUILD_DIR)/userspace/libpipeline
 USER_GDBM := $(BUILD_DIR)/userspace/gdbm
@@ -71,6 +72,7 @@ SL_SRC := external/sl-src
 FILE_SRC := external/file-src
 NANO_SRC := external/nano-src
 LESS_SRC := external/less-src
+VIM_SRC := external/vim-src
 WGET_SRC := external/wget-src
 MAN_PAGES_SRC := external/man-pages-src
 LIBPIPELINE_SRC := external/libpipeline-src
@@ -82,6 +84,19 @@ USER_SL := $(BUILD_DIR)/userspace/sl
 HELP_SRC := userspace/help.c
 TESTS_SRC := $(shell find tests -type f | sort)
 LESS_SRC_FILES := $(shell find $(LESS_SRC) -path "$(LESS_SRC)/build-musl" -prune -o -type f -print | sort)
+VIM_SRC_FILES := $(shell find $(VIM_SRC) \
+	-name build-musl-zigcc-wrapper.sh -prune -o \
+	-path "$(VIM_SRC)/src/objects" -prune -o \
+	-name vim -prune -o \
+	-path "$(VIM_SRC)/src/auto/config.cache" -prune -o \
+	-path "$(VIM_SRC)/src/auto/config.h" -prune -o \
+	-path "$(VIM_SRC)/src/auto/config.log" -prune -o \
+	-path "$(VIM_SRC)/src/auto/config.mk" -prune -o \
+	-path "$(VIM_SRC)/src/auto/config.status" -prune -o \
+	-path "$(VIM_SRC)/src/auto/osdef.h" -prune -o \
+	-path "$(VIM_SRC)/src/auto/pathdef.c" -prune -o \
+	-name '*.log' -prune -o \
+	-type f -print | sort)
 WGET_SRC_FILES := $(shell find $(WGET_SRC) -path "$(WGET_SRC)/build-musl" -prune -o -type f -print | sort)
 
 export STRIP_BINARIES ?= 1
@@ -131,7 +146,7 @@ $(KERNEL_BIN): $(KERNEL_OBJS) kernel/linker.ld | $(BUILD_DIR)
 	$(LD) $(LDFLAGS) -o $@ $(KERNEL_OBJS)
 	@if [[ "$(STRIP_BINARIES)" != "0" ]]; then $(STRIP) $@; fi
 
-$(USER_BUSYBOX): | $(BUILD_DIR)
+$(USER_BUSYBOX): tools/build_busybox.sh | $(BUILD_DIR)
 	./tools/build_busybox.sh $@ "$(BUSYBOX_SRC)" "$(BUSYBOX_STATIC)" "$(BUSYBOX_ROOTFS)"
 
 $(USER_COREUTILS): | $(BUILD_DIR)
@@ -163,6 +178,9 @@ $(USER_NANO): $(NCURSES_BUILD)/lib/libncursesw.a | $(BUILD_DIR)
 
 $(USER_LESS): $(NCURSES_BUILD)/lib/libncursesw.a $(LESS_SRC_FILES) tools/build_less.sh | $(BUILD_DIR)
 	./tools/build_less.sh $@ "$(LESS_SRC)" "$(NCURSES_BUILD)"
+
+$(USER_VIM): $(NCURSES_BUILD)/lib/libncursesw.a $(VIM_SRC_FILES) tools/build_vim.sh | $(BUILD_DIR)
+	./tools/build_vim.sh $@ "$(VIM_SRC)" "$(NCURSES_BUILD)"
 
 $(USER_MAN_PAGES): | $(BUILD_DIR)
 	./tools/build_man_pages.sh $@ "$(MAN_PAGES_SRC)"
@@ -197,8 +215,8 @@ $(USER_TESTS): $(TESTS_SRC) tools/build_kernel_tests.sh | $(BUILD_DIR)
 $(INITRAMFS): tools/make_initramfs.sh $(USER_BUSYBOX) $(USER_HELP) $(USER_COREUTILS) $(USER_COREUTILS_PROGS)
 	./tools/make_initramfs.sh $@ $(USER_BUSYBOX) $(USER_HELP) $(USER_COREUTILS) $(USER_COREUTILS_PROGS)
 
-$(USR_EXT3): tools/make_usr_ext2.sh $(USER_BASH) $(USER_HELP) $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO) $(USER_LESS) $(USER_COREUTILS) $(USER_COREUTILS_PROGS) $(USER_MAN_PAGES) $(USER_GROFF) $(USER_MAN_DB) $(USER_WGET) $(USER_TESTS)
-	./tools/make_usr_ext2.sh $@ $(USER_BASH) $(USER_HELP) $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO) $(USER_LESS) $(USER_COREUTILS) $(USER_COREUTILS_PROGS) $(USER_MAN_PAGES) $(USER_GROFF) $(USER_MAN_DB) $(USER_WGET) $(USER_TESTS)
+$(USR_EXT3): tools/make_usr_ext2.sh $(USER_BASH) $(USER_HELP) $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO) $(USER_LESS) $(USER_VIM) $(USER_COREUTILS) $(USER_COREUTILS_PROGS) $(USER_MAN_PAGES) $(USER_GROFF) $(USER_MAN_DB) $(USER_WGET) $(USER_TESTS)
+	./tools/make_usr_ext2.sh $@ $(USER_BASH) $(USER_HELP) $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO) $(USER_LESS) $(USER_COREUTILS) $(USER_COREUTILS_PROGS) $(USER_MAN_PAGES) $(USER_GROFF) $(USER_MAN_DB) $(USER_WGET) $(USER_TESTS) $(USER_VIM)
 
 $(HOME_EXT3): tools/make_home_ext2.sh | $(BUILD_DIR)
 	./tools/make_home_ext2.sh $@
@@ -207,8 +225,8 @@ iso: check-toolchain $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT3)
 	./tools/make_iso.sh $(ISO_IMAGE) $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT3)
 
 # BIOS + GPT raw disk image. Needs loop devices and mount permissions.
-disk: check-toolchain $(KERNEL_BIN) $(INITRAMFS)
-	./tools/make_gpt_disk.sh $(DISK_IMAGE) $(KERNEL_BIN) $(INITRAMFS)
+disk: check-toolchain $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT3) $(HOME_EXT3)
+	./tools/make_gpt_disk.sh $(DISK_IMAGE) $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT3)
 
 run: disk $(USR_EXT3) $(HOME_EXT3)
 	qemu-system-x86_64 \

@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 3 ]]; then
-  echo "usage: $0 <output.img> <kernel.bin> <initramfs.cpio>" >&2
+if [[ $# -ne 4 ]]; then
+  echo "usage: $0 <output.img> <kernel.bin> <initramfs.cpio> <usr.ext3>" >&2
   exit 1
 fi
 
 OUT_IMG="$1"
 KERNEL_BIN="$2"
 INITRAMFS="$3"
+USR_EXT3="$4"
 
 if [[ $EUID -eq 0 ]]; then
   SUDO=""
@@ -34,7 +35,7 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$(dirname "$OUT_IMG")"
-truncate -s 128M "$OUT_IMG"
+truncate -s 384M "$OUT_IMG"
 
 parted -s "$OUT_IMG" mklabel gpt
 parted -s "$OUT_IMG" mkpart BIOSGRUB 1MiB 3MiB
@@ -49,6 +50,7 @@ $SUDO mount "${LOOPDEV}p2" "$MNT"
 $SUDO mkdir -p "$MNT/boot/grub"
 $SUDO cp "$KERNEL_BIN" "$MNT/boot/vibeos-kernel.bin"
 $SUDO cp "$INITRAMFS" "$MNT/boot/initramfs.cpio"
+$SUDO cp "$USR_EXT3" "$MNT/boot/usr.ext3"
 
 cat <<'CFG' | $SUDO tee "$MNT/boot/grub/grub.cfg" >/dev/null
 set timeout=0
@@ -61,6 +63,7 @@ set gfxpayload=keep
 menuentry "VibeOS" {
     multiboot2 /boot/vibeos-kernel.bin
     module2 /boot/initramfs.cpio
+    module2 /boot/usr.ext3
     boot
 }
 CFG

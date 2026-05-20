@@ -213,6 +213,8 @@ EOF
   unset_cfg "$cfg" "CONFIG_FEATURE_KMSG_SYSLOG"
   unset_cfg "$cfg" "CONFIG_HUSH"
   unset_cfg "$cfg" "CONFIG_ASH_JOB_CONTROL"
+  # Vim is staged in /usr now; do not expose the smaller BusyBox vi applet.
+  unset_cfg "$cfg" "CONFIG_VI"
   unset_cfg "$cfg" "CONFIG_TC"
   unset_cfg "$cfg" "CONFIG_FEATURE_UTMP"
   unset_cfg "$cfg" "CONFIG_FEATURE_WTMP"
