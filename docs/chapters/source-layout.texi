@@ -127,7 +127,8 @@ Important examples include:
 @item less,
 @item libpipeline,
 @item gdbm,
-@item nano, and
+@item nano,
+@item Vim, and
 @item file(1).
 @end itemize
 

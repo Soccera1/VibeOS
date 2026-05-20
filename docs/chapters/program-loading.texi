@@ -154,6 +154,7 @@ Root contains the essential boot path:
 @item @code{file},
 @item @code{nano},
 @item @code{less},
+@item @code{vim},
 @item @code{wget},
 @item @code{sl}, and
 @item the in-tree @code{help} helper.

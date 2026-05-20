@@ -39,6 +39,7 @@ external/busybox-src/.kconfig.d
 external/busybox-src/.kernelrelease
 external/busybox-src/.zigcc-musl-wrapper.sh
 external/busybox-src/busybox_unstripped.out
+external/busybox-src/**/*.cmd
 external/busybox-src/include/config/
 
 # Zig caches under BusyBox source
@@ -72,6 +73,21 @@ external/groff-src/font/devps/prologue.ps
 external/gdbm-src/build-musl/
 external/gnutls-src/build-musl/
 external/wget-src/build-musl/
+external/file-src/build-musl/
+external/vim-src/build-musl-build.log
+external/vim-src/build-musl-configure.log
+external/vim-src/build-musl-zigcc-wrapper.sh
+external/vim-src/src/auto/config.cache
+external/vim-src/src/auto/config.h
+external/vim-src/src/auto/config.log
+external/vim-src/src/auto/config.mk
+external/vim-src/src/auto/config.status
+external/vim-src/src/auto/link.sed
+external/vim-src/src/auto/osdef.h
+external/vim-src/src/auto/pathdef.c
+external/vim-src/src/objects/
+external/vim-src/src/tags
+external/vim-src/src/vim
 
 # Autoconf/configure churn in in-tree external builds
 external/bash-src/config.log

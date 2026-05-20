@@ -85,6 +85,12 @@ uses the POSIX regex backend, filters incompatible host linker flags through a
 Zig compiler wrapper, and validates that the result has no program
 interpreter.
 
+@item tools/build_vim.sh
+Builds Vim against the VibeOS ncurses tree as a static non-PIE binary.  It
+disables GUI, dynamic-language, terminal, channel, NLS, and optional host
+integration features, then stages @file{/usr/bin/vim} plus a trimmed
+@file{/usr/share/vim} runtime.
+
 @item tools/build_libpipeline.sh
 Builds a static libpipeline sysroot used by man-db, placing 64-bit libraries
 and pkg-config metadata under @file{/usr/lib64}.

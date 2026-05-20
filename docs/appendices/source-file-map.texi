@@ -277,6 +277,9 @@ Build and stage nano.
 @item tools/build_less.sh
 Build and stage less.
 
+@item tools/build_vim.sh
+Build and stage static Vim plus its trimmed runtime tree.
+
 @item tools/build_libpipeline.sh
 Build and stage libpipeline with 64-bit libraries under @file{/usr/lib64}.
 
