@@ -168,7 +168,7 @@ static void test_identity_and_paths(void) {
     n = read(fd, account_buf, sizeof(account_buf) - 1);
     REQUIRE(n > 0, "read(/etc/passwd) failed: %s", strerror(errno));
     account_buf[n] = '\0';
-    REQUIRE(strstr(account_buf, "root:x:0:0:root:/root:/bin/sh") != NULL, "/etc/passwd missing root account");
+    REQUIRE(strstr(account_buf, "root:x:0:0:root:/root:/sbin/root-shell") != NULL, "/etc/passwd missing root account");
     REQUIRE(strstr(account_buf, "user:x:1000:1000:user:/home/user:/usr/bin/bash") != NULL, "/etc/passwd missing user account");
     close(fd);
     fd = -1;
@@ -188,9 +188,15 @@ static void test_identity_and_paths(void) {
     n = read(fd, account_buf, sizeof(account_buf) - 1);
     REQUIRE(n > 0, "read(/etc/shadow) failed: %s", strerror(errno));
     account_buf[n] = '\0';
+    REQUIRE(strstr(account_buf, "root::0:0:99999:7:::") != NULL, "/etc/shadow missing passwordless root entry");
     REQUIRE(strstr(account_buf, "user::0:0:99999:7:::") != NULL, "/etc/shadow missing passwordless user entry");
     close(fd);
     fd = -1;
+
+    REQUIRE(access("/bin/login", X_OK) == 0, "login applet missing: %s", strerror(errno));
+    REQUIRE(access("/sbin/getty", X_OK) == 0, "getty applet missing: %s", strerror(errno));
+    REQUIRE(access("/sbin/autologin-root", X_OK) == 0, "root autologin helper missing: %s", strerror(errno));
+    REQUIRE(access("/sbin/root-shell", X_OK) == 0, "root shell helper missing: %s", strerror(errno));
 
     REQUIRE(getcwd(cwd, sizeof(cwd)) != NULL, "getcwd(/) failed: %s", strerror(errno));
     REQUIRE(strcmp(cwd, "/") == 0, "initial cwd was %s", cwd);

@@ -165,25 +165,27 @@ The generated @file{/init} script is intentionally simple:
 export USER=root
 export LOGNAME=root
 export HOME=/root
+export SHELL=/bin/sh
+export PATH=/bin:/sbin:/usr/bin
 while true; do
-  if [ -x /usr/bin/bash ]; then
-    /usr/bin/bash -i
-  else
-    /bin/busybox sh -i
-  fi
+  /sbin/getty -n -l /sbin/autologin-root 0 -
 done
 @end example
 
-VibeOS currently boots directly to that root shell.  The initramfs still stages
-the basic account database and login configuration files, including
+@file{/sbin/autologin-root} then runs @code{/bin/login -f root}.  The root
+account's shell is @file{/sbin/root-shell}, which preserves the older boot
+policy by starting @file{/usr/bin/bash} when it is available and falling back to
+BusyBox @code{sh} otherwise.  This keeps the default boot passwordless and
+automatically logged in as root while routing the session through the normal
+BusyBox getty/login path.  The initramfs stages the basic account database and
+login configuration files, including
 @file{/etc/passwd}, @file{/etc/group}, @file{/etc/shadow},
-@file{/etc/securetty}, @file{/etc/shells}, and @file{/etc/profile}, so a later
-getty/login path has conventional account data to consume.  The default
-database includes @code{root} and a passwordless @code{user} account with home
-directory @file{/home/user} and default shell @file{/usr/bin/bash}, suitable
-for tools such as @code{su user}.  The kernel filesystem initialization creates
-and owns @file{/home/user} after the writable @file{/home} mount, or its
-ramdisk fallback, is available.
+@file{/etc/securetty}, @file{/etc/shells}, and @file{/etc/profile}.  The
+default database includes passwordless @code{root} and @code{user} accounts.
+@code{user} has home directory @file{/home/user} and default shell
+@file{/usr/bin/bash}, suitable for tools such as @code{su user}.  The kernel
+filesystem initialization creates and owns @file{/home/user} after the writable
+@file{/home} mount, or its ramdisk fallback, is available.
 
 @node In-Tree Userspace Helper
 @section In-Tree Userspace Helper
