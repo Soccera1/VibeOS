@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "io.h"
+#include "virtio_gpu.h"
 
 static const char keymap[128] = {
     0,   27,  '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b', '\t',
@@ -175,6 +176,7 @@ int keyboard_read_char_blocking(void) {
         if (c >= 0) {
             return c;
         }
+        virtio_gpu_poll();
         __asm__ volatile("pause");
     }
 }

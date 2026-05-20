@@ -15,6 +15,7 @@
 #include "process.h"
 #include "string.h"
 #include "userland.h"
+#include "virtio_gpu.h"
 #include "vm.h"
 
 #define IA32_FS_BASE 0xC0000100u
@@ -112,6 +113,12 @@
 #define FB_ACCEL_NONE 0u
 
 #define N_TTY 0
+
+#define KERNEL_IDLE_POLL()         \
+    do {                           \
+        virtio_gpu_poll();         \
+        __asm__ volatile("pause"); \
+    } while (0)
 
 #define POLLIN 0x0001
 #define POLLPRI 0x0002
@@ -1241,7 +1248,7 @@ static uint64_t rtc_wall_time_ns(void) {
 
     for (;;) {
         while (rtc_update_in_progress()) {
-            __asm__ volatile("pause");
+            KERNEL_IDLE_POLL();
         }
 
         uint8_t second_a = cmos_read(0x00);
@@ -1253,7 +1260,7 @@ static uint64_t rtc_wall_time_ns(void) {
         uint8_t century_a = cmos_read(0x32);
 
         while (rtc_update_in_progress()) {
-            __asm__ volatile("pause");
+            KERNEL_IDLE_POLL();
         }
 
         second = cmos_read(0x00);
@@ -3116,7 +3123,7 @@ static int unix_stream_recv_fd(int fd, void* buf, size_t count, struct syscall_f
             proc->wait.has_timeout = false;
             return (int)schedule_away(frame);
         }
-        __asm__ volatile("pause");
+        KERNEL_IDLE_POLL();
     }
 
     return (int)unix_socket_buffer_read(inbound, buf, count);
@@ -3167,7 +3174,7 @@ static int unix_stream_send_fd(int fd, const void* buf, size_t count, struct sys
             proc->wait.has_timeout = false;
             return (int)schedule_away(frame);
         }
-        __asm__ volatile("pause");
+        KERNEL_IDLE_POLL();
         avail = UNIX_SOCKET_BUFFER_CAPACITY - outbound->size;
     }
 
@@ -3217,7 +3224,7 @@ static int sys_read(int fd, void* buf, size_t count, struct syscall_frame* frame
                         proc->wait.has_timeout = false;
                         return (int)schedule_away(frame);
                     }
-                    __asm__ volatile("pause");
+                    KERNEL_IDLE_POLL();
                 }
             } else {
                 service_keyboard_signal_for_tty();
@@ -3300,7 +3307,7 @@ static int sys_read(int fd, void* buf, size_t count, struct syscall_frame* frame
                 proc->wait.has_timeout = false;
                 return (int)schedule_away(frame);
             }
-            __asm__ volatile("pause");
+            KERNEL_IDLE_POLL();
         }
 
         size_t n = (count < p->size) ? count : p->size;
@@ -3394,7 +3401,7 @@ static int sys_write(int fd, const void* buf, size_t count, struct syscall_frame
                 proc->wait.has_timeout = false;
                 return (int)schedule_away(frame);
             }
-            __asm__ volatile("pause");
+            KERNEL_IDLE_POLL();
             avail = PIPE_CAPACITY - p->size;
         }
 
@@ -4554,7 +4561,7 @@ static int sys_connect(int fd, const void* addr, uint32_t addrlen) {
             if (fd_is_nonblocking(fd)) {
                 return err(EINPROGRESS);
             }
-            __asm__ volatile("pause" : : : "memory");
+            KERNEL_IDLE_POLL();
         }
     }
     if (g_fds[fd].kind != FD_UNIX) {
@@ -4655,7 +4662,7 @@ static int sys_accept4(int fd, void* addr, uint32_t* addrlen, uint32_t flags, st
             proc->wait.has_timeout = false;
             return (int)schedule_away(frame);
         }
-        __asm__ volatile("pause");
+        KERNEL_IDLE_POLL();
     }
 }
 
@@ -4888,7 +4895,7 @@ static int sys_recvfrom(int fd, void* buf, size_t count, int flags, void* addr, 
                     (void)deliver_current_signal(frame, err(EINTR));
                     return err(EINTR);
                 }
-                __asm__ volatile("pause" : : : "memory");
+                KERNEL_IDLE_POLL();
             }
         }
         if (sock->type == SOCK_RAW) {
@@ -4915,7 +4922,7 @@ static int sys_recvfrom(int fd, void* buf, size_t count, int flags, void* addr, 
                     (void)deliver_current_signal(frame, err(EINTR));
                     return err(EINTR);
                 }
-                __asm__ volatile("pause" : : : "memory");
+                KERNEL_IDLE_POLL();
             }
         }
         if (!sock->tcp_opened) {
@@ -4938,7 +4945,7 @@ static int sys_recvfrom(int fd, void* buf, size_t count, int flags, void* addr, 
                 (void)deliver_current_signal(frame, err(EINTR));
                 return err(EINTR);
             }
-            __asm__ volatile("pause" : : : "memory");
+            KERNEL_IDLE_POLL();
         }
     }
     if (g_fds[fd].kind != FD_UNIX) {
@@ -5871,7 +5878,7 @@ static uint64_t schedule_away(struct syscall_frame* frame) {
             return frame->rax;
         }
 
-        __asm__ volatile("pause");
+        KERNEL_IDLE_POLL();
     }
 }
 
@@ -5955,7 +5962,7 @@ static int sys_select_common(int nfds, void* readfds, void* writefds, void* exce
             return 0;
         }
 
-        __asm__ volatile("pause");
+        KERNEL_IDLE_POLL();
     }
 }
 
@@ -6001,7 +6008,7 @@ static int sys_poll(struct linux_pollfd* fds, size_t nfds, int timeout_ms, struc
             return 0;
         }
 
-        __asm__ volatile("pause");
+        KERNEL_IDLE_POLL();
     }
 }
 
@@ -6817,7 +6824,7 @@ static int sys_nanosleep(const struct linux_timespec* req, struct linux_timespec
             proc->wait.deadline_ns = start + budget;
             return (int)schedule_away(frame);
         }
-        __asm__ volatile("pause");
+        KERNEL_IDLE_POLL();
     }
 
     if (rem != NULL) {
@@ -7153,7 +7160,7 @@ static int sys_futex(uint32_t* uaddr, uint32_t op, uint32_t val, const struct li
                 if (has_timeout && read_tsc() >= deadline) {
                     return err(ETIMEDOUT);
                 }
-                __asm__ volatile("pause");
+                KERNEL_IDLE_POLL();
             }
         }
         case FUTEX_WAKE:
@@ -8520,6 +8527,8 @@ static uint64_t syscall_dispatch_body(struct syscall_frame* frame) {
 
     (void)a4;
     (void)a5;
+
+    virtio_gpu_poll();
 
     switch (nr) {
         case 0:
