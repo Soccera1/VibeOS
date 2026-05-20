@@ -166,8 +166,9 @@ The initramfs contains the minimum system needed to come up:
 @item @file{/init},
 @item @file{/bin/busybox},
 @item essential coreutils copied into @file{/bin},
+@item root account and login configuration files under @file{/etc},
 @item device and directory scaffolding such as @file{/dev}, @file{/proc},
-@file{/sys}, and @file{/tmp}, and
+@file{/root}, @file{/sys}, and @file{/tmp}, and
 @item empty @file{/usr} and @file{/home} mount points.
 @end itemize
 

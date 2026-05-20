@@ -30,10 +30,10 @@ int ext2_read(const struct fs_entry* entry, size_t offset, void* buf, size_t cou
 int ext2_write(struct fs_entry* entry, size_t offset, const void* buf, size_t count);
 int ext2_truncate(struct fs_entry* entry, size_t size);
 int ext2_readlink(const struct fs_entry* entry, char* out, size_t bufsz);
-int ext2_create(const char* path, uint32_t mode, struct fs_entry* out);
-int ext2_mknod(const char* path, uint32_t mode, uint32_t rdev, struct fs_entry* out);
-int ext2_mkdir(const char* path, uint32_t mode, struct fs_entry* out);
-int ext2_symlink(const char* target, const char* linkpath, struct fs_entry* out);
+int ext2_create(const char* path, uint32_t mode, uint32_t uid, uint32_t gid, struct fs_entry* out);
+int ext2_mknod(const char* path, uint32_t mode, uint32_t rdev, uint32_t uid, uint32_t gid, struct fs_entry* out);
+int ext2_mkdir(const char* path, uint32_t mode, uint32_t uid, uint32_t gid, struct fs_entry* out);
+int ext2_symlink(const char* target, const char* linkpath, uint32_t uid, uint32_t gid, struct fs_entry* out);
 int ext2_link(const char* existing, const char* newpath);
 int ext2_unlink(const char* path);
 int ext2_rmdir(const char* path);

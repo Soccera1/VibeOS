@@ -137,6 +137,7 @@ static void test_identity_and_paths(void) {
     struct stat st;
     struct stat lst;
     struct statx stx;
+    char account_buf[512];
     DIR* dir = NULL;
     struct dirent* ent = NULL;
     bool found_helper = false;
@@ -149,6 +150,36 @@ static void test_identity_and_paths(void) {
     REQUIRE(getppid() >= 0, "getppid returned %d", (int)getppid());
     REQUIRE(getuid() == 0 && geteuid() == 0, "uid/euid were not zero");
     REQUIRE(getgid() == 0 && getegid() == 0, "gid/egid were not zero");
+    uid_t ruid = 1;
+    uid_t euid = 1;
+    uid_t suid = 1;
+    gid_t rgid = 1;
+    gid_t egid = 1;
+    gid_t sgid = 1;
+    REQUIRE(getresuid(&ruid, &euid, &suid) == 0, "getresuid failed: %s", strerror(errno));
+    REQUIRE(ruid == 0 && euid == 0 && suid == 0, "resuid was %u/%u/%u",
+            (unsigned)ruid, (unsigned)euid, (unsigned)suid);
+    REQUIRE(getresgid(&rgid, &egid, &sgid) == 0, "getresgid failed: %s", strerror(errno));
+    REQUIRE(rgid == 0 && egid == 0 && sgid == 0, "resgid was %u/%u/%u",
+            (unsigned)rgid, (unsigned)egid, (unsigned)sgid);
+
+    fd = open("/etc/passwd", O_RDONLY);
+    REQUIRE(fd >= 0, "open(/etc/passwd) failed: %s", strerror(errno));
+    n = read(fd, account_buf, sizeof(account_buf) - 1);
+    REQUIRE(n > 0, "read(/etc/passwd) failed: %s", strerror(errno));
+    account_buf[n] = '\0';
+    REQUIRE(strstr(account_buf, "root:x:0:0:root:/root:/bin/sh") != NULL, "/etc/passwd missing root account");
+    close(fd);
+    fd = -1;
+
+    fd = open("/etc/group", O_RDONLY);
+    REQUIRE(fd >= 0, "open(/etc/group) failed: %s", strerror(errno));
+    n = read(fd, account_buf, sizeof(account_buf) - 1);
+    REQUIRE(n > 0, "read(/etc/group) failed: %s", strerror(errno));
+    account_buf[n] = '\0';
+    REQUIRE(strstr(account_buf, "root:x:0:") != NULL, "/etc/group missing root group");
+    close(fd);
+    fd = -1;
 
     REQUIRE(getcwd(cwd, sizeof(cwd)) != NULL, "getcwd(/) failed: %s", strerror(errno));
     REQUIRE(strcmp(cwd, "/") == 0, "initial cwd was %s", cwd);
@@ -223,6 +254,85 @@ static void test_identity_and_paths(void) {
     if (dirfd >= 0) {
         close(dirfd);
     }
+}
+
+static void test_user_group_permissions(void) {
+    const char* owned_path = "/tmp/kernel-tests-owned";
+    const char* private_path = "/tmp/kernel-tests-private";
+    int fd = -1;
+    pid_t child = -1;
+    struct stat st;
+    struct statx stx;
+
+    unlink(owned_path);
+    unlink(private_path);
+
+    fd = open(owned_path, O_CREAT | O_RDWR | O_TRUNC, 0640);
+    REQUIRE(fd >= 0, "open(%s) failed: %s", owned_path, strerror(errno));
+    close(fd);
+    REQUIRE(chown(owned_path, 2000, 1001) == 0, "chown(%s) failed: %s", owned_path, strerror(errno));
+    REQUIRE(stat(owned_path, &st) == 0, "stat(%s) failed: %s", owned_path, strerror(errno));
+    REQUIRE(st.st_uid == 2000 && st.st_gid == 1001, "stat owner was %u:%u",
+            (unsigned)st.st_uid, (unsigned)st.st_gid);
+
+    memset(&stx, 0, sizeof(stx));
+    REQUIRE(syscall(SYS_statx, AT_FDCWD, owned_path, 0, STATX_UID | STATX_GID, &stx) == 0,
+            "statx(%s) failed: %s", owned_path, strerror(errno));
+    REQUIRE(stx.stx_uid == 2000 && stx.stx_gid == 1001, "statx owner was %u:%u",
+            (unsigned)stx.stx_uid, (unsigned)stx.stx_gid);
+
+    child = fork();
+    REQUIRE(child >= 0, "fork(user/group child) failed: %s", strerror(errno));
+    if (child == 0) {
+        if (setgid(1001) != 0 || setuid(1000) != 0) {
+            _exit(80);
+        }
+        if (getuid() != 1000 || geteuid() != 1000 || getgid() != 1001 || getegid() != 1001) {
+            _exit(81);
+        }
+        fd = open(owned_path, O_RDONLY);
+        if (fd < 0) {
+            _exit(82);
+        }
+        close(fd);
+        fd = open(owned_path, O_WRONLY);
+        if (fd >= 0 || errno != EACCES) {
+            if (fd >= 0) {
+                close(fd);
+            }
+            _exit(83);
+        }
+        if (chown(owned_path, 0, 0) == 0 || errno != EPERM) {
+            _exit(84);
+        }
+        _exit(0);
+    }
+    wait_for_exit_code(child, 0);
+
+    fd = open(private_path, O_CREAT | O_RDWR | O_TRUNC, 0600);
+    REQUIRE(fd >= 0, "open(%s) failed: %s", private_path, strerror(errno));
+    close(fd);
+    REQUIRE(chown(private_path, 2000, 2000) == 0, "chown(%s) failed: %s", private_path, strerror(errno));
+
+    child = fork();
+    REQUIRE(child >= 0, "fork(private child) failed: %s", strerror(errno));
+    if (child == 0) {
+        if (setgid(1001) != 0 || setuid(1000) != 0) {
+            _exit(85);
+        }
+        fd = open(private_path, O_RDONLY);
+        if (fd >= 0 || errno != EACCES) {
+            if (fd >= 0) {
+                close(fd);
+            }
+            _exit(86);
+        }
+        _exit(0);
+    }
+    wait_for_exit_code(child, 0);
+
+    unlink(owned_path);
+    unlink(private_path);
 }
 
 static void test_file_io_and_mmap(void) {
@@ -998,6 +1108,7 @@ struct test_case {
 
 static const struct test_case g_tests[] = {
     { "identity_and_paths", test_identity_and_paths },
+    { "user_group_permissions", test_user_group_permissions },
     { "file_io_and_mmap", test_file_io_and_mmap },
     { "pipes_select_and_poll", test_pipes_select_and_poll },
     { "pipe_reader_wakes_full_writer", test_pipe_reader_wakes_full_writer },

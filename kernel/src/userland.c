@@ -123,7 +123,10 @@ static uint64_t build_user_stack(const struct user_exec_info* exec, const char* 
                                  const char* const* argv, size_t argc, struct vm_space* space) {
     const char* envp[] = {
         "TERM=ansi",
-        "HOME=/",
+        "HOME=/root",
+        "USER=root",
+        "LOGNAME=root",
+        "SHELL=/bin/sh",
         "PATH=/bin:/sbin:/usr/bin",
         "SH_STANDALONE=1",
         "GLIBC_TUNABLES=glibc.pthread.rseq=0",

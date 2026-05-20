@@ -21,7 +21,7 @@ WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 
 ROOT="$WORKDIR/root"
-mkdir -p "$ROOT"/{bin,dev,etc,proc,sys,tmp,usr,var,home}
+mkdir -p "$ROOT"/{bin,dev,etc,proc,root,sys,tmp,usr,var,home}
 
 is_coreutils_prog() {
   local prog="$1"
@@ -123,6 +123,45 @@ cat > "$ROOT/etc/resolv.conf" <<'RESOLV'
 nameserver 10.0.2.3
 RESOLV
 
+cat > "$ROOT/etc/passwd" <<'PASSWD'
+root:x:0:0:root:/root:/bin/sh
+PASSWD
+
+cat > "$ROOT/etc/group" <<'GROUP'
+root:x:0:
+GROUP
+
+cat > "$ROOT/etc/shadow" <<'SHADOW'
+root::0:0:99999:7:::
+SHADOW
+chmod 600 "$ROOT/etc/shadow"
+
+cat > "$ROOT/etc/gshadow" <<'GSHADOW'
+root:::
+GSHADOW
+chmod 600 "$ROOT/etc/gshadow"
+
+cat > "$ROOT/etc/shells" <<'SHELLS'
+/bin/sh
+/bin/ash
+/bin/busybox
+/usr/bin/bash
+SHELLS
+
+cat > "$ROOT/etc/securetty" <<'SECURETTY'
+tty
+console
+tty1
+SECURETTY
+
+cat > "$ROOT/etc/profile" <<'PROFILE'
+export USER="${USER:-root}"
+export LOGNAME="${LOGNAME:-root}"
+export HOME="${HOME:-/root}"
+export SHELL="${SHELL:-/bin/sh}"
+export PATH="${PATH:-/bin:/sbin:/usr/bin}"
+PROFILE
+
 cat > "$ROOT/.bashrc" <<'BASHRC'
 if command -v dircolors >/dev/null 2>&1; then
   eval "$(dircolors -b)"
@@ -140,6 +179,7 @@ if command -v diff >/dev/null 2>&1 && diff --color=auto /dev/null /dev/null >/de
   alias diff='diff --color=auto'
 fi
 BASHRC
+ln -sf /.bashrc "$ROOT/root/.bashrc"
 if [[ -n "$HELP_BIN" && -x "$HELP_BIN" ]]; then
   cat >> "$ROOT/.bashrc" <<'BASHRC'
 alias help='/usr/bin/help'
@@ -148,9 +188,14 @@ fi
 
 cat > "$ROOT/init" <<'INIT'
 #!/bin/busybox sh
+export USER=root
+export LOGNAME=root
+export HOME=/root
+export SHELL=/bin/sh
+export PATH=/bin:/sbin:/usr/bin
 while true; do
   if [ -x /usr/bin/bash ]; then
-    /usr/bin/bash -i
+    SHELL=/usr/bin/bash /usr/bin/bash -i
   else
     /bin/busybox sh -i
   fi

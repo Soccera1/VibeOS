@@ -76,6 +76,8 @@ struct ramdisk_node {
     uint32_t inode;
     uint32_t parent;
     uint32_t mode;
+    uint32_t uid;
+    uint32_t gid;
     uint8_t* data;
     size_t size;
     char path[FS_MAX_PATH];
@@ -176,6 +178,8 @@ static int ramdisk_fill_entry(const struct ramdisk_node* node, struct fs_entry* 
         out->data = node->data;
         out->size = node->size;
         out->mode = node->mode;
+        out->uid = node->uid;
+        out->gid = node->gid;
         out->inode = node->inode;
         out->backend = FS_BACKEND_RAMDISK;
         out->read_only = false;
@@ -183,7 +187,8 @@ static int ramdisk_fill_entry(const struct ramdisk_node* node, struct fs_entry* 
     return 0;
 }
 
-static int ramdisk_create_node(const char* path, uint32_t mode, const void* data, size_t size, struct fs_entry* out) {
+static int ramdisk_create_node(const char* path, uint32_t mode, uint32_t uid, uint32_t gid, const void* data, size_t size,
+                               struct fs_entry* out) {
     char parent_path[FS_MAX_PATH];
     char name[FS_MAX_NAME];
     int sr = ramdisk_split_parent(path, parent_path, sizeof(parent_path), name, sizeof(name));
@@ -207,6 +212,8 @@ static int ramdisk_create_node(const char* path, uint32_t mode, const void* data
     }
     node->parent = parent->inode;
     node->mode = mode;
+    node->uid = uid;
+    node->gid = gid;
     strncpy(node->path, path, sizeof(node->path));
     node->path[sizeof(node->path) - 1] = '\0';
     if (size != 0u) {
@@ -241,6 +248,8 @@ static int ramdisk_mount_path(const char* path, uint32_t mode) {
     }
     node->parent = node->inode;
     node->mode = FS_S_IFDIR | (mode & 07777u);
+    node->uid = 0;
+    node->gid = 0;
     strncpy(node->path, path, sizeof(node->path));
     node->path[sizeof(node->path) - 1] = '\0';
     if (strcmp(path, "/home") == 0) {
@@ -647,6 +656,8 @@ int fs_lookup(const char* path, struct fs_entry* out) {
             out->data = g_resolv_conf;
             out->size = sizeof(g_resolv_conf) - 1u;
             out->mode = FS_S_IFREG | 0644u;
+            out->uid = 0;
+            out->gid = 0;
             out->inode = 0;
             out->backend = FS_BACKEND_INITRAMFS;
             out->read_only = true;
@@ -661,6 +672,8 @@ int fs_lookup(const char* path, struct fs_entry* out) {
         out->data = entry.data;
         out->size = entry.size;
         out->mode = entry.mode;
+        out->uid = 0;
+        out->gid = 0;
         out->inode = 0;
         out->backend = FS_BACKEND_INITRAMFS;
         out->read_only = true;
@@ -773,47 +786,47 @@ bool fs_is_read_only_path(const char* path) {
     return false;
 }
 
-int fs_create(const char* path, uint32_t mode, struct fs_entry* out) {
+int fs_create(const char* path, uint32_t mode, uint32_t uid, uint32_t gid, struct fs_entry* out) {
     if (path_in_ext2_mount(path)) {
-        return ext2_create(path, mode, out);
+        return ext2_create(path, mode, uid, gid, out);
     }
     if (path_in_ramdisk(path)) {
         uint32_t file_mode = (mode & FS_S_IFMT) == 0u ? (FS_S_IFREG | (mode & 07777u)) : mode;
-        return ramdisk_create_node(path, file_mode, NULL, 0, out);
+        return ramdisk_create_node(path, file_mode, uid, gid, NULL, 0, out);
     }
     return -30;
 }
 
-int fs_mknod(const char* path, uint32_t mode, uint32_t rdev, struct fs_entry* out) {
+int fs_mknod(const char* path, uint32_t mode, uint32_t rdev, uint32_t uid, uint32_t gid, struct fs_entry* out) {
     if (path_in_ext2_mount(path)) {
-        return ext2_mknod(path, mode, rdev, out);
+        return ext2_mknod(path, mode, rdev, uid, gid, out);
     }
     if (path_in_ramdisk(path)) {
         (void)rdev;
-        return ramdisk_create_node(path, mode, NULL, 0, out);
+        return ramdisk_create_node(path, mode, uid, gid, NULL, 0, out);
     }
     return -30;
 }
 
-int fs_mkdir(const char* path, uint32_t mode, struct fs_entry* out) {
+int fs_mkdir(const char* path, uint32_t mode, uint32_t uid, uint32_t gid, struct fs_entry* out) {
     if (path_in_ext2_mount(path)) {
-        return ext2_mkdir(path, mode, out);
+        return ext2_mkdir(path, mode, uid, gid, out);
     }
     if (path_in_ramdisk(path)) {
-        return ramdisk_create_node(path, FS_S_IFDIR | (mode & 07777u), NULL, 0, out);
+        return ramdisk_create_node(path, FS_S_IFDIR | (mode & 07777u), uid, gid, NULL, 0, out);
     }
     return -30;
 }
 
-int fs_symlink(const char* target, const char* linkpath, struct fs_entry* out) {
+int fs_symlink(const char* target, const char* linkpath, uint32_t uid, uint32_t gid, struct fs_entry* out) {
     if (path_in_ext2_mount(linkpath)) {
-        return ext2_symlink(target, linkpath, out);
+        return ext2_symlink(target, linkpath, uid, gid, out);
     }
     if (path_in_ramdisk(linkpath)) {
         if (target == NULL) {
             return -EINVAL;
         }
-        return ramdisk_create_node(linkpath, FS_S_IFLNK | 0777u, target, strlen(target), out);
+        return ramdisk_create_node(linkpath, FS_S_IFLNK | 0777u, uid, gid, target, strlen(target), out);
     }
     return -30;
 }
@@ -903,9 +916,17 @@ int fs_chown(const char* path, uint32_t uid, uint32_t gid) {
         return ext2_chown(path, uid, gid);
     }
     if (path_in_ramdisk(path)) {
-        (void)uid;
-        (void)gid;
-        return ramdisk_find_path(path) == NULL ? -ENOENT : 0;
+        struct ramdisk_node* node = ramdisk_find_path(path);
+        if (node == NULL) {
+            return -ENOENT;
+        }
+        if (uid != UINT32_MAX) {
+            node->uid = uid;
+        }
+        if (gid != UINT32_MAX) {
+            node->gid = gid;
+        }
+        return 0;
     }
     return -30;
 }

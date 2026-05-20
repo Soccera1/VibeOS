@@ -34,6 +34,10 @@
 #define AT_EMPTY_PATH 0x1000u
 #define AT_STATX_SYNC_TYPE 0x6000u
 
+#define R_OK 4u
+#define W_OK 2u
+#define X_OK 1u
+
 #define O_RDONLY 0u
 #define O_WRONLY 1u
 #define O_RDWR 2u
@@ -152,6 +156,7 @@
 #define EINTR 4
 #define ECHILD 10
 #define EAGAIN 11
+#define EACCES 13
 #define EBADF 9
 #define EFAULT 14
 #define ENOEXEC 8
@@ -704,6 +709,14 @@ static int g_current_pid = 1;
 static int g_current_ppid = 0;
 static int g_current_pgid = 1;
 static int g_current_sid = 1;
+static uint32_t g_uid = 0;
+static uint32_t g_euid = 0;
+static uint32_t g_suid = 0;
+static uint32_t g_fsuid = 0;
+static uint32_t g_gid = 0;
+static uint32_t g_egid = 0;
+static uint32_t g_sgid = 0;
+static uint32_t g_fsgid = 0;
 static int g_pending_keyboard_signal;
 static struct pipe_state g_pipes[MAX_PIPES];
 static struct unix_socket_state g_unix_sockets[MAX_UNIX_SOCKETS];
@@ -873,6 +886,44 @@ static bool open_flags_can_read(uint32_t flags) {
 static bool open_flags_can_write(uint32_t flags) {
     uint32_t accmode = flags & O_ACCMODE;
     return accmode == O_WRONLY || accmode == O_RDWR;
+}
+
+static bool current_is_superuser(void) {
+    return g_euid == 0;
+}
+
+static bool current_in_group(uint32_t gid) {
+    return g_fsgid == gid || g_egid == gid || g_gid == gid;
+}
+
+static uint32_t permission_bits_for_current(const struct fs_entry* entry) {
+    if (entry == NULL) {
+        return 0;
+    }
+    if (g_fsuid == entry->uid || g_euid == entry->uid) {
+        return (entry->mode >> 6) & 07u;
+    }
+    if (current_in_group(entry->gid)) {
+        return (entry->mode >> 3) & 07u;
+    }
+    return entry->mode & 07u;
+}
+
+static bool current_can_access_entry(const struct fs_entry* entry, uint32_t requested) {
+    if (entry == NULL) {
+        return false;
+    }
+    if (requested == 0u) {
+        return true;
+    }
+    if (current_is_superuser()) {
+        return (requested & X_OK) == 0u || (entry->mode & 0111u) != 0u || (entry->mode & S_IFMT) == S_IFDIR;
+    }
+    return (permission_bits_for_current(entry) & requested) == requested;
+}
+
+static bool current_owns_entry(const struct fs_entry* entry) {
+    return entry != NULL && (current_is_superuser() || g_euid == entry->uid || g_fsuid == entry->uid);
 }
 
 static bool same_fs_file(const struct fs_entry* a, const struct fs_entry* b) {
@@ -1372,6 +1423,14 @@ static int save_live_process(struct process* proc, struct syscall_frame* frame) 
     proc->tid_address = g_tid_address;
     proc->fs_base = read_fs_base_current();
     proc->umask = g_umask;
+    proc->uid = g_uid;
+    proc->euid = g_euid;
+    proc->suid = g_suid;
+    proc->fsuid = g_fsuid;
+    proc->gid = g_gid;
+    proc->egid = g_egid;
+    proc->sgid = g_sgid;
+    proc->fsgid = g_fsgid;
     proc->altstack_sp = g_altstack_sp;
     proc->altstack_size = g_altstack_size;
     proc->altstack_flags = g_altstack_flags;
@@ -1415,6 +1474,14 @@ static void sync_current_process_runtime(void) {
     proc->tid_address = g_tid_address;
     proc->fs_base = read_fs_base_current();
     proc->umask = g_umask;
+    proc->uid = g_uid;
+    proc->euid = g_euid;
+    proc->suid = g_suid;
+    proc->fsuid = g_fsuid;
+    proc->gid = g_gid;
+    proc->egid = g_egid;
+    proc->sgid = g_sgid;
+    proc->fsgid = g_fsgid;
     proc->altstack_sp = g_altstack_sp;
     proc->altstack_size = g_altstack_size;
     proc->altstack_flags = g_altstack_flags;
@@ -1447,6 +1514,14 @@ static void load_process_runtime(struct process* proc) {
     g_mmap_next = proc->mmap_next;
     g_tid_address = proc->tid_address;
     g_umask = proc->umask;
+    g_uid = proc->uid;
+    g_euid = proc->euid;
+    g_suid = proc->suid;
+    g_fsuid = proc->fsuid;
+    g_gid = proc->gid;
+    g_egid = proc->egid;
+    g_sgid = proc->sgid;
+    g_fsgid = proc->fsgid;
     g_altstack_sp = proc->altstack_sp;
     g_altstack_size = proc->altstack_size;
     g_altstack_flags = proc->altstack_flags;
@@ -2664,6 +2739,8 @@ static int path_mode_size(const char* path, uint32_t* mode_out, size_t* size_out
             memset(entry_out, 0, sizeof(*entry_out));
             strncpy(entry_out->path, path, sizeof(entry_out->path));
             entry_out->mode = S_IFCHR | 0666u;
+            entry_out->uid = 0;
+            entry_out->gid = 0;
         }
         return 0;
     }
@@ -2679,6 +2756,8 @@ static int path_mode_size(const char* path, uint32_t* mode_out, size_t* size_out
             memset(entry_out, 0, sizeof(*entry_out));
             strncpy(entry_out->path, path, sizeof(entry_out->path));
             entry_out->mode = S_IFCHR | 0666u;
+            entry_out->uid = 0;
+            entry_out->gid = 0;
         }
         return 0;
     }
@@ -2698,6 +2777,8 @@ static int path_mode_size(const char* path, uint32_t* mode_out, size_t* size_out
             memset(entry_out, 0, sizeof(*entry_out));
             strncpy(entry_out->path, path, sizeof(entry_out->path));
             entry_out->mode = S_IFCHR | 0666u;
+            entry_out->uid = 0;
+            entry_out->gid = 0;
             entry_out->size = fb.size;
         }
         return 0;
@@ -2714,6 +2795,8 @@ static int path_mode_size(const char* path, uint32_t* mode_out, size_t* size_out
             memset(entry_out, 0, sizeof(*entry_out));
             strncpy(entry_out->path, path, sizeof(entry_out->path));
             entry_out->mode = S_IFSOCK | 0777u;
+            entry_out->uid = 0;
+            entry_out->gid = 0;
         }
         return 0;
     }
@@ -2730,6 +2813,8 @@ static int path_mode_size(const char* path, uint32_t* mode_out, size_t* size_out
             memset(entry_out, 0, sizeof(*entry_out));
             strncpy(entry_out->path, path, sizeof(entry_out->path));
             entry_out->mode = S_IFLNK | 0777u;
+            entry_out->uid = 0;
+            entry_out->gid = 0;
             entry_out->data = (const uint8_t*)target;
             entry_out->size = strlen(target);
         }
@@ -2760,6 +2845,8 @@ static int path_mode_size(const char* path, uint32_t* mode_out, size_t* size_out
             memset(entry_out, 0, sizeof(*entry_out));
             strncpy(entry_out->path, path, sizeof(entry_out->path));
             entry_out->mode = S_IFDIR | 0755u;
+            entry_out->uid = 0;
+            entry_out->gid = 0;
         }
         return 0;
     }
@@ -2920,9 +3007,11 @@ void syscall_random_bytes(void* buf, uint64_t len) {
     memset(block, 0, sizeof(block));
 }
 
-static void fill_stat(struct linux_stat* st, uint32_t mode, size_t size) {
+static void fill_stat(struct linux_stat* st, uint32_t mode, size_t size, uint32_t uid, uint32_t gid) {
     memset(st, 0, sizeof(*st));
     st->st_mode = mode;
+    st->st_uid = uid;
+    st->st_gid = gid;
     st->st_size = (int64_t)size;
     st->st_nlink = 1;
     st->st_blksize = 4096;
@@ -3030,7 +3119,7 @@ static int sys_openat(int dirfd, const char* path_user, uint32_t flags, uint32_t
                 return err(EINVAL);
             }
             uint32_t create_mode = S_IFREG | (mode_arg & 07777u & ~g_umask);
-            int cr = fs_create(path, create_mode, &e);
+            int cr = fs_create(path, create_mode, g_fsuid, g_fsgid, &e);
             if (cr != 0) {
                 return cr;
             }
@@ -3056,6 +3145,16 @@ static int sys_openat(int dirfd, const char* path_user, uint32_t flags, uint32_t
     }
     if (wants_write && e.backend != FS_BACKEND_NONE && e.read_only) {
         return err(EROFS);
+    }
+    uint32_t requested = 0;
+    if (open_flags_can_read(flags)) {
+        requested |= R_OK;
+    }
+    if (wants_write) {
+        requested |= W_OK;
+    }
+    if (!current_can_access_entry(&e, requested)) {
+        return err(EACCES);
     }
     if ((flags & O_TRUNC) != 0u && ((mode & S_IFMT) == S_IFREG)) {
         int tr = fs_truncate(&e, 0);
@@ -6388,14 +6487,23 @@ static int resolve_user_path(int dirfd, const char* path_user, bool follow_final
     return resolve_symlinks(abs_path, out, out_len, follow_final);
 }
 
-static int sys_access_like(int dirfd, const char* path_user) {
+static int sys_access_like(int dirfd, const char* path_user, uint32_t mode) {
+    if ((mode & ~(R_OK | W_OK | X_OK)) != 0u) {
+        return err(EINVAL);
+    }
+
     char path[128];
     int r = resolve_user_path(dirfd, path_user, true, path, sizeof(path));
     if (r != 0) {
         return r;
     }
 
-    return path_mode_size(path, NULL, NULL, NULL);
+    struct fs_entry entry;
+    r = path_mode_size(path, NULL, NULL, &entry);
+    if (r != 0) {
+        return r;
+    }
+    return current_can_access_entry(&entry, mode) ? 0 : err(EACCES);
 }
 
 static int sys_mkdirat(int dirfd, const char* path_user, uint32_t mode) {
@@ -6404,7 +6512,7 @@ static int sys_mkdirat(int dirfd, const char* path_user, uint32_t mode) {
     if (r != 0) {
         return r;
     }
-    return fs_mkdir(path, mode & 07777u & ~g_umask, NULL);
+    return fs_mkdir(path, mode & 07777u & ~g_umask, g_fsuid, g_fsgid, NULL);
 }
 
 static int sys_mknodat(int dirfd, const char* path_user, uint32_t mode, uint32_t rdev) {
@@ -6413,7 +6521,7 @@ static int sys_mknodat(int dirfd, const char* path_user, uint32_t mode, uint32_t
     if (r != 0) {
         return r;
     }
-    return fs_mknod(path, mode, rdev, NULL);
+    return fs_mknod(path, mode, rdev, g_fsuid, g_fsgid, NULL);
 }
 
 static int sys_unlinkat(int dirfd, const char* path_user, uint32_t flags) {
@@ -6463,7 +6571,7 @@ static int sys_symlinkat(const char* target_user, int newdirfd, const char* link
     if (r != 0) {
         return r;
     }
-    return fs_symlink(target, linkpath, NULL);
+    return fs_symlink(target, linkpath, g_fsuid, g_fsgid, NULL);
 }
 
 static int sys_linkat(int olddirfd, const char* old_user, int newdirfd, const char* new_user, uint32_t flags) {
@@ -6495,6 +6603,14 @@ static int sys_chmodat(int dirfd, const char* path_user, uint32_t mode, uint32_t
     if (r != 0) {
         return r;
     }
+    struct fs_entry entry;
+    r = path_mode_size(path, NULL, NULL, &entry);
+    if (r != 0) {
+        return r;
+    }
+    if (!current_owns_entry(&entry)) {
+        return err(EPERM);
+    }
     return fs_chmod(path, mode);
 }
 
@@ -6507,6 +6623,9 @@ static int sys_chownat(int dirfd, const char* path_user, uint32_t uid, uint32_t 
     int r = resolve_user_path(dirfd, path_user, (flags & AT_SYMLINK_NOFOLLOW) == 0u, path, sizeof(path));
     if (r != 0) {
         return r;
+    }
+    if (!current_is_superuser()) {
+        return err(EPERM);
     }
     return fs_chown(path, uid, gid);
 }
@@ -6556,6 +6675,9 @@ static int sys_fchmod(int fd, uint32_t mode) {
     if (g_fds[fd].kind != FD_FILE && g_fds[fd].kind != FD_DIR) {
         return err(EINVAL);
     }
+    if (!current_owns_entry(&g_fds[fd].entry)) {
+        return err(EPERM);
+    }
     return fs_chmod(g_fds[fd].entry.path, mode);
 }
 
@@ -6565,6 +6687,9 @@ static int sys_fchown(int fd, uint32_t uid, uint32_t gid) {
     }
     if (g_fds[fd].kind != FD_FILE && g_fds[fd].kind != FD_DIR) {
         return err(EINVAL);
+    }
+    if (!current_is_superuser()) {
+        return err(EPERM);
     }
     return fs_chown(g_fds[fd].entry.path, uid, gid);
 }
@@ -6749,13 +6874,17 @@ static int sys_readlinkat(int dirfd, const char* path_user, char* out, size_t bu
     return fs_readlink(&e, out, bufsz);
 }
 
-static int fd_mode_size(int fd, uint32_t* mode_out, size_t* size_out) {
+static int fd_mode_size_entry(int fd, uint32_t* mode_out, size_t* size_out, struct fs_entry* entry_out) {
     if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
         return err(EBADF);
     }
 
     uint32_t mode = S_IFREG | 0644u;
     size_t size = 0;
+    struct fs_entry entry;
+    memset(&entry, 0, sizeof(entry));
+    entry.uid = 0;
+    entry.gid = 0;
 
     if (g_fds[fd].kind == FD_TTY) {
         mode = S_IFCHR | 0666u;
@@ -6769,7 +6898,9 @@ static int fd_mode_size(int fd, uint32_t* mode_out, size_t* size_out) {
         mode = S_IFCHR | 0666u;
         size = fb.size;
     } else if (g_fds[fd].kind == FD_DIR) {
-        mode = S_IFDIR | 0755u;
+        mode = g_fds[fd].entry.mode != 0u ? g_fds[fd].entry.mode : (S_IFDIR | 0755u);
+        size = g_fds[fd].entry.size;
+        entry = g_fds[fd].entry;
     } else if (g_fds[fd].kind == FD_UNIX || g_fds[fd].kind == FD_INET) {
         mode = S_IFSOCK | 0777u;
     } else if (g_fds[fd].kind == FD_PIPE_R || g_fds[fd].kind == FD_PIPE_W) {
@@ -6777,7 +6908,10 @@ static int fd_mode_size(int fd, uint32_t* mode_out, size_t* size_out) {
     } else {
         mode = g_fds[fd].entry.mode;
         size = g_fds[fd].entry.size;
+        entry = g_fds[fd].entry;
     }
+    entry.mode = mode;
+    entry.size = size;
 
     if (mode_out != NULL) {
         *mode_out = mode;
@@ -6785,18 +6919,22 @@ static int fd_mode_size(int fd, uint32_t* mode_out, size_t* size_out) {
     if (size_out != NULL) {
         *size_out = size;
     }
+    if (entry_out != NULL) {
+        *entry_out = entry;
+    }
     return 0;
 }
 
 static int sys_fstat(int fd, struct linux_stat* st) {
     uint32_t mode = 0;
     size_t size = 0;
-    int r = fd_mode_size(fd, &mode, &size);
+    struct fs_entry entry;
+    int r = fd_mode_size_entry(fd, &mode, &size, &entry);
     if (r != 0) {
         return r;
     }
 
-    fill_stat(st, mode, size);
+    fill_stat(st, mode, size, entry.uid, entry.gid);
     return 0;
 }
 
@@ -6815,11 +6953,12 @@ static int sys_newfstatat(int dirfd, const char* path_user, struct linux_stat* s
     if ((flags & AT_EMPTY_PATH) != 0u && path_input[0] == '\0') {
         uint32_t mode = 0;
         size_t size = 0;
-        int r = fd_mode_size(dirfd, &mode, &size);
+        struct fs_entry entry;
+        int r = fd_mode_size_entry(dirfd, &mode, &size, &entry);
         if (r != 0) {
             return r;
         }
-        fill_stat(st, mode, size);
+        fill_stat(st, mode, size, entry.uid, entry.gid);
         return 0;
     }
 
@@ -6834,12 +6973,13 @@ static int sys_newfstatat(int dirfd, const char* path_user, struct linux_stat* s
 
     uint32_t mode = 0;
     size_t size = 0;
-    r = path_mode_size(path, &mode, &size, NULL);
+    struct fs_entry entry;
+    r = path_mode_size(path, &mode, &size, &entry);
     if (r != 0) {
         return r;
     }
 
-    fill_stat(st, mode, size);
+    fill_stat(st, mode, size, entry.uid, entry.gid);
     return 0;
 }
 
@@ -6856,8 +6996,10 @@ static int sys_statx(int dirfd, const char* path_user, uint32_t flags, struct li
 
     uint32_t mode = 0;
     size_t size = 0;
+    struct fs_entry entry;
+    memset(&entry, 0, sizeof(entry));
     if ((flags & AT_EMPTY_PATH) != 0u && path_input[0] == '\0') {
-        int r = fd_mode_size(dirfd, &mode, &size);
+        int r = fd_mode_size_entry(dirfd, &mode, &size, &entry);
         if (r != 0) {
             return r;
         }
@@ -6874,7 +7016,7 @@ static int sys_statx(int dirfd, const char* path_user, uint32_t flags, struct li
         return r;
     }
 
-    r = path_mode_size(path, &mode, &size, NULL);
+    r = path_mode_size(path, &mode, &size, &entry);
     if (r != 0) {
         return r;
     }
@@ -6884,8 +7026,8 @@ fill:
     stx->stx_mask = 0xFFFu;
     stx->stx_mode = (uint16_t)mode;
     stx->stx_nlink = 1;
-    stx->stx_uid = 0;
-    stx->stx_gid = 0;
+    stx->stx_uid = entry.uid;
+    stx->stx_gid = entry.gid;
     stx->stx_size = size;
     stx->stx_blksize = 4096;
     stx->stx_blocks = (size + 511u) / 512u;
@@ -6902,12 +7044,13 @@ static int sys_stat_compat(const char* path_user, struct linux_stat* st, bool fo
 
     uint32_t mode = 0;
     size_t size = 0;
-    r = path_mode_size(path, &mode, &size, NULL);
+    struct fs_entry entry;
+    r = path_mode_size(path, &mode, &size, &entry);
     if (r != 0) {
         return r;
     }
 
-    fill_stat(st, mode, size);
+    fill_stat(st, mode, size, entry.uid, entry.gid);
     return 0;
 }
 
@@ -7874,6 +8017,9 @@ static int read_exec_file(const char* path, struct fs_entry* entry_out, uint8_t*
     if (fs_lookup(path, &entry) != 0 || (entry.mode & S_IFMT) != S_IFREG) {
         return err(ENOENT);
     }
+    if (!current_can_access_entry(&entry, X_OK)) {
+        return err(EACCES);
+    }
 
     uint8_t* image = kmalloc(entry.size);
     if (image == NULL) {
@@ -8190,10 +8336,10 @@ static int build_exec_stack(const char* execfn, char argv[EXEC_MAX_ARGS][EXEC_ST
     sp = exec_stack_push_auxv(sp, 17, 100, space);
     sp = exec_stack_push_auxv(sp, 8, 0, space);
     sp = exec_stack_push_auxv(sp, 7, base, space);
-    sp = exec_stack_push_auxv(sp, 14, 0, space);
-    sp = exec_stack_push_auxv(sp, 13, 0, space);
-    sp = exec_stack_push_auxv(sp, 12, 0, space);
-    sp = exec_stack_push_auxv(sp, 11, 0, space);
+    sp = exec_stack_push_auxv(sp, 14, g_egid, space);
+    sp = exec_stack_push_auxv(sp, 13, g_gid, space);
+    sp = exec_stack_push_auxv(sp, 12, g_euid, space);
+    sp = exec_stack_push_auxv(sp, 11, g_uid, space);
     sp = exec_stack_push_auxv(sp, 9, entry, space);
     sp = exec_stack_push_auxv(sp, 6, 4096, space);
     sp = exec_stack_push_auxv(sp, 5, phnum, space);
@@ -8798,6 +8944,201 @@ static int sys_reboot(int magic1, int magic2, uint64_t cmd) {
     }
 }
 
+static bool uid_is_current_or_saved(uint32_t uid) {
+    return uid == g_uid || uid == g_euid || uid == g_suid;
+}
+
+static bool gid_is_current_or_saved(uint32_t gid) {
+    return gid == g_gid || gid == g_egid || gid == g_sgid;
+}
+
+static int sys_setuid(uint32_t uid) {
+    if (current_is_superuser()) {
+        g_uid = uid;
+        g_euid = uid;
+        g_suid = uid;
+        g_fsuid = uid;
+        sync_current_process_runtime();
+        return 0;
+    }
+    if (!uid_is_current_or_saved(uid)) {
+        return err(EPERM);
+    }
+    g_euid = uid;
+    g_fsuid = uid;
+    sync_current_process_runtime();
+    return 0;
+}
+
+static int sys_setgid(uint32_t gid) {
+    if (current_is_superuser()) {
+        g_gid = gid;
+        g_egid = gid;
+        g_sgid = gid;
+        g_fsgid = gid;
+        sync_current_process_runtime();
+        return 0;
+    }
+    if (!gid_is_current_or_saved(gid)) {
+        return err(EPERM);
+    }
+    g_egid = gid;
+    g_fsgid = gid;
+    sync_current_process_runtime();
+    return 0;
+}
+
+static int sys_setreuid(uint32_t ruid, uint32_t euid) {
+    bool root = current_is_superuser();
+    if (!root && ((ruid != UINT32_MAX && !uid_is_current_or_saved(ruid)) ||
+                  (euid != UINT32_MAX && !uid_is_current_or_saved(euid)))) {
+        return err(EPERM);
+    }
+    if (ruid != UINT32_MAX) {
+        g_uid = ruid;
+    }
+    if (euid != UINT32_MAX) {
+        g_euid = euid;
+        g_fsuid = euid;
+    }
+    if (root || ruid != UINT32_MAX || euid != UINT32_MAX) {
+        g_suid = g_euid;
+    }
+    sync_current_process_runtime();
+    return 0;
+}
+
+static int sys_setregid(uint32_t rgid, uint32_t egid) {
+    bool root = current_is_superuser();
+    if (!root && ((rgid != UINT32_MAX && !gid_is_current_or_saved(rgid)) ||
+                  (egid != UINT32_MAX && !gid_is_current_or_saved(egid)))) {
+        return err(EPERM);
+    }
+    if (rgid != UINT32_MAX) {
+        g_gid = rgid;
+    }
+    if (egid != UINT32_MAX) {
+        g_egid = egid;
+        g_fsgid = egid;
+    }
+    if (root || rgid != UINT32_MAX || egid != UINT32_MAX) {
+        g_sgid = g_egid;
+    }
+    sync_current_process_runtime();
+    return 0;
+}
+
+static int sys_setresuid(uint32_t ruid, uint32_t euid, uint32_t suid) {
+    bool root = current_is_superuser();
+    if (!root && ((ruid != UINT32_MAX && !uid_is_current_or_saved(ruid)) ||
+                  (euid != UINT32_MAX && !uid_is_current_or_saved(euid)) ||
+                  (suid != UINT32_MAX && !uid_is_current_or_saved(suid)))) {
+        return err(EPERM);
+    }
+    if (ruid != UINT32_MAX) {
+        g_uid = ruid;
+    }
+    if (euid != UINT32_MAX) {
+        g_euid = euid;
+        g_fsuid = euid;
+    }
+    if (suid != UINT32_MAX) {
+        g_suid = suid;
+    }
+    sync_current_process_runtime();
+    return 0;
+}
+
+static int sys_setresgid(uint32_t rgid, uint32_t egid, uint32_t sgid) {
+    bool root = current_is_superuser();
+    if (!root && ((rgid != UINT32_MAX && !gid_is_current_or_saved(rgid)) ||
+                  (egid != UINT32_MAX && !gid_is_current_or_saved(egid)) ||
+                  (sgid != UINT32_MAX && !gid_is_current_or_saved(sgid)))) {
+        return err(EPERM);
+    }
+    if (rgid != UINT32_MAX) {
+        g_gid = rgid;
+    }
+    if (egid != UINT32_MAX) {
+        g_egid = egid;
+        g_fsgid = egid;
+    }
+    if (sgid != UINT32_MAX) {
+        g_sgid = sgid;
+    }
+    sync_current_process_runtime();
+    return 0;
+}
+
+static int sys_getresuid(uint32_t* ruid, uint32_t* euid, uint32_t* suid) {
+    if (ruid == NULL || euid == NULL || suid == NULL) {
+        return err(EFAULT);
+    }
+    int r = copy_to_user(ruid, &g_uid, sizeof(g_uid));
+    if (r != 0) {
+        return r;
+    }
+    r = copy_to_user(euid, &g_euid, sizeof(g_euid));
+    if (r != 0) {
+        return r;
+    }
+    return copy_to_user(suid, &g_suid, sizeof(g_suid));
+}
+
+static int sys_getresgid(uint32_t* rgid, uint32_t* egid, uint32_t* sgid) {
+    if (rgid == NULL || egid == NULL || sgid == NULL) {
+        return err(EFAULT);
+    }
+    int r = copy_to_user(rgid, &g_gid, sizeof(g_gid));
+    if (r != 0) {
+        return r;
+    }
+    r = copy_to_user(egid, &g_egid, sizeof(g_egid));
+    if (r != 0) {
+        return r;
+    }
+    return copy_to_user(sgid, &g_sgid, sizeof(g_sgid));
+}
+
+static int sys_getgroups(int size, uint32_t* list) {
+    if (size < 0) {
+        return err(EINVAL);
+    }
+    if (size == 0) {
+        return 0;
+    }
+    if (list == NULL) {
+        return err(EFAULT);
+    }
+    return 0;
+}
+
+static int sys_setgroups(int size, const uint32_t* list) {
+    (void)list;
+    if (size < 0) {
+        return err(EINVAL);
+    }
+    return current_is_superuser() ? 0 : err(EPERM);
+}
+
+static uint32_t sys_setfsuid(uint32_t uid) {
+    uint32_t old = g_fsuid;
+    if (current_is_superuser() || uid_is_current_or_saved(uid)) {
+        g_fsuid = uid;
+        sync_current_process_runtime();
+    }
+    return old;
+}
+
+static uint32_t sys_setfsgid(uint32_t gid) {
+    uint32_t old = g_fsgid;
+    if (current_is_superuser() || gid_is_current_or_saved(gid)) {
+        g_fsgid = gid;
+        sync_current_process_runtime();
+    }
+    return old;
+}
+
 static int sys_fork_like(struct syscall_frame* frame, uint64_t clone_flags, uint64_t child_stack, uint64_t child_tid_ptr, uint64_t tls,
                          bool from_clone) {
     if (from_clone) {
@@ -8845,6 +9186,14 @@ static int sys_fork_like(struct syscall_frame* frame, uint64_t clone_flags, uint
     child->brk_current = current->brk_current;
     child->mmap_next = current->mmap_next;
     child->umask = current->umask;
+    child->uid = current->uid;
+    child->euid = current->euid;
+    child->suid = current->suid;
+    child->fsuid = current->fsuid;
+    child->gid = current->gid;
+    child->egid = current->egid;
+    child->sgid = current->sgid;
+    child->fsgid = current->fsgid;
     child->fs_base = ((from_clone && (clone_flags & CLONE_SETTLS) != 0ull) ? tls : current->fs_base);
     child->tid_address = ((from_clone && (clone_flags & CLONE_CHILD_CLEARTID)) != 0ull) ? child_tid_ptr : current->tid_address;
     child->altstack_sp = current->altstack_sp;
@@ -8946,6 +9295,14 @@ void syscall_init(void) {
     g_current_ppid = 0;
     g_current_pgid = 1;
     g_current_sid = 1;
+    g_uid = 0;
+    g_euid = 0;
+    g_suid = 0;
+    g_fsuid = 0;
+    g_gid = 0;
+    g_egid = 0;
+    g_sgid = 0;
+    g_fsgid = 0;
     g_pending_keyboard_signal = 0;
     g_tid_address = 0;
     g_altstack_sp = 0;
@@ -8978,6 +9335,14 @@ void syscall_init(void) {
         init_proc->brk_current = g_brk_current;
         init_proc->mmap_next = g_mmap_next;
         init_proc->umask = g_umask;
+        init_proc->uid = g_uid;
+        init_proc->euid = g_euid;
+        init_proc->suid = g_suid;
+        init_proc->fsuid = g_fsuid;
+        init_proc->gid = g_gid;
+        init_proc->egid = g_egid;
+        init_proc->sgid = g_sgid;
+        init_proc->fsgid = g_fsgid;
         init_proc->altstack_flags = g_altstack_flags;
         init_proc->dumpable = g_dumpable;
         memcpy(init_proc->comm, g_task_name, sizeof(g_task_name));
@@ -9064,7 +9429,7 @@ static uint64_t syscall_dispatch_body(struct syscall_frame* frame) {
         case 20:
             return (uint64_t)sys_writev((int)a0, (const struct linux_iovec*)(uintptr_t)a1, (size_t)a2, frame);
         case 21:
-            return (uint64_t)sys_access_like(AT_FDCWD, (const char*)(uintptr_t)a0);
+            return (uint64_t)sys_access_like(AT_FDCWD, (const char*)(uintptr_t)a0, (uint32_t)a1);
         case 22:
             return (uint64_t)sys_pipe2((int*)(uintptr_t)a0, 0);
         case 23:
@@ -9189,10 +9554,17 @@ static uint64_t syscall_dispatch_body(struct syscall_frame* frame) {
         case 97:
             return (uint64_t)sys_getrlimit((int)a0, (struct linux_rlimit*)(uintptr_t)a1);
         case 102:
+            return (uint64_t)g_uid;
         case 104:
+            return (uint64_t)g_gid;
+        case 105:
+            return (uint64_t)sys_setuid((uint32_t)a0);
+        case 106:
+            return (uint64_t)sys_setgid((uint32_t)a0);
         case 107:
+            return (uint64_t)g_euid;
         case 108:
-            return 0;
+            return (uint64_t)g_egid;
         case 109:
             return (uint64_t)sys_setpgid((int)a0, (int)a1);
         case 110:
@@ -9201,8 +9573,28 @@ static uint64_t syscall_dispatch_body(struct syscall_frame* frame) {
             return (uint64_t)sys_getpgrp();
         case 112:
             return (uint64_t)sys_setsid();
+        case 113:
+            return (uint64_t)sys_setreuid((uint32_t)a0, (uint32_t)a1);
+        case 114:
+            return (uint64_t)sys_setregid((uint32_t)a0, (uint32_t)a1);
+        case 115:
+            return (uint64_t)sys_getgroups((int)a0, (uint32_t*)(uintptr_t)a1);
+        case 116:
+            return (uint64_t)sys_setgroups((int)a0, (const uint32_t*)(uintptr_t)a1);
+        case 117:
+            return (uint64_t)sys_setresuid((uint32_t)a0, (uint32_t)a1, (uint32_t)a2);
+        case 118:
+            return (uint64_t)sys_getresuid((uint32_t*)(uintptr_t)a0, (uint32_t*)(uintptr_t)a1, (uint32_t*)(uintptr_t)a2);
+        case 119:
+            return (uint64_t)sys_setresgid((uint32_t)a0, (uint32_t)a1, (uint32_t)a2);
+        case 120:
+            return (uint64_t)sys_getresgid((uint32_t*)(uintptr_t)a0, (uint32_t*)(uintptr_t)a1, (uint32_t*)(uintptr_t)a2);
         case 121:
             return (uint64_t)sys_getpgid((int)a0);
+        case 122:
+            return (uint64_t)sys_setfsuid((uint32_t)a0);
+        case 123:
+            return (uint64_t)sys_setfsgid((uint32_t)a0);
         case 132:
             return (uint64_t)sys_utime((const char*)(uintptr_t)a0, (const struct linux_utimbuf*)(uintptr_t)a1);
         case 131:
@@ -9258,7 +9650,7 @@ static uint64_t syscall_dispatch_body(struct syscall_frame* frame) {
         case 268:
             return (uint64_t)sys_chmodat((int)a0, (const char*)(uintptr_t)a1, (uint32_t)a2, 0);
         case 269:
-            return (uint64_t)sys_access_like((int)a0, (const char*)(uintptr_t)a1);
+            return (uint64_t)sys_access_like((int)a0, (const char*)(uintptr_t)a1, (uint32_t)a2);
         case 270:
             return (uint64_t)sys_pselect6((int)a0, (void*)(uintptr_t)a1, (void*)(uintptr_t)a2, (void*)(uintptr_t)a3,
                                           (const struct linux_timespec*)(uintptr_t)a4,
@@ -9287,7 +9679,7 @@ static uint64_t syscall_dispatch_body(struct syscall_frame* frame) {
         case 334:
             return (uint64_t)err(ENOSYS);
         case 439:
-            return (uint64_t)sys_access_like((int)a0, (const char*)(uintptr_t)a1);
+            return (uint64_t)sys_access_like((int)a0, (const char*)(uintptr_t)a1, (uint32_t)a2);
         default:
             return (uint64_t)err(ENOSYS);
     }
