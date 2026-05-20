@@ -166,10 +166,12 @@ The initramfs contains the minimum system needed to come up:
 @item @file{/init},
 @item @file{/bin/busybox},
 @item essential coreutils copied into @file{/bin},
-@item root account and login configuration files under @file{/etc},
+@item root and passwordless @code{user} account/login configuration files under
+@file{/etc},
 @item device and directory scaffolding such as @file{/dev}, @file{/proc},
 @file{/root}, @file{/sys}, and @file{/tmp}, and
-@item empty @file{/usr} and @file{/home} mount points.
+@item empty @file{/usr} and @file{/home} mount points; kernel filesystem
+initialization creates @file{/home/user} after @file{/home} is mounted.
 @end itemize
 
 The ext3 image contains the larger optional userspace:

@@ -178,7 +178,12 @@ VibeOS currently boots directly to that root shell.  The initramfs still stages
 the basic account database and login configuration files, including
 @file{/etc/passwd}, @file{/etc/group}, @file{/etc/shadow},
 @file{/etc/securetty}, @file{/etc/shells}, and @file{/etc/profile}, so a later
-getty/login path has conventional root account data to consume.
+getty/login path has conventional account data to consume.  The default
+database includes @code{root} and a passwordless @code{user} account with home
+directory @file{/home/user} and default shell @file{/usr/bin/bash}, suitable
+for tools such as @code{su user}.  The kernel filesystem initialization creates
+and owns @file{/home/user} after the writable @file{/home} mount, or its
+ramdisk fallback, is available.
 
 @node In-Tree Userspace Helper
 @section In-Tree Userspace Helper
