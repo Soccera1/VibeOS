@@ -88,6 +88,7 @@ struct vring_used {
 struct virtio_gpu_queue {
     void* raw;
     uint16_t size;
+    uint16_t next_desc;
     struct vring_desc* desc;
     volatile struct vring_avail* avail;
     volatile struct vring_used* used;
@@ -189,6 +190,7 @@ static uint32_t g_poll_counter;
 static uint32_t g_pending_width;
 static uint32_t g_pending_height;
 static uint8_t g_pending_stable_polls;
+static bool g_failure_reported;
 static struct virtio_gpu_ctrl_hdr g_response __attribute__((aligned(16)));
 
 static uint16_t mmio_read16(volatile uint8_t* base, uint32_t offset) {
@@ -353,27 +355,47 @@ static void init_header(struct virtio_gpu_ctrl_hdr* hdr, uint32_t type) {
     hdr->type = type;
 }
 
+static uint16_t virtio_gpu_alloc_desc_pair(void) {
+    uint16_t head = g_control_queue.next_desc;
+    uint16_t tail = (uint16_t)(head + 1u);
+    if (tail >= g_control_queue.size) {
+        tail = 0u;
+    }
+
+    g_control_queue.next_desc = (uint16_t)(tail + 1u);
+    if (g_control_queue.next_desc >= g_control_queue.size) {
+        g_control_queue.next_desc = 0u;
+    }
+    return head;
+}
+
 static bool virtio_gpu_command(void* request, size_t request_size, void* response, size_t response_size, uint32_t ok_type) {
     if (!g_adaptive || g_control_queue.size < 2u || request == NULL || request_size == 0u || response == NULL ||
-        response_size < sizeof(struct virtio_gpu_ctrl_hdr)) {
+        response_size < sizeof(struct virtio_gpu_ctrl_hdr) || request_size > UINT32_MAX || response_size > UINT32_MAX) {
         return false;
     }
 
     memset(response, 0, response_size);
-    memset(g_control_queue.desc, 0, sizeof(*g_control_queue.desc) * g_control_queue.size);
-    g_control_queue.desc[0].addr = (uint64_t)(uintptr_t)request;
-    g_control_queue.desc[0].len = (uint32_t)request_size;
-    g_control_queue.desc[0].flags = VRING_DESC_F_NEXT;
-    g_control_queue.desc[0].next = 1u;
-    g_control_queue.desc[1].addr = (uint64_t)(uintptr_t)response;
-    g_control_queue.desc[1].len = (uint32_t)response_size;
-    g_control_queue.desc[1].flags = VRING_DESC_F_WRITE;
-    g_control_queue.desc[1].next = 0u;
+    uint16_t head = virtio_gpu_alloc_desc_pair();
+    uint16_t tail = (uint16_t)(head + 1u);
+    if (tail >= g_control_queue.size) {
+        tail = 0u;
+    }
 
-    g_control_queue.avail->ring[g_control_queue.avail->idx % g_control_queue.size] = 0u;
-    __asm__ volatile("" : : : "memory");
+    g_control_queue.desc[tail].addr = (uint64_t)(uintptr_t)response;
+    g_control_queue.desc[tail].len = (uint32_t)response_size;
+    g_control_queue.desc[tail].flags = VRING_DESC_F_WRITE;
+    g_control_queue.desc[tail].next = 0u;
+    g_control_queue.desc[head].addr = (uint64_t)(uintptr_t)request;
+    g_control_queue.desc[head].len = (uint32_t)request_size;
+    g_control_queue.desc[head].flags = VRING_DESC_F_NEXT;
+    g_control_queue.desc[head].next = tail;
+
+    __asm__ volatile("mfence" : : : "memory");
+    g_control_queue.avail->ring[g_control_queue.avail->idx % g_control_queue.size] = head;
+    __asm__ volatile("mfence" : : : "memory");
     ++g_control_queue.avail->idx;
-    __asm__ volatile("" : : : "memory");
+    __asm__ volatile("mfence" : : : "memory");
     virtio_notify_queue(VIRTIO_GPU_QUEUE_CONTROL);
 
     for (uint32_t spins = 0; spins < VIRTIO_GPU_CMD_SPIN_LIMIT; ++spins) {
@@ -383,6 +405,11 @@ static bool virtio_gpu_command(void* request, size_t request_size, void* respons
             return hdr->type == ok_type;
         }
         __asm__ volatile("pause" : : : "memory");
+    }
+    g_adaptive = false;
+    if (!g_failure_reported) {
+        g_failure_reported = true;
+        console_write("virtio-gpu: command timed out; adaptive framebuffer disabled\n");
     }
     return false;
 }

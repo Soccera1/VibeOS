@@ -46,6 +46,36 @@ static uint32_t parse_hex(const char* s, size_t n) {
     return v;
 }
 
+static bool add_overflow_size(uintptr_t a, size_t b, uintptr_t* out) {
+    uintptr_t r = a + (uintptr_t)b;
+    if (r < a) {
+        return true;
+    }
+    *out = r;
+    return false;
+}
+
+static bool align4_overflow(uintptr_t value, uintptr_t* out) {
+    uintptr_t r = value + 3u;
+    if (r < value) {
+        return true;
+    }
+    *out = r & ~(uintptr_t)3u;
+    return false;
+}
+
+static bool cpio_name_terminated(const char* name, uint32_t name_size) {
+    if (name_size == 0) {
+        return false;
+    }
+    for (uint32_t i = 0; i < name_size; ++i) {
+        if (name[i] == '\0') {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void normalize_path(const char* in, char* out, size_t out_len) {
     size_t i = 0;
     size_t j = 0;
@@ -96,6 +126,9 @@ void initramfs_init(const uint8_t* start, size_t size) {
     }
 
     const uint8_t* ptr = start;
+    if ((uintptr_t)start + size < (uintptr_t)start) {
+        return;
+    }
     const uint8_t* end = start + size;
 
     while (ptr + sizeof(struct cpio_newc) <= end) {
@@ -109,18 +142,28 @@ void initramfs_init(const uint8_t* start, size_t size) {
         uint32_t mode = parse_hex(hdr->c_mode, 8);
 
         const char* name = (const char*)(ptr + sizeof(struct cpio_newc));
-        const uint8_t* data = (const uint8_t*)name + name_size;
-
-        uintptr_t aligned_name_end = ((uintptr_t)data + 3u) & ~3u;
-        data = (const uint8_t*)aligned_name_end;
-
-        if (name_size == 0) {
+        uintptr_t name_end;
+        uintptr_t aligned_name_end;
+        uintptr_t file_end;
+        uintptr_t next;
+        if (name_size == 0 ||
+            add_overflow_size((uintptr_t)name, name_size, &name_end) ||
+            name_end > (uintptr_t)end ||
+            !cpio_name_terminated(name, name_size) ||
+            align4_overflow(name_end, &aligned_name_end) ||
+            aligned_name_end > (uintptr_t)end ||
+            add_overflow_size(aligned_name_end, file_size, &file_end) ||
+            file_end > (uintptr_t)end ||
+            align4_overflow(file_end, &next) ||
+            next > (uintptr_t)end) {
             break;
         }
 
         if (strcmp(name, "TRAILER!!!") == 0) {
             break;
         }
+
+        const uint8_t* data = (const uint8_t*)aligned_name_end;
 
         if (g_entry_count < MAX_INITRAMFS_ENTRIES) {
             struct initramfs_entry* e = &g_entries[g_entry_count++];
@@ -130,8 +173,6 @@ void initramfs_init(const uint8_t* start, size_t size) {
             e->mode = mode;
         }
 
-        uintptr_t next = (uintptr_t)data + file_size;
-        next = (next + 3u) & ~3u;
         ptr = (const uint8_t*)next;
     }
 }

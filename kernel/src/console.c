@@ -79,6 +79,12 @@ static const struct console_font_variant* g_fb_font = &g_console_font_variants[0
 static uint32_t g_fb_palette[16];
 static console_framebuffer_flush_fn g_fb_flush_callback;
 static bool g_fb_bulk_present;
+static size_t g_fb_bulk_depth;
+static bool g_fb_bulk_dirty;
+static size_t g_fb_dirty_x0;
+static size_t g_fb_dirty_y0;
+static size_t g_fb_dirty_x1;
+static size_t g_fb_dirty_y1;
 static bool cursor_visible = true;
 static bool soft_cursor_drawn;
 static size_t soft_cursor_row;
@@ -256,7 +262,61 @@ static void framebuffer_flush_rect(size_t x, size_t y, size_t width, size_t heig
     if (height > g_fb_info.height - y) {
         height = g_fb_info.height - y;
     }
+    if (g_fb_bulk_depth != 0u) {
+        size_t x1 = x + width;
+        size_t y1 = y + height;
+        if (!g_fb_bulk_dirty) {
+            g_fb_dirty_x0 = x;
+            g_fb_dirty_y0 = y;
+            g_fb_dirty_x1 = x1;
+            g_fb_dirty_y1 = y1;
+            g_fb_bulk_dirty = true;
+            return;
+        }
+        if (x < g_fb_dirty_x0) {
+            g_fb_dirty_x0 = x;
+        }
+        if (y < g_fb_dirty_y0) {
+            g_fb_dirty_y0 = y;
+        }
+        if (x1 > g_fb_dirty_x1) {
+            g_fb_dirty_x1 = x1;
+        }
+        if (y1 > g_fb_dirty_y1) {
+            g_fb_dirty_y1 = y1;
+        }
+        return;
+    }
     g_fb_flush_callback((uint32_t)x, (uint32_t)y, (uint32_t)width, (uint32_t)height);
+}
+
+static void framebuffer_begin_bulk(void) {
+    if (g_fb_flush_callback == NULL || !framebuffer_active()) {
+        return;
+    }
+    if (g_fb_bulk_depth == 0u) {
+        g_fb_bulk_dirty = false;
+    }
+    ++g_fb_bulk_depth;
+}
+
+static void framebuffer_end_bulk(void) {
+    if (g_fb_bulk_depth == 0u) {
+        return;
+    }
+    --g_fb_bulk_depth;
+    if (g_fb_bulk_depth != 0u) {
+        return;
+    }
+    if (!g_fb_bulk_dirty) {
+        return;
+    }
+    size_t x = g_fb_dirty_x0;
+    size_t y = g_fb_dirty_y0;
+    size_t width = g_fb_dirty_x1 - g_fb_dirty_x0;
+    size_t height = g_fb_dirty_y1 - g_fb_dirty_y0;
+    g_fb_bulk_dirty = false;
+    framebuffer_flush_rect(x, y, width, height);
 }
 
 static uint32_t scale_channel(uint8_t value, uint8_t bits) {
@@ -1516,15 +1576,19 @@ void console_putc(char c) {
 }
 
 void console_write(const char* s) {
+    framebuffer_begin_bulk();
     while (*s != '\0') {
         console_putc(*s++);
     }
+    framebuffer_end_bulk();
 }
 
 void console_writen(const char* s, size_t n) {
+    framebuffer_begin_bulk();
     for (size_t i = 0; i < n; ++i) {
         console_putc(s[i]);
     }
+    framebuffer_end_bulk();
 }
 
 static void print_unsigned(uint64_t value, unsigned base) {

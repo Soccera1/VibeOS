@@ -11,6 +11,9 @@
 #define VM_PTE_RW 0x002ull
 #define VM_PTE_USER 0x004ull
 #define VM_PTE_PS 0x080ull
+#define VM_PTE_NX (1ull << 63)
+#define IA32_EFER 0xC0000080u
+#define EFER_NXE (1ull << 11)
 
 #define VM_PT_ENTRIES 512u
 #define VM_IDENTITY_LIMIT (1ull << 32)
@@ -50,6 +53,9 @@ static uint64_t pte_flags_for_prot(uint32_t prot) {
     uint64_t flags = VM_PTE_PRESENT | VM_PTE_USER;
     if ((prot & VM_PROT_WRITE) != 0u) {
         flags |= VM_PTE_RW;
+    }
+    if ((prot & VM_PROT_EXEC) == 0u) {
+        flags |= VM_PTE_NX;
     }
     return flags;
 }
@@ -184,6 +190,8 @@ static void restore_identity_mapping(struct vm_space* space, uint64_t page_addr)
 }
 
 void vm_init(void) {
+    wrmsr(IA32_EFER, rdmsr(IA32_EFER) | EFER_NXE);
+
     g_kernel_pml4 = alloc_page_table();
     g_kernel_pdpt = alloc_page_table();
     for (size_t i = 0; i < VM_KERNEL_PD_COUNT; ++i) {
