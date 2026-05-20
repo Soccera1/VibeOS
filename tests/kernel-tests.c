@@ -169,6 +169,7 @@ static void test_identity_and_paths(void) {
     REQUIRE(n > 0, "read(/etc/passwd) failed: %s", strerror(errno));
     account_buf[n] = '\0';
     REQUIRE(strstr(account_buf, "root:x:0:0:root:/root:/bin/sh") != NULL, "/etc/passwd missing root account");
+    REQUIRE(strstr(account_buf, "user:x:1000:1000:user:/home/user:/usr/bin/bash") != NULL, "/etc/passwd missing user account");
     close(fd);
     fd = -1;
 
@@ -178,11 +179,26 @@ static void test_identity_and_paths(void) {
     REQUIRE(n > 0, "read(/etc/group) failed: %s", strerror(errno));
     account_buf[n] = '\0';
     REQUIRE(strstr(account_buf, "root:x:0:") != NULL, "/etc/group missing root group");
+    REQUIRE(strstr(account_buf, "user:x:1000:") != NULL, "/etc/group missing user group");
+    close(fd);
+    fd = -1;
+
+    fd = open("/etc/shadow", O_RDONLY);
+    REQUIRE(fd >= 0, "open(/etc/shadow) failed: %s", strerror(errno));
+    n = read(fd, account_buf, sizeof(account_buf) - 1);
+    REQUIRE(n > 0, "read(/etc/shadow) failed: %s", strerror(errno));
+    account_buf[n] = '\0';
+    REQUIRE(strstr(account_buf, "user::0:0:99999:7:::") != NULL, "/etc/shadow missing passwordless user entry");
     close(fd);
     fd = -1;
 
     REQUIRE(getcwd(cwd, sizeof(cwd)) != NULL, "getcwd(/) failed: %s", strerror(errno));
     REQUIRE(strcmp(cwd, "/") == 0, "initial cwd was %s", cwd);
+
+    REQUIRE(stat("/home/user", &st) == 0, "stat(/home/user) failed: %s", strerror(errno));
+    REQUIRE(S_ISDIR(st.st_mode), "/home/user was not a directory");
+    REQUIRE(st.st_uid == 1000 && st.st_gid == 1000, "/home/user owner was %u:%u",
+            (unsigned)st.st_uid, (unsigned)st.st_gid);
 
     REQUIRE(chdir("/usr") == 0, "chdir(/usr) failed: %s", strerror(errno));
     REQUIRE(getcwd(cwd, sizeof(cwd)) != NULL, "getcwd(/usr) failed: %s", strerror(errno));

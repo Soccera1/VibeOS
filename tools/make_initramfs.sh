@@ -125,19 +125,23 @@ RESOLV
 
 cat > "$ROOT/etc/passwd" <<'PASSWD'
 root:x:0:0:root:/root:/bin/sh
+user:x:1000:1000:user:/home/user:/usr/bin/bash
 PASSWD
 
 cat > "$ROOT/etc/group" <<'GROUP'
 root:x:0:
+user:x:1000:
 GROUP
 
 cat > "$ROOT/etc/shadow" <<'SHADOW'
 root::0:0:99999:7:::
+user::0:0:99999:7:::
 SHADOW
 chmod 600 "$ROOT/etc/shadow"
 
 cat > "$ROOT/etc/gshadow" <<'GSHADOW'
 root:::
+user:::
 GSHADOW
 chmod 600 "$ROOT/etc/gshadow"
 

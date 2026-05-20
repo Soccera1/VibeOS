@@ -518,6 +518,22 @@ static int fs_mount_scsi_disk(const struct boot_ext2_mount* mount) {
     return -1;
 }
 
+static void fs_ensure_default_user_home(void) {
+    struct fs_entry entry;
+    int r = fs_lookup("/home/user", &entry);
+    if (r != 0) {
+        r = fs_mkdir("/home/user", 0755u, 1000u, 1000u, &entry);
+        if (r != 0) {
+            return;
+        }
+    } else if ((entry.mode & FS_S_IFMT) != FS_S_IFDIR) {
+        return;
+    }
+
+    (void)fs_chown("/home/user", 1000u, 1000u);
+    (void)fs_chmod("/home/user", 0755u);
+}
+
 void fs_init(const uint8_t* usrfs_start, size_t usrfs_size) {
     bool usr_from_multiboot = usrfs_start != NULL && usrfs_size != 0u;
     bool usr_from_scsi = !usr_from_multiboot && virtio_scsi_disk_present(0u);
@@ -577,6 +593,8 @@ void fs_init(const uint8_t* usrfs_start, size_t usrfs_size) {
             }
         }
     }
+
+    fs_ensure_default_user_home();
 }
 
 bool fs_usr_mount_ready(void) {
