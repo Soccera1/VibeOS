@@ -96,6 +96,14 @@ struct process {
     uint64_t brk_current;
     uint64_t mmap_next;
     uint32_t umask;
+    uint32_t uid;
+    uint32_t euid;
+    uint32_t suid;
+    uint32_t fsuid;
+    uint32_t gid;
+    uint32_t egid;
+    uint32_t sgid;
+    uint32_t fsgid;
     char comm[16];
     uint64_t altstack_sp;
     uint64_t altstack_size;

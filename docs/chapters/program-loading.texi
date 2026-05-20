@@ -162,11 +162,23 @@ Root contains the essential boot path:
 The generated @file{/init} script is intentionally simple:
 
 @example
-if [ -x /usr/bin/bash ]; then
-  exec /usr/bin/bash -i
-fi
-exec /bin/busybox sh -i
+export USER=root
+export LOGNAME=root
+export HOME=/root
+while true; do
+  if [ -x /usr/bin/bash ]; then
+    /usr/bin/bash -i
+  else
+    /bin/busybox sh -i
+  fi
+done
 @end example
+
+VibeOS currently boots directly to that root shell.  The initramfs still stages
+the basic account database and login configuration files, including
+@file{/etc/passwd}, @file{/etc/group}, @file{/etc/shadow},
+@file{/etc/securetty}, @file{/etc/shells}, and @file{/etc/profile}, so a later
+getty/login path has conventional root account data to consume.
 
 @node In-Tree Userspace Helper
 @section In-Tree Userspace Helper

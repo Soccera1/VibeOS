@@ -243,6 +243,26 @@ Miscellaneous calls include:
 @headitem Nr @tab Name @tab Notes
 @item 63 @tab @code{uname} @tab Returns VibeOS identity strings.
 @item 97 @tab @code{getrlimit} @tab Limited resource-limit reporting.
+@item 102 @tab @code{getuid} @tab Returns the process real user ID.
+@item 104 @tab @code{getgid} @tab Returns the process real group ID.
+@item 105 @tab @code{setuid} @tab Updates process user credentials with
+root and saved-ID checks.
+@item 106 @tab @code{setgid} @tab Updates process group credentials with
+root and saved-ID checks.
+@item 107 @tab @code{geteuid} @tab Returns the process effective user ID.
+@item 108 @tab @code{getegid} @tab Returns the process effective group ID.
+@item 113 @tab @code{setreuid} @tab Updates real/effective user IDs.
+@item 114 @tab @code{setregid} @tab Updates real/effective group IDs.
+@item 115 @tab @code{getgroups} @tab Reports no supplementary groups.
+@item 116 @tab @code{setgroups} @tab Root-only compatibility no-op.
+@item 117 @tab @code{setresuid} @tab Updates real/effective/saved user IDs.
+@item 118 @tab @code{getresuid} @tab Reports real/effective/saved user IDs.
+@item 119 @tab @code{setresgid} @tab Updates real/effective/saved group IDs.
+@item 120 @tab @code{getresgid} @tab Reports real/effective/saved group IDs.
+@item 122 @tab @code{setfsuid} @tab Updates the filesystem user ID when
+permitted and returns the old value.
+@item 123 @tab @code{setfsgid} @tab Updates the filesystem group ID when
+permitted and returns the old value.
 @item 132 @tab @code{utime} @tab Updates path timestamps through the VFS.
 @item 162 @tab @code{sync} @tab Flushes writable ext2/ext3 mounts.
 @item 186 @tab @code{gettid} @tab Returns the current PID; VibeOS does not have
@@ -271,10 +291,6 @@ happy.
 @item 10 @tab @code{mprotect} @tab Updates user-page presence and write
 permissions for existing mappings.
 @item 28 @tab @code{madvise} @tab Returns success.
-@item 102 @tab @code{getuid} @tab Returns zero.
-@item 104 @tab @code{getgid} @tab Returns zero.
-@item 107 @tab @code{geteuid} @tab Returns zero.
-@item 108 @tab @code{getegid} @tab Returns zero.
 @item 131 @tab @code{sigaltstack} @tab Stores and reports alternate-signal-stack
 state, but signal delivery does not yet switch to it.
 @item 157 @tab @code{prctl} @tab Supports task name, dumpable,

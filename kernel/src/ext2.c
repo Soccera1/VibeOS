@@ -2953,6 +2953,8 @@ static int fill_entry(const char* path, uint32_t inode_num, struct fs_entry* out
         out->backend = FS_BACKEND_EXT2;
         out->inode = inode_num;
         out->mode = inode.i_mode;
+        out->uid = inode.i_uid;
+        out->gid = inode.i_gid;
         out->size = (size_t)inode_file_size(&inode);
         out->read_only = g_ext2.read_only;
     }
@@ -3617,7 +3619,7 @@ static int create_inode_with_mode(uint32_t mode, uint16_t uid, uint16_t gid, uin
     return 0;
 }
 
-int ext2_create(const char* path, uint32_t mode, struct fs_entry* out) {
+int ext2_create(const char* path, uint32_t mode, uint32_t uid, uint32_t gid, struct fs_entry* out) {
     struct ext2_mount* saved = NULL;
     int sr = ext2_push_mount_for_path(path, &saved);
     if (sr != 0) {
@@ -3649,7 +3651,7 @@ int ext2_create(const char* path, uint32_t mode, struct fs_entry* out) {
 
     uint32_t file_mode = (mode & FS_S_IFMT) == 0u ? (FS_S_IFREG | (mode & 07777u)) : mode;
     uint32_t inode_num = 0;
-    int cr = create_inode_with_mode(file_mode, 0, 0, 1, 0, &inode_num, NULL);
+    int cr = create_inode_with_mode(file_mode, (uint16_t)uid, (uint16_t)gid, 1, 0, &inode_num, NULL);
     if (cr != 0) {
         int r = finish_mutation(cr);
         ext2_pop_mount(saved);
@@ -3671,7 +3673,7 @@ int ext2_create(const char* path, uint32_t mode, struct fs_entry* out) {
     return r;
 }
 
-int ext2_mknod(const char* path, uint32_t mode, uint32_t rdev, struct fs_entry* out) {
+int ext2_mknod(const char* path, uint32_t mode, uint32_t rdev, uint32_t uid, uint32_t gid, struct fs_entry* out) {
     struct ext2_mount* saved = NULL;
     int sr = ext2_push_mount_for_path(path, &saved);
     if (sr != 0) {
@@ -3709,7 +3711,7 @@ int ext2_mknod(const char* path, uint32_t mode, uint32_t rdev, struct fs_entry* 
     }
 
     uint32_t inode_num = 0;
-    int cr = create_inode_with_mode(mode, 0, 0, 1, rdev, &inode_num, NULL);
+    int cr = create_inode_with_mode(mode, (uint16_t)uid, (uint16_t)gid, 1, rdev, &inode_num, NULL);
     if (cr != 0) {
         int r = finish_mutation(cr);
         ext2_pop_mount(saved);
@@ -3731,7 +3733,7 @@ int ext2_mknod(const char* path, uint32_t mode, uint32_t rdev, struct fs_entry* 
     return r;
 }
 
-int ext2_mkdir(const char* path, uint32_t mode, struct fs_entry* out) {
+int ext2_mkdir(const char* path, uint32_t mode, uint32_t uid, uint32_t gid, struct fs_entry* out) {
     struct ext2_mount* saved = NULL;
     int sr = ext2_push_mount_for_path(path, &saved);
     if (sr != 0) {
@@ -3764,7 +3766,7 @@ int ext2_mkdir(const char* path, uint32_t mode, struct fs_entry* out) {
     uint32_t inode_num = 0;
     struct ext2_inode inode;
     uint32_t dir_mode = FS_S_IFDIR | (mode & 07777u);
-    int cr = create_inode_with_mode(dir_mode, 0, 0, 2, 0, &inode_num, &inode);
+    int cr = create_inode_with_mode(dir_mode, (uint16_t)uid, (uint16_t)gid, 2, 0, &inode_num, &inode);
     if (cr != 0) {
         int r = finish_mutation(cr);
         ext2_pop_mount(saved);
@@ -3806,7 +3808,7 @@ int ext2_mkdir(const char* path, uint32_t mode, struct fs_entry* out) {
     return r;
 }
 
-int ext2_symlink(const char* target, const char* linkpath, struct fs_entry* out) {
+int ext2_symlink(const char* target, const char* linkpath, uint32_t uid, uint32_t gid, struct fs_entry* out) {
     if (target == NULL) {
         return -EINVAL;
     }
@@ -3841,7 +3843,7 @@ int ext2_symlink(const char* target, const char* linkpath, struct fs_entry* out)
 
     uint32_t inode_num = 0;
     struct ext2_inode inode;
-    int cr = create_inode_with_mode(FS_S_IFLNK | 0777u, 0, 0, 1, 0, &inode_num, &inode);
+    int cr = create_inode_with_mode(FS_S_IFLNK | 0777u, (uint16_t)uid, (uint16_t)gid, 1, 0, &inode_num, &inode);
     if (cr != 0) {
         int r = finish_mutation(cr);
         ext2_pop_mount(saved);

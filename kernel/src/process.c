@@ -22,6 +22,14 @@ void process_init(void) {
     g_processes[0].brk_current = VM_USER_BRK_BASE;
     g_processes[0].mmap_next = VM_USER_MMAP_BASE;
     g_processes[0].umask = 022u;
+    g_processes[0].uid = 0;
+    g_processes[0].euid = 0;
+    g_processes[0].suid = 0;
+    g_processes[0].fsuid = 0;
+    g_processes[0].gid = 0;
+    g_processes[0].egid = 0;
+    g_processes[0].sgid = 0;
+    g_processes[0].fsgid = 0;
     g_processes[0].dumpable = true;
     strcpy(g_processes[0].comm, "init");
     strcpy(g_processes[0].cwd, "/");
@@ -66,6 +74,14 @@ struct process* process_alloc(void) {
             proc->brk_current = VM_USER_BRK_BASE;
             proc->mmap_next = VM_USER_MMAP_BASE;
             proc->umask = 022u;
+            proc->uid = 0;
+            proc->euid = 0;
+            proc->suid = 0;
+            proc->fsuid = 0;
+            proc->gid = 0;
+            proc->egid = 0;
+            proc->sgid = 0;
+            proc->fsgid = 0;
             proc->dumpable = true;
             for (int j = 0; j < PROCESS_MAX_FDS; ++j) {
                 proc->fds[j].pipe_id = -1;

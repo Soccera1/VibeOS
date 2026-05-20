@@ -41,6 +41,8 @@ struct fs_entry {
     const uint8_t* data;
     size_t size;
     uint32_t mode;
+    uint32_t uid;
+    uint32_t gid;
     uint32_t inode;
     enum fs_backend backend;
     bool read_only;
@@ -66,10 +68,10 @@ int fs_write(struct fs_entry* entry, size_t offset, const void* buf, size_t coun
 int fs_truncate(struct fs_entry* entry, size_t size);
 int fs_readlink(const struct fs_entry* entry, char* out, size_t bufsz);
 bool fs_is_read_only_path(const char* path);
-int fs_create(const char* path, uint32_t mode, struct fs_entry* out);
-int fs_mknod(const char* path, uint32_t mode, uint32_t rdev, struct fs_entry* out);
-int fs_mkdir(const char* path, uint32_t mode, struct fs_entry* out);
-int fs_symlink(const char* target, const char* linkpath, struct fs_entry* out);
+int fs_create(const char* path, uint32_t mode, uint32_t uid, uint32_t gid, struct fs_entry* out);
+int fs_mknod(const char* path, uint32_t mode, uint32_t rdev, uint32_t uid, uint32_t gid, struct fs_entry* out);
+int fs_mkdir(const char* path, uint32_t mode, uint32_t uid, uint32_t gid, struct fs_entry* out);
+int fs_symlink(const char* target, const char* linkpath, uint32_t uid, uint32_t gid, struct fs_entry* out);
 int fs_link(const char* existing, const char* newpath);
 int fs_unlink(const char* path);
 int fs_rmdir(const char* path);
