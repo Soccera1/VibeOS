@@ -188,6 +188,13 @@ EOF
   set_cfg "$cfg" "CONFIG_FEATURE_SH_NOFORK" "y"
   set_cfg "$cfg" "CONFIG_ASH" "y"
   set_cfg "$cfg" "CONFIG_SH_IS_ASH" "y"
+  set_cfg "$cfg" "CONFIG_FEATURE_SHADOWPASSWDS" "y"
+  set_cfg "$cfg" "CONFIG_GETTY" "y"
+  set_cfg "$cfg" "CONFIG_LOGIN" "y"
+  unset_cfg "$cfg" "CONFIG_LOGIN_SESSION_AS_CHILD"
+  set_cfg "$cfg" "CONFIG_FEATURE_SECURETTY" "y"
+  set_cfg "$cfg" "CONFIG_SU" "y"
+  set_cfg "$cfg" "CONFIG_PASSWD" "y"
   # VibeOS does not boot through BusyBox init or procfs, so the Linux
   # "wait for init to mount /proc before signalling PID 1" heuristic only
   # adds a dead 5-second delay to halt/poweroff/reboot.

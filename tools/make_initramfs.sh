@@ -21,7 +21,7 @@ WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 
 ROOT="$WORKDIR/root"
-mkdir -p "$ROOT"/{bin,dev,etc,proc,root,sys,tmp,usr,var,home}
+mkdir -p "$ROOT"/{bin,dev,etc,proc,root,sbin,sys,tmp,usr,var,home}
 
 is_coreutils_prog() {
   local prog="$1"
@@ -114,6 +114,13 @@ else
   done
 fi
 
+for login_applet in /bin/login /sbin/getty /bin/su; do
+  if [[ ! -e "$ROOT$login_applet" ]]; then
+    echo "BusyBox login applet missing from initramfs: $login_applet" >&2
+    exit 1
+  fi
+done
+
 cat > "$ROOT/etc/motd" <<'MOTD'
 VibeOS monolithic kernel prototype
 Type: help
@@ -124,7 +131,7 @@ nameserver 10.0.2.3
 RESOLV
 
 cat > "$ROOT/etc/passwd" <<'PASSWD'
-root:x:0:0:root:/root:/bin/sh
+root:x:0:0:root:/root:/sbin/root-shell
 user:x:1000:1000:user:/home/user:/usr/bin/bash
 PASSWD
 
@@ -149,6 +156,7 @@ cat > "$ROOT/etc/shells" <<'SHELLS'
 /bin/sh
 /bin/ash
 /bin/busybox
+/sbin/root-shell
 /usr/bin/bash
 SHELLS
 
@@ -190,6 +198,23 @@ alias help='/usr/bin/help'
 BASHRC
 fi
 
+cat > "$ROOT/sbin/autologin-root" <<'AUTOLOGIN'
+#!/bin/busybox sh
+exec /bin/login -f root
+AUTOLOGIN
+chmod +x "$ROOT/sbin/autologin-root"
+
+cat > "$ROOT/sbin/root-shell" <<'ROOTSHELL'
+#!/bin/busybox sh
+if [ -x /usr/bin/bash ]; then
+  export SHELL=/usr/bin/bash
+  exec /usr/bin/bash -i
+fi
+export SHELL=/bin/sh
+exec /bin/busybox sh -i
+ROOTSHELL
+chmod +x "$ROOT/sbin/root-shell"
+
 cat > "$ROOT/init" <<'INIT'
 #!/bin/busybox sh
 export USER=root
@@ -198,11 +223,7 @@ export HOME=/root
 export SHELL=/bin/sh
 export PATH=/bin:/sbin:/usr/bin
 while true; do
-  if [ -x /usr/bin/bash ]; then
-    SHELL=/usr/bin/bash /usr/bin/bash -i
-  else
-    /bin/busybox sh -i
-  fi
+  /sbin/getty -n -l /sbin/autologin-root 0 -
 done
 INIT
 chmod +x "$ROOT/init"
