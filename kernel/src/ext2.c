@@ -3029,16 +3029,46 @@ static int ext2_build_mount(struct ext2_mount* mount, const char* mount_path, co
         return vr;
     }
 
-    mount->block_size = 1024u << mount->superblock.s_log_block_size;
+    if (mount->superblock.s_log_block_size > 2u ||
+        mount->superblock.s_blocks_count == 0u ||
+        mount->superblock.s_blocks_per_group == 0u ||
+        mount->superblock.s_inodes_count == 0u ||
+        mount->superblock.s_inodes_per_group == 0u) {
+        memset(mount, 0, sizeof(*mount));
+        return -EINVAL;
+    }
+
+    uint32_t block_size = 1024u << mount->superblock.s_log_block_size;
+    if ((uint64_t)mount->superblock.s_blocks_count > (uint64_t)size / block_size ||
+        mount->superblock.s_first_data_block >= mount->superblock.s_blocks_count) {
+        memset(mount, 0, sizeof(*mount));
+        return -EINVAL;
+    }
+
+    uint16_t inode_size = (mount->superblock.s_inode_size >= sizeof(struct ext2_inode)) ? mount->superblock.s_inode_size
+                                                                                        : sizeof(struct ext2_inode);
+    if (inode_size > block_size || (inode_size & (inode_size - 1u)) != 0u) {
+        memset(mount, 0, sizeof(*mount));
+        return -EINVAL;
+    }
+
+    uint64_t group_count64 = ((uint64_t)mount->superblock.s_blocks_count + mount->superblock.s_blocks_per_group - 1u) /
+                             mount->superblock.s_blocks_per_group;
+    if (group_count64 == 0u || group_count64 > UINT32_MAX ||
+        (uint64_t)mount->superblock.s_inodes_count > group_count64 * mount->superblock.s_inodes_per_group) {
+        memset(mount, 0, sizeof(*mount));
+        return -EINVAL;
+    }
+
+    mount->block_size = block_size;
     mount->inodes_count = mount->superblock.s_inodes_count;
     mount->blocks_count = mount->superblock.s_blocks_count;
     mount->first_data_block = mount->superblock.s_first_data_block;
     mount->blocks_per_group = mount->superblock.s_blocks_per_group;
     mount->inodes_per_group = mount->superblock.s_inodes_per_group;
     mount->first_ino = (mount->superblock.s_first_ino != 0u) ? mount->superblock.s_first_ino : 11u;
-    mount->inode_size = (mount->superblock.s_inode_size >= sizeof(struct ext2_inode)) ? mount->superblock.s_inode_size
-                                                                                       : sizeof(struct ext2_inode);
-    mount->group_count = (mount->blocks_count + mount->blocks_per_group - 1u) / mount->blocks_per_group;
+    mount->inode_size = inode_size;
+    mount->group_count = (uint32_t)group_count64;
     mount->feature_compat = mount->superblock.s_feature_compat;
     mount->feature_incompat = mount->superblock.s_feature_incompat;
     mount->feature_ro_compat = mount->superblock.s_feature_ro_compat;

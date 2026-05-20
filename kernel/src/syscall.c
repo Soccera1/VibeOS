@@ -751,6 +751,8 @@ static int g_scheduler_index = 0;
 static void add_zombie(int pid, int ppid, int pgid, int exit_code, int exit_status);
 static void remove_zombie(int idx);
 static struct process* current_process(void);
+static int copy_from_user(void* dst, const void* user, size_t len);
+static int copy_to_user(void* user, const void* src, size_t len);
 static int save_live_process(struct process* proc, struct syscall_frame* frame);
 static void sync_current_process_runtime(void);
 static int try_complete_wait4(struct process* proc);
@@ -1312,15 +1314,6 @@ static uint64_t synthetic_time_ns(void) {
     return g_wall_time_base_ns + elapsed_usec * 1000ull;
 }
 
-static uint64_t xorshift64(void) {
-    uint64_t x = g_rng_state;
-    x ^= x << 13;
-    x ^= x >> 7;
-    x ^= x << 17;
-    g_rng_state = x;
-    return x;
-}
-
 static uint64_t read_fs_base_current(void) {
     if ((read_cr4() & (1ull << 16)) != 0ull) {
         return read_fs_base_inst();
@@ -1480,6 +1473,47 @@ static void load_process_runtime(struct process* proc) {
 
 static struct process* current_process(void) {
     return process_current();
+}
+
+static bool user_range_valid(const void* user, size_t len) {
+    if (len == 0) {
+        return true;
+    }
+    if (user == NULL) {
+        return false;
+    }
+
+    struct process* proc = current_process();
+    if (proc == NULL) {
+        return false;
+    }
+    return vm_space_range_mapped(&proc->vm, (uint64_t)(uintptr_t)user, len);
+}
+
+static int copy_from_user(void* dst, const void* user, size_t len) {
+    if (dst == NULL && len != 0) {
+        return err(EFAULT);
+    }
+    if (!user_range_valid(user, len)) {
+        return err(EFAULT);
+    }
+    if (len != 0) {
+        memcpy(dst, user, len);
+    }
+    return 0;
+}
+
+static int copy_to_user(void* user, const void* src, size_t len) {
+    if (src == NULL && len != 0) {
+        return err(EFAULT);
+    }
+    if (!user_range_valid(user, len)) {
+        return err(EFAULT);
+    }
+    if (len != 0) {
+        memcpy(user, src, len);
+    }
+    return 0;
 }
 
 static void set_task_name(const char* name) {
@@ -2275,40 +2309,66 @@ static int fb_cmap_bounds_check(const struct fb_cmap* cmap) {
     return 0;
 }
 
-static void fb_cmap_readback(const struct fb_cmap* cmap) {
+static int fb_cmap_readback(const struct fb_cmap* cmap) {
     uint32_t start = cmap->start;
     for (uint32_t i = 0; i < cmap->len; ++i) {
         if (cmap->red != NULL) {
-            cmap->red[i] = g_fb_cmap_red[start + i];
+            int cr = copy_to_user(&cmap->red[i], &g_fb_cmap_red[start + i], sizeof(cmap->red[i]));
+            if (cr != 0) {
+                return cr;
+            }
         }
         if (cmap->green != NULL) {
-            cmap->green[i] = g_fb_cmap_green[start + i];
+            int cr = copy_to_user(&cmap->green[i], &g_fb_cmap_green[start + i], sizeof(cmap->green[i]));
+            if (cr != 0) {
+                return cr;
+            }
         }
         if (cmap->blue != NULL) {
-            cmap->blue[i] = g_fb_cmap_blue[start + i];
+            int cr = copy_to_user(&cmap->blue[i], &g_fb_cmap_blue[start + i], sizeof(cmap->blue[i]));
+            if (cr != 0) {
+                return cr;
+            }
         }
         if (cmap->transp != NULL) {
-            cmap->transp[i] = g_fb_cmap_transp[start + i];
+            int cr = copy_to_user(&cmap->transp[i], &g_fb_cmap_transp[start + i], sizeof(cmap->transp[i]));
+            if (cr != 0) {
+                return cr;
+            }
         }
     }
+    return 0;
 }
 
-static void fb_cmap_update(const struct fb_cmap* cmap) {
+static int fb_cmap_update(const struct fb_cmap* cmap) {
     uint32_t start = cmap->start;
     for (uint32_t i = 0; i < cmap->len; ++i) {
         if (cmap->red != NULL) {
-            g_fb_cmap_red[start + i] = cmap->red[i];
+            int cr = copy_from_user(&g_fb_cmap_red[start + i], &cmap->red[i], sizeof(cmap->red[i]));
+            if (cr != 0) {
+                return cr;
+            }
         }
         if (cmap->green != NULL) {
-            g_fb_cmap_green[start + i] = cmap->green[i];
+            int cr = copy_from_user(&g_fb_cmap_green[start + i], &cmap->green[i], sizeof(cmap->green[i]));
+            if (cr != 0) {
+                return cr;
+            }
         }
         if (cmap->blue != NULL) {
-            g_fb_cmap_blue[start + i] = cmap->blue[i];
+            int cr = copy_from_user(&g_fb_cmap_blue[start + i], &cmap->blue[i], sizeof(cmap->blue[i]));
+            if (cr != 0) {
+                return cr;
+            }
         }
         if (cmap->transp != NULL) {
-            g_fb_cmap_transp[start + i] = cmap->transp[i];
+            int cr = copy_from_user(&g_fb_cmap_transp[start + i], &cmap->transp[i], sizeof(cmap->transp[i]));
+            if (cr != 0) {
+                return cr;
+            }
         }
     }
+    return 0;
 }
 
 static int normalize_path(const char* input, char* out, size_t out_len) {
@@ -2798,6 +2858,68 @@ static int copy_user_string(const char* user, char* out, size_t out_len) {
     return err(ENOMEM);
 }
 
+static uint32_t rotl32(uint32_t value, unsigned int bits) {
+    return (value << bits) | (value >> (32u - bits));
+}
+
+static void chacha_quarter_round(uint32_t state[16], size_t a, size_t b, size_t c, size_t d) {
+    state[a] += state[b];
+    state[d] = rotl32(state[d] ^ state[a], 16);
+    state[c] += state[d];
+    state[b] = rotl32(state[b] ^ state[c], 12);
+    state[a] += state[b];
+    state[d] = rotl32(state[d] ^ state[a], 8);
+    state[c] += state[d];
+    state[b] = rotl32(state[b] ^ state[c], 7);
+}
+
+static void rng_absorb64(uint64_t value) {
+    g_rng_state ^= value + 0x9E3779B97F4A7C15ull + (g_rng_state << 6) + (g_rng_state >> 2);
+}
+
+static void rng_block(uint8_t out[64]) {
+    uint32_t state[16] = {
+        0x61707865u, 0x3320646Eu, 0x79622D32u, 0x6B206574u,
+        (uint32_t)g_rng_state, (uint32_t)(g_rng_state >> 32), 0xA5A5A5A5u, 0x3C6EF372u,
+        (uint32_t)read_tsc(), (uint32_t)(read_tsc() >> 32), 0xBB67AE85u, 0x510E527Fu,
+        (uint32_t)g_rng_state, (uint32_t)(g_rng_state >> 32), 0, 0,
+    };
+    uint32_t working[16];
+    memcpy(working, state, sizeof(working));
+    for (size_t i = 0; i < 10; ++i) {
+        chacha_quarter_round(working, 0, 4, 8, 12);
+        chacha_quarter_round(working, 1, 5, 9, 13);
+        chacha_quarter_round(working, 2, 6, 10, 14);
+        chacha_quarter_round(working, 3, 7, 11, 15);
+        chacha_quarter_round(working, 0, 5, 10, 15);
+        chacha_quarter_round(working, 1, 6, 11, 12);
+        chacha_quarter_round(working, 2, 7, 8, 13);
+        chacha_quarter_round(working, 3, 4, 9, 14);
+    }
+    for (size_t i = 0; i < ARRAY_LEN(working); ++i) {
+        working[i] += state[i];
+        out[i * 4u + 0u] = (uint8_t)working[i];
+        out[i * 4u + 1u] = (uint8_t)(working[i] >> 8);
+        out[i * 4u + 2u] = (uint8_t)(working[i] >> 16);
+        out[i * 4u + 3u] = (uint8_t)(working[i] >> 24);
+    }
+    rng_absorb64(((uint64_t)working[1] << 32) | working[0]);
+    rng_absorb64(read_tsc());
+}
+
+void syscall_random_bytes(void* buf, uint64_t len) {
+    uint8_t* out = (uint8_t*)buf;
+    uint8_t block[64];
+    while (len > 0) {
+        rng_block(block);
+        size_t take = len < sizeof(block) ? (size_t)len : sizeof(block);
+        memcpy(out, block, take);
+        out += take;
+        len -= take;
+    }
+    memset(block, 0, sizeof(block));
+}
+
 static void fill_stat(struct linux_stat* st, uint32_t mode, size_t size) {
     memset(st, 0, sizeof(*st));
     st->st_mode = mode;
@@ -3185,6 +3307,9 @@ static int sys_read(int fd, void* buf, size_t count, struct syscall_frame* frame
     if (count == 0) {
         return 0;
     }
+    if (!user_range_valid(buf, count)) {
+        return err(EFAULT);
+    }
     if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
         return err(EBADF);
     }
@@ -3360,6 +3485,9 @@ static int sys_read(int fd, void* buf, size_t count, struct syscall_frame* frame
 }
 
 static int sys_write(int fd, const void* buf, size_t count, struct syscall_frame* frame) {
+    if (!user_range_valid(buf, count)) {
+        return err(EFAULT);
+    }
     if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
         return err(EBADF);
     }
@@ -3473,10 +3601,7 @@ static int sys_write(int fd, const void* buf, size_t count, struct syscall_frame
         return err(EBADF);
     }
 
-    const char* in = (const char*)buf;
-    for (size_t i = 0; i < count; ++i) {
-        console_putc(in[i]);
-    }
+    console_writen((const char*)buf, count);
     return (int)count;
 }
 
@@ -3769,7 +3894,7 @@ static int sys_ioctl(int fd, uint64_t req, void* argp) {
             if (argp != NULL) {
                 struct fb_fix_screeninfo fix;
                 fill_fb_fix_screeninfo(&fix, &fb);
-                memcpy(argp, &fix, sizeof(fix));
+                return copy_to_user(argp, &fix, sizeof(fix));
             }
             return 0;
         }
@@ -3778,7 +3903,7 @@ static int sys_ioctl(int fd, uint64_t req, void* argp) {
             if (argp != NULL) {
                 struct fb_var_screeninfo var;
                 fill_fb_var_screeninfo(&var, &fb);
-                memcpy(argp, &var, sizeof(var));
+                return copy_to_user(argp, &var, sizeof(var));
             }
             return 0;
         }
@@ -3787,26 +3912,32 @@ static int sys_ioctl(int fd, uint64_t req, void* argp) {
             if (argp == NULL) {
                 return err(EFAULT);
             }
-            struct fb_cmap cmap = *(const struct fb_cmap*)(uintptr_t)argp;
+            struct fb_cmap cmap;
+            int copy_r = copy_from_user(&cmap, argp, sizeof(cmap));
+            if (copy_r != 0) {
+                return copy_r;
+            }
             int cr = fb_cmap_bounds_check(&cmap);
             if (cr != 0) {
                 return cr;
             }
-            fb_cmap_readback(&cmap);
-            return 0;
+            return fb_cmap_readback(&cmap);
         }
 
         if (req == FBIOPUTCMAP) {
             if (argp == NULL) {
                 return err(EFAULT);
             }
-            struct fb_cmap cmap = *(const struct fb_cmap*)(uintptr_t)argp;
+            struct fb_cmap cmap;
+            int copy_r = copy_from_user(&cmap, argp, sizeof(cmap));
+            if (copy_r != 0) {
+                return copy_r;
+            }
             int cr = fb_cmap_bounds_check(&cmap);
             if (cr != 0) {
                 return cr;
             }
-            fb_cmap_update(&cmap);
-            return 0;
+            return fb_cmap_update(&cmap);
         }
 
         if (req == FBIOPUT_VSCREENINFO) {
@@ -3816,7 +3947,10 @@ static int sys_ioctl(int fd, uint64_t req, void* argp) {
 
             struct fb_var_screeninfo requested;
             struct fb_var_screeninfo current;
-            memcpy(&requested, argp, sizeof(requested));
+            int copy_r = copy_from_user(&requested, argp, sizeof(requested));
+            if (copy_r != 0) {
+                return copy_r;
+            }
             fill_fb_var_screeninfo(&current, &fb);
             if (requested.xres != current.xres || requested.yres != current.yres ||
                 requested.xres_virtual != current.xres_virtual || requested.yres_virtual != current.yres_virtual ||
@@ -3828,8 +3962,7 @@ static int sys_ioctl(int fd, uint64_t req, void* argp) {
                 return err(EINVAL);
             }
 
-            memcpy(argp, &current, sizeof(current));
-            return 0;
+            return copy_to_user(argp, &current, sizeof(current));
         }
 
         if (req == FBIOPAN_DISPLAY) {
@@ -3837,14 +3970,17 @@ static int sys_ioctl(int fd, uint64_t req, void* argp) {
                 return err(EFAULT);
             }
 
-            struct fb_var_screeninfo requested = *(const struct fb_var_screeninfo*)(uintptr_t)argp;
+            struct fb_var_screeninfo requested;
+            int copy_r = copy_from_user(&requested, argp, sizeof(requested));
+            if (copy_r != 0) {
+                return copy_r;
+            }
             struct fb_var_screeninfo current;
             fill_fb_var_screeninfo(&current, &fb);
             if (requested.xoffset != 0u || requested.yoffset != 0u) {
                 return err(EINVAL);
             }
-            memcpy(argp, &current, sizeof(current));
-            return 0;
+            return copy_to_user(argp, &current, sizeof(current));
         }
 
         if (req == FBIOBLANK) {
@@ -3868,18 +4004,18 @@ static int sys_ioctl(int fd, uint64_t req, void* argp) {
         }
 
         struct unix_socket_state* sock = &g_unix_sockets[socket_id];
+        int pending = 0;
         if (sock->state == UNIX_SOCKET_STATE_LISTENING) {
-            *(int*)(uintptr_t)argp = (int)sock->pending_count;
-            return 0;
+            pending = (int)sock->pending_count;
+            return copy_to_user(argp, &pending, sizeof(pending));
         }
         if (sock->state != UNIX_SOCKET_STATE_CONNECTED || sock->conn_id < 0 || sock->conn_id >= MAX_UNIX_CONNECTIONS ||
             !g_unix_connections[sock->conn_id].used) {
-            *(int*)(uintptr_t)argp = 0;
-            return 0;
+            return copy_to_user(argp, &pending, sizeof(pending));
         }
 
-        *(int*)(uintptr_t)argp = (int)g_unix_connections[sock->conn_id].inbound[sock->endpoint].size;
-        return 0;
+        pending = (int)g_unix_connections[sock->conn_id].inbound[sock->endpoint].size;
+        return copy_to_user(argp, &pending, sizeof(pending));
     }
 
     if (g_fds[fd].kind == FD_INET) {
@@ -3895,14 +4031,15 @@ static int sys_ioctl(int fd, uint64_t req, void* argp) {
             return err(ENOTSOCK);
         }
         struct inet_socket_state* sock = &g_inet_sockets[socket_id];
+        int pending = 0;
         if (sock->type == SOCK_DGRAM) {
-            *(int*)(uintptr_t)argp = sock->bound ? (int)net_udp_pending(sock->local_port) : 0;
+            pending = sock->bound ? (int)net_udp_pending(sock->local_port) : 0;
         } else if (sock->type == SOCK_RAW) {
-            *(int*)(uintptr_t)argp = (int)net_icmp_pending(sock->raw_id);
+            pending = (int)net_icmp_pending(sock->raw_id);
         } else {
-            *(int*)(uintptr_t)argp = sock->tcp_opened ? (int)net_tcp_pending(sock->local_port) : 0;
+            pending = sock->tcp_opened ? (int)net_tcp_pending(sock->local_port) : 0;
         }
-        return 0;
+        return copy_to_user(argp, &pending, sizeof(pending));
     }
 
     if (g_fds[fd].kind != FD_TTY) {
@@ -3911,14 +4048,14 @@ static int sys_ioctl(int fd, uint64_t req, void* argp) {
 
     if (req == TCGETS) {
         if (argp != NULL) {
-            memcpy(argp, &g_tty_termios, sizeof(g_tty_termios));
+            return copy_to_user(argp, &g_tty_termios, sizeof(g_tty_termios));
         }
         return 0;
     }
 
     if (req == TIOCGPGRP) {
         if (argp != NULL) {
-            *(int*)(uintptr_t)argp = g_terminal_fg_pgrp;
+            return copy_to_user(argp, &g_terminal_fg_pgrp, sizeof(g_terminal_fg_pgrp));
         }
         return 0;
     }
@@ -3927,7 +4064,11 @@ static int sys_ioctl(int fd, uint64_t req, void* argp) {
         if (argp == NULL) {
             return err(EFAULT);
         }
-        int pgid = *(const int*)(uintptr_t)argp;
+        int pgid;
+        int copy_r = copy_from_user(&pgid, argp, sizeof(pgid));
+        if (copy_r != 0) {
+            return copy_r;
+        }
         if (pgid <= 0) {
             return err(EINVAL);
         }
@@ -3950,14 +4091,15 @@ static int sys_ioctl(int fd, uint64_t req, void* argp) {
                 ws.ws_xpixel = 0;
                 ws.ws_ypixel = 0;
             }
-            memcpy(argp, &ws, sizeof(ws));
+            return copy_to_user(argp, &ws, sizeof(ws));
         }
         return 0;
     }
 
     if (req == TIOCGETD) {
         if (argp != NULL) {
-            *(int*)(uintptr_t)argp = N_TTY;
+            int ldisc = N_TTY;
+            return copy_to_user(argp, &ldisc, sizeof(ldisc));
         }
         return 0;
     }
@@ -3966,20 +4108,25 @@ static int sys_ioctl(int fd, uint64_t req, void* argp) {
         if (argp == NULL) {
             return err(EFAULT);
         }
-        int ldisc = *(const int*)(uintptr_t)argp;
+        int ldisc;
+        int copy_r = copy_from_user(&ldisc, argp, sizeof(ldisc));
+        if (copy_r != 0) {
+            return copy_r;
+        }
         return ldisc == N_TTY ? 0 : err(EINVAL);
     }
 
     if (req == TCSETS || req == TCSETSW || req == TCSETSF) {
         if (argp != NULL) {
-            memcpy(&g_tty_termios, argp, sizeof(g_tty_termios));
+            return copy_from_user(&g_tty_termios, argp, sizeof(g_tty_termios));
         }
         return 0;
     }
 
     if (req == FIONREAD) {
         if (argp != NULL) {
-            *(int*)(uintptr_t)argp = input_char_ready() ? 1 : 0;
+            int pending = input_char_ready() ? 1 : 0;
+            return copy_to_user(argp, &pending, sizeof(pending));
         }
         return 0;
     }
@@ -4969,30 +5116,63 @@ static int sys_sendmsg(int fd, const struct linux_msghdr* msg, int flags, struct
     if (msg == NULL) {
         return err(EFAULT);
     }
-    if (msg->msg_iovlen > 1024u) {
+    struct linux_msghdr msg_local;
+    int mr = copy_from_user(&msg_local, msg, sizeof(msg_local));
+    if (mr != 0) {
+        return mr;
+    }
+    if (msg_local.msg_iovlen > 1024u) {
         return err(EINVAL);
+    }
+    struct linux_iovec* iov = NULL;
+    size_t iov_len = (size_t)msg_local.msg_iovlen * sizeof(struct linux_iovec);
+    if (msg_local.msg_iovlen > 0) {
+        if (msg_local.msg_iov == NULL) {
+            return err(EFAULT);
+        }
+        iov = kmalloc(iov_len);
+        if (iov == NULL) {
+            return err(ENOMEM);
+        }
+        int cr = copy_from_user(iov, msg_local.msg_iov, iov_len);
+        if (cr != 0) {
+            kfree(iov);
+            return cr;
+        }
     }
 
     if (fd >= 0 && fd < MAX_FDS && g_fds[fd].kind == FD_INET) {
         uint8_t packet[4096];
         size_t total_len = 0;
-        for (uint64_t i = 0; i < msg->msg_iovlen; ++i) {
-            size_t len = (size_t)msg->msg_iov[i].len;
+        for (uint64_t i = 0; i < msg_local.msg_iovlen; ++i) {
+            size_t len = (size_t)iov[i].len;
             if (len > sizeof(packet) - total_len) {
+                kfree(iov);
                 return err(EINVAL);
             }
-            memcpy(packet + total_len, (const void*)(uintptr_t)msg->msg_iov[i].base, len);
+            int cr = copy_from_user(packet + total_len, (const void*)(uintptr_t)iov[i].base, len);
+            if (cr != 0) {
+                kfree(iov);
+                return cr;
+            }
             total_len += len;
         }
-        return sys_sendto(fd, packet, total_len, flags, msg->msg_name, msg->msg_namelen, frame);
+        int r = sys_sendto(fd, packet, total_len, flags, msg_local.msg_name, msg_local.msg_namelen, frame);
+        kfree(iov);
+        return r;
     }
 
     int total = 0;
-    for (uint64_t i = 0; i < msg->msg_iovlen; ++i) {
-        const void* base = (const void*)(uintptr_t)msg->msg_iov[i].base;
-        size_t len = (size_t)msg->msg_iov[i].len;
-        int n = sys_sendto(fd, base, len, flags, msg->msg_name, msg->msg_namelen, frame);
+    for (uint64_t i = 0; i < msg_local.msg_iovlen; ++i) {
+        const void* base = (const void*)(uintptr_t)iov[i].base;
+        size_t len = (size_t)iov[i].len;
+        if (!user_range_valid(base, len)) {
+            kfree(iov);
+            return err(EFAULT);
+        }
+        int n = sys_sendto(fd, base, len, flags, msg_local.msg_name, msg_local.msg_namelen, frame);
         if (n < 0) {
+            kfree(iov);
             return total > 0 ? total : n;
         }
         total += n;
@@ -5000,6 +5180,7 @@ static int sys_sendmsg(int fd, const struct linux_msghdr* msg, int flags, struct
             break;
         }
     }
+    kfree(iov);
     return total;
 }
 
@@ -5007,40 +5188,76 @@ static int sys_recvmsg(int fd, struct linux_msghdr* msg, int flags, struct sysca
     if (msg == NULL) {
         return err(EFAULT);
     }
-    if (msg->msg_iovlen > 1024u) {
+    struct linux_msghdr msg_local;
+    int mr = copy_from_user(&msg_local, msg, sizeof(msg_local));
+    if (mr != 0) {
+        return mr;
+    }
+    if (msg_local.msg_iovlen > 1024u) {
         return err(EINVAL);
     }
+    struct linux_iovec* iov = NULL;
+    size_t iov_len = (size_t)msg_local.msg_iovlen * sizeof(struct linux_iovec);
+    if (msg_local.msg_iovlen > 0) {
+        if (msg_local.msg_iov == NULL) {
+            return err(EFAULT);
+        }
+        iov = kmalloc(iov_len);
+        if (iov == NULL) {
+            return err(ENOMEM);
+        }
+        int cr = copy_from_user(iov, msg_local.msg_iov, iov_len);
+        if (cr != 0) {
+            kfree(iov);
+            return cr;
+        }
+    }
 
-    uint32_t addrlen = msg->msg_namelen;
+    uint32_t addrlen = msg_local.msg_namelen;
     if (fd >= 0 && fd < MAX_FDS && g_fds[fd].kind == FD_INET) {
         uint8_t packet[4096];
-        int n = sys_recvfrom(fd, packet, sizeof(packet), flags, msg->msg_name, msg->msg_name != NULL ? &addrlen : NULL, frame);
+        int n = sys_recvfrom(fd, packet, sizeof(packet), flags, msg_local.msg_name, msg_local.msg_name != NULL ? &addrlen : NULL, frame);
         if (n < 0) {
+            kfree(iov);
             return n;
         }
 
         size_t copied = 0;
         size_t packet_len = (size_t)n;
-        for (uint64_t i = 0; i < msg->msg_iovlen && copied < packet_len; ++i) {
-            size_t len = (size_t)msg->msg_iov[i].len;
+        for (uint64_t i = 0; i < msg_local.msg_iovlen && copied < packet_len; ++i) {
+            size_t len = (size_t)iov[i].len;
             if (len > packet_len - copied) {
                 len = packet_len - copied;
             }
-            memcpy((void*)(uintptr_t)msg->msg_iov[i].base, packet + copied, len);
+            int cr = copy_to_user((void*)(uintptr_t)iov[i].base, packet + copied, len);
+            if (cr != 0) {
+                kfree(iov);
+                return cr;
+            }
             copied += len;
         }
-        msg->msg_namelen = addrlen;
-        msg->msg_controllen = 0;
-        msg->msg_flags = copied < packet_len ? 0x20u : 0u;  // MSG_TRUNC
+        msg_local.msg_namelen = addrlen;
+        msg_local.msg_controllen = 0;
+        msg_local.msg_flags = copied < packet_len ? 0x20u : 0u;  // MSG_TRUNC
+        int cr = copy_to_user(msg, &msg_local, sizeof(msg_local));
+        kfree(iov);
+        if (cr != 0) {
+            return cr;
+        }
         return (int)copied;
     }
 
     int total = 0;
-    for (uint64_t i = 0; i < msg->msg_iovlen; ++i) {
-        void* base = (void*)(uintptr_t)msg->msg_iov[i].base;
-        size_t len = (size_t)msg->msg_iov[i].len;
-        int n = sys_recvfrom(fd, base, len, flags, msg->msg_name, msg->msg_name != NULL ? &addrlen : NULL, frame);
+    for (uint64_t i = 0; i < msg_local.msg_iovlen; ++i) {
+        void* base = (void*)(uintptr_t)iov[i].base;
+        size_t len = (size_t)iov[i].len;
+        if (!user_range_valid(base, len)) {
+            kfree(iov);
+            return err(EFAULT);
+        }
+        int n = sys_recvfrom(fd, base, len, flags, msg_local.msg_name, msg_local.msg_name != NULL ? &addrlen : NULL, frame);
         if (n < 0) {
+            kfree(iov);
             return total > 0 ? total : n;
         }
         total += n;
@@ -5048,9 +5265,14 @@ static int sys_recvmsg(int fd, struct linux_msghdr* msg, int flags, struct sysca
             break;
         }
     }
-    msg->msg_namelen = addrlen;
-    msg->msg_controllen = 0;
-    msg->msg_flags = 0;
+    msg_local.msg_namelen = addrlen;
+    msg_local.msg_controllen = 0;
+    msg_local.msg_flags = 0;
+    int cr = copy_to_user(msg, &msg_local, sizeof(msg_local));
+    kfree(iov);
+    if (cr != 0) {
+        return cr;
+    }
     return total;
 }
 
@@ -5529,7 +5751,12 @@ static int try_complete_wait4(struct process* proc) {
     int zombie_idx = find_zombie_for_wait(proc, proc->wait.aux0);
     if (zombie_idx >= 0) {
         if (proc->wait.ptr0 != 0) {
-            *(int*)(uintptr_t)proc->wait.ptr0 = g_zombies[zombie_idx].exit_status;
+            int cr = copy_to_user((void*)(uintptr_t)proc->wait.ptr0, &g_zombies[zombie_idx].exit_status,
+                                  sizeof(g_zombies[zombie_idx].exit_status));
+            if (cr != 0) {
+                unblock_process(proc, cr);
+                return cr;
+            }
         }
         int reaped = g_zombies[zombie_idx].pid;
         remove_zombie(zombie_idx);
@@ -5552,7 +5779,11 @@ static int try_complete_wait4(struct process* proc) {
     }
 
     if (proc->wait.ptr0 != 0) {
-        *(int*)(uintptr_t)proc->wait.ptr0 = status;
+        int cr = copy_to_user((void*)(uintptr_t)proc->wait.ptr0, &status, sizeof(status));
+        if (cr != 0) {
+            unblock_process(proc, cr);
+            return cr;
+        }
     }
 
     struct process* child = process_find(pid);
@@ -5589,7 +5820,6 @@ static int try_complete_tty_read(struct process* proc) {
         return 0;
     }
 
-    char* out = (char*)(uintptr_t)proc->wait.ptr0;
     size_t count = (size_t)proc->wait.ptr1;
     size_t written = 0;
     while (written < count) {
@@ -5604,7 +5834,13 @@ static int try_complete_tty_read(struct process* proc) {
             unblock_process(proc, err(EINTR));
             return 0;
         }
-        out[written++] = (char)c;
+        char out = (char)c;
+        int cr = copy_to_user((void*)(uintptr_t)(proc->wait.ptr0 + written), &out, sizeof(out));
+        if (cr != 0) {
+            unblock_process(proc, cr);
+            return cr;
+        }
+        written++;
     }
 
     if (written == 0) {
@@ -5636,7 +5872,6 @@ static int try_complete_pipe_read(struct process* proc) {
         return 0;
     }
 
-    void* buf = (void*)(uintptr_t)proc->wait.ptr0;
     size_t count = (size_t)proc->wait.ptr1;
     size_t n = (count < p->size) ? count : p->size;
     size_t first = n;
@@ -5644,9 +5879,17 @@ static int try_complete_pipe_read(struct process* proc) {
     if (first > PIPE_CAPACITY - start) {
         first = PIPE_CAPACITY - start;
     }
-    memcpy(buf, &p->data[start], first);
+    int cr = copy_to_user((void*)(uintptr_t)proc->wait.ptr0, &p->data[start], first);
+    if (cr != 0) {
+        unblock_process(proc, cr);
+        return cr;
+    }
     if (n > first) {
-        memcpy((uint8_t*)buf + first, &p->data[0], n - first);
+        cr = copy_to_user((void*)(uintptr_t)(proc->wait.ptr0 + first), &p->data[0], n - first);
+        if (cr != 0) {
+            unblock_process(proc, cr);
+            return cr;
+        }
     }
     p->read_off = (p->read_off + n) % PIPE_CAPACITY;
     p->size -= n;
@@ -5677,7 +5920,6 @@ static int try_complete_pipe_write(struct process* proc) {
         return err(EAGAIN);
     }
 
-    const void* buf = (const void*)(uintptr_t)proc->wait.ptr0;
     size_t count = (size_t)proc->wait.ptr1;
     size_t n = (count < avail) ? count : avail;
     size_t write_off = (p->read_off + p->size) % PIPE_CAPACITY;
@@ -5685,9 +5927,17 @@ static int try_complete_pipe_write(struct process* proc) {
     if (first > PIPE_CAPACITY - write_off) {
         first = PIPE_CAPACITY - write_off;
     }
-    memcpy(&p->data[write_off], buf, first);
+    int cr = copy_from_user(&p->data[write_off], (const void*)(uintptr_t)proc->wait.ptr0, first);
+    if (cr != 0) {
+        unblock_process(proc, cr);
+        return cr;
+    }
     if (n > first) {
-        memcpy(&p->data[0], (const uint8_t*)buf + first, n - first);
+        cr = copy_from_user(&p->data[0], (const void*)(uintptr_t)(proc->wait.ptr0 + first), n - first);
+        if (cr != 0) {
+            unblock_process(proc, cr);
+            return cr;
+        }
     }
     p->size += n;
 
@@ -5762,14 +6012,28 @@ static int try_complete_select(struct process* proc) {
     memset(except_out, 0, sizeof(except_out));
 
     if (proc->wait.has_timeout && read_tsc() >= proc->wait.deadline_ns) {
+        uint8_t zero[SELECT_FDSET_BYTES];
+        memset(zero, 0, sizeof(zero));
         if (proc->wait.ptr0 != 0 && bytes > 0) {
-            memset((void*)(uintptr_t)proc->wait.ptr0, 0, bytes);
+            int cr = copy_to_user((void*)(uintptr_t)proc->wait.ptr0, zero, bytes);
+            if (cr != 0) {
+                unblock_process(proc, cr);
+                return cr;
+            }
         }
         if (proc->wait.ptr1 != 0 && bytes > 0) {
-            memset((void*)(uintptr_t)proc->wait.ptr1, 0, bytes);
+            int cr = copy_to_user((void*)(uintptr_t)proc->wait.ptr1, zero, bytes);
+            if (cr != 0) {
+                unblock_process(proc, cr);
+                return cr;
+            }
         }
         if (proc->wait.ptr2 != 0 && bytes > 0) {
-            memset((void*)(uintptr_t)proc->wait.ptr2, 0, bytes);
+            int cr = copy_to_user((void*)(uintptr_t)proc->wait.ptr2, zero, bytes);
+            if (cr != 0) {
+                unblock_process(proc, cr);
+                return cr;
+            }
         }
         unblock_process(proc, 0);
         return 0;
@@ -5782,13 +6046,25 @@ static int try_complete_select(struct process* proc) {
     }
 
     if (proc->wait.ptr0 != 0 && bytes > 0) {
-        memcpy((void*)(uintptr_t)proc->wait.ptr0, read_out, bytes);
+        int cr = copy_to_user((void*)(uintptr_t)proc->wait.ptr0, read_out, bytes);
+        if (cr != 0) {
+            unblock_process(proc, cr);
+            return cr;
+        }
     }
     if (proc->wait.ptr1 != 0 && bytes > 0) {
-        memcpy((void*)(uintptr_t)proc->wait.ptr1, write_out, bytes);
+        int cr = copy_to_user((void*)(uintptr_t)proc->wait.ptr1, write_out, bytes);
+        if (cr != 0) {
+            unblock_process(proc, cr);
+            return cr;
+        }
     }
     if (proc->wait.ptr2 != 0 && bytes > 0) {
-        memcpy((void*)(uintptr_t)proc->wait.ptr2, except_out, bytes);
+        int cr = copy_to_user((void*)(uintptr_t)proc->wait.ptr2, except_out, bytes);
+        if (cr != 0) {
+            unblock_process(proc, cr);
+            return cr;
+        }
     }
 
     unblock_process(proc, ready);
@@ -5887,6 +6163,9 @@ static int sys_select_common(int nfds, void* readfds, void* writefds, void* exce
     if (nfds < 0 || nfds > 1024) {
         return err(EINVAL);
     }
+    if (has_timeout && (timeout_sec < 0 || timeout_nsec < 0 || timeout_nsec >= 1000000000ll)) {
+        return err(EINVAL);
+    }
 
     size_t bytes = (size_t)((nfds + 7) >> 3);
     if (bytes > SELECT_FDSET_BYTES) {
@@ -5901,13 +6180,22 @@ static int sys_select_common(int nfds, void* readfds, void* writefds, void* exce
     memset(except_in, 0, sizeof(except_in));
 
     if (readfds != NULL && bytes > 0) {
-        memcpy(read_in, readfds, bytes);
+        int cr = copy_from_user(read_in, readfds, bytes);
+        if (cr != 0) {
+            return cr;
+        }
     }
     if (writefds != NULL && bytes > 0) {
-        memcpy(write_in, writefds, bytes);
+        int cr = copy_from_user(write_in, writefds, bytes);
+        if (cr != 0) {
+            return cr;
+        }
     }
     if (exceptfds != NULL && bytes > 0) {
-        memcpy(except_in, exceptfds, bytes);
+        int cr = copy_from_user(except_in, exceptfds, bytes);
+        if (cr != 0) {
+            return cr;
+        }
     }
 
     uint64_t start = read_tsc();
@@ -5937,25 +6225,46 @@ static int sys_select_common(int nfds, void* readfds, void* writefds, void* exce
         }
         if (ready > 0) {
             if (readfds != NULL && bytes > 0) {
-                memcpy(readfds, read_out, bytes);
+                int cr = copy_to_user(readfds, read_out, bytes);
+                if (cr != 0) {
+                    return cr;
+                }
             }
             if (writefds != NULL && bytes > 0) {
-                memcpy(writefds, write_out, bytes);
+                int cr = copy_to_user(writefds, write_out, bytes);
+                if (cr != 0) {
+                    return cr;
+                }
             }
             if (exceptfds != NULL && bytes > 0) {
-                memcpy(exceptfds, except_out, bytes);
+                int cr = copy_to_user(exceptfds, except_out, bytes);
+                if (cr != 0) {
+                    return cr;
+                }
             }
             return ready;
         }
 
         if (readfds != NULL && bytes > 0) {
-            memset(readfds, 0, bytes);
+            memset(read_out, 0, bytes);
+            int cr = copy_to_user(readfds, read_out, bytes);
+            if (cr != 0) {
+                return cr;
+            }
         }
         if (writefds != NULL && bytes > 0) {
-            memset(writefds, 0, bytes);
+            memset(write_out, 0, bytes);
+            int cr = copy_to_user(writefds, write_out, bytes);
+            if (cr != 0) {
+                return cr;
+            }
         }
         if (exceptfds != NULL && bytes > 0) {
-            memset(exceptfds, 0, bytes);
+            memset(except_out, 0, bytes);
+            int cr = copy_to_user(exceptfds, except_out, bytes);
+            if (cr != 0) {
+                return cr;
+            }
         }
 
         if (has_timeout && timeout_expired(start, budget)) {
@@ -5966,9 +6275,43 @@ static int sys_select_common(int nfds, void* readfds, void* writefds, void* exce
     }
 }
 
+static int select_validate_user_sets(int nfds, void* readfds, void* writefds, void* exceptfds, size_t* bytes_out) {
+    if (nfds < 0 || nfds > 1024 || bytes_out == NULL) {
+        return err(EINVAL);
+    }
+    size_t bytes = (size_t)((nfds + 7) >> 3);
+    if (bytes > SELECT_FDSET_BYTES) {
+        return err(EINVAL);
+    }
+    if ((readfds != NULL && !user_range_valid(readfds, bytes)) ||
+        (writefds != NULL && !user_range_valid(writefds, bytes)) ||
+        (exceptfds != NULL && !user_range_valid(exceptfds, bytes))) {
+        return err(EFAULT);
+    }
+    *bytes_out = bytes;
+    return 0;
+}
+
 static int sys_poll(struct linux_pollfd* fds, size_t nfds, int timeout_ms, struct syscall_frame* frame) {
     if (nfds > 1024u) {
         return err(EINVAL);
+    }
+    if (nfds > 0 && fds == NULL) {
+        return err(EFAULT);
+    }
+
+    size_t fds_len = nfds * sizeof(struct linux_pollfd);
+    struct linux_pollfd* local_fds = NULL;
+    if (nfds > 0) {
+        local_fds = kmalloc(fds_len);
+        if (local_fds == NULL) {
+            return err(ENOMEM);
+        }
+        int cr = copy_from_user(local_fds, fds, fds_len);
+        if (cr != 0) {
+            kfree(local_fds);
+            return cr;
+        }
     }
 
     uint64_t start = read_tsc();
@@ -5982,29 +6325,46 @@ static int sys_poll(struct linux_pollfd* fds, size_t nfds, int timeout_ms, struc
         if (keyboard_signal || current_has_pending_signal()) {
             struct process* current = current_process();
             if (current != NULL && (current->state == PROCESS_STOPPED || current->state == PROCESS_ZOMBIE) && frame != NULL) {
+                kfree(local_fds);
                 return (int)schedule_away(frame);
             }
+            kfree(local_fds);
             return err(EINTR);
         }
 
         int ready = 0;
         for (size_t i = 0; i < nfds; ++i) {
-            uint16_t revents = poll_revents_for_fd(&fds[i]);
-            fds[i].revents = (int16_t)revents;
+            uint16_t revents = poll_revents_for_fd(&local_fds[i]);
+            local_fds[i].revents = (int16_t)revents;
             if (revents != 0u) {
                 ++ready;
             }
         }
 
         if (ready != 0) {
+            int cr = copy_to_user(fds, local_fds, fds_len);
+            kfree(local_fds);
+            if (cr != 0) {
+                return cr;
+            }
             return ready;
         }
 
         if (timeout_ms == 0) {
+            int cr = copy_to_user(fds, local_fds, fds_len);
+            kfree(local_fds);
+            if (cr != 0) {
+                return cr;
+            }
             return 0;
         }
 
         if (timeout_ms > 0 && timeout_expired(start, budget)) {
+            int cr = copy_to_user(fds, local_fds, fds_len);
+            kfree(local_fds);
+            if (cr != 0) {
+                return cr;
+            }
             return 0;
         }
 
@@ -6655,8 +7015,13 @@ static uint32_t sys_alarm(uint32_t seconds) {
 }
 
 static int sys_select(int nfds, void* readfds, void* writefds, void* exceptfds, struct linux_timeval* timeout, struct syscall_frame* frame) {
+    size_t bytes = 0;
+    int vr = select_validate_user_sets(nfds, readfds, writefds, exceptfds, &bytes);
+    if (vr != 0) {
+        return vr;
+    }
+
     if (timeout == NULL) {
-        size_t bytes = (size_t)((nfds + 7) >> 3);
         uint8_t read_in[SELECT_FDSET_BYTES];
         uint8_t write_in[SELECT_FDSET_BYTES];
         uint8_t except_in[SELECT_FDSET_BYTES];
@@ -6670,26 +7035,44 @@ static int sys_select(int nfds, void* readfds, void* writefds, void* exceptfds, 
         memset(write_out, 0, sizeof(write_out));
         memset(except_out, 0, sizeof(except_out));
         if (readfds != NULL && bytes > 0) {
-            memcpy(read_in, readfds, bytes);
+            int cr = copy_from_user(read_in, readfds, bytes);
+            if (cr != 0) {
+                return cr;
+            }
         }
         if (writefds != NULL && bytes > 0) {
-            memcpy(write_in, writefds, bytes);
+            int cr = copy_from_user(write_in, writefds, bytes);
+            if (cr != 0) {
+                return cr;
+            }
         }
         if (exceptfds != NULL && bytes > 0) {
-            memcpy(except_in, exceptfds, bytes);
+            int cr = copy_from_user(except_in, exceptfds, bytes);
+            if (cr != 0) {
+                return cr;
+            }
         }
         int ready = select_scan(nfds, readfds != NULL ? read_in : NULL, writefds != NULL ? write_in : NULL,
                                 exceptfds != NULL ? except_in : NULL, read_out, write_out, except_out);
         if (ready != 0) {
             if (ready > 0) {
                 if (readfds != NULL && bytes > 0) {
-                    memcpy(readfds, read_out, bytes);
+                    int cr = copy_to_user(readfds, read_out, bytes);
+                    if (cr != 0) {
+                        return cr;
+                    }
                 }
                 if (writefds != NULL && bytes > 0) {
-                    memcpy(writefds, write_out, bytes);
+                    int cr = copy_to_user(writefds, write_out, bytes);
+                    if (cr != 0) {
+                        return cr;
+                    }
                 }
                 if (exceptfds != NULL && bytes > 0) {
-                    memcpy(exceptfds, except_out, bytes);
+                    int cr = copy_to_user(exceptfds, except_out, bytes);
+                    if (cr != 0) {
+                        return cr;
+                    }
                 }
             }
             return ready;
@@ -6711,17 +7094,31 @@ static int sys_select(int nfds, void* readfds, void* writefds, void* exceptfds, 
         proc->wait.ptr2 = (uint64_t)(uintptr_t)exceptfds;
         proc->wait.has_timeout = false;
         if (readfds != NULL && bytes > 0) {
-            memcpy(proc->wait.readfds, readfds, bytes);
+            int cr = copy_from_user(proc->wait.readfds, readfds, bytes);
+            if (cr != 0) {
+                return cr;
+            }
         }
         if (writefds != NULL && bytes > 0) {
-            memcpy(proc->wait.writefds, writefds, bytes);
+            int cr = copy_from_user(proc->wait.writefds, writefds, bytes);
+            if (cr != 0) {
+                return cr;
+            }
         }
         if (exceptfds != NULL && bytes > 0) {
-            memcpy(proc->wait.exceptfds, exceptfds, bytes);
+            int cr = copy_from_user(proc->wait.exceptfds, exceptfds, bytes);
+            if (cr != 0) {
+                return cr;
+            }
         }
         return (int)schedule_away(frame);
     }
-    int r = sys_select_common(nfds, readfds, writefds, exceptfds, true, timeout->tv_sec, timeout->tv_usec * 1000, frame);
+    struct linux_timeval timeout_local;
+    int tr = copy_from_user(&timeout_local, timeout, sizeof(timeout_local));
+    if (tr != 0) {
+        return tr;
+    }
+    int r = sys_select_common(nfds, readfds, writefds, exceptfds, true, timeout_local.tv_sec, timeout_local.tv_usec * 1000, frame);
     if (r != 0 || frame == NULL || !has_other_runnable_process(current_process())) {
         return r;
     }
@@ -6738,16 +7135,24 @@ static int sys_select(int nfds, void* readfds, void* writefds, void* exceptfds, 
     proc->wait.ptr1 = (uint64_t)(uintptr_t)writefds;
     proc->wait.ptr2 = (uint64_t)(uintptr_t)exceptfds;
     proc->wait.has_timeout = true;
-    proc->wait.deadline_ns = read_tsc() + timeout_to_tsc_cycles(timeout->tv_sec, timeout->tv_usec * 1000);
-    size_t bytes = (size_t)((nfds + 7) >> 3);
+    proc->wait.deadline_ns = read_tsc() + timeout_to_tsc_cycles(timeout_local.tv_sec, timeout_local.tv_usec * 1000);
     if (readfds != NULL && bytes > 0) {
-        memcpy(proc->wait.readfds, readfds, bytes);
+        int cr = copy_from_user(proc->wait.readfds, readfds, bytes);
+        if (cr != 0) {
+            return cr;
+        }
     }
     if (writefds != NULL && bytes > 0) {
-        memcpy(proc->wait.writefds, writefds, bytes);
+        int cr = copy_from_user(proc->wait.writefds, writefds, bytes);
+        if (cr != 0) {
+            return cr;
+        }
     }
     if (exceptfds != NULL && bytes > 0) {
-        memcpy(proc->wait.exceptfds, exceptfds, bytes);
+        int cr = copy_from_user(proc->wait.exceptfds, exceptfds, bytes);
+        if (cr != 0) {
+            return cr;
+        }
     }
     return (int)schedule_away(frame);
 }
@@ -6758,7 +7163,17 @@ static int sys_pselect6(int nfds, void* readfds, void* writefds, void* exceptfds
     if (timeout == NULL) {
         return sys_select(nfds, readfds, writefds, exceptfds, NULL, frame);
     }
-    int r = sys_select_common(nfds, readfds, writefds, exceptfds, true, timeout->tv_sec, timeout->tv_nsec, frame);
+    size_t bytes = 0;
+    int vr = select_validate_user_sets(nfds, readfds, writefds, exceptfds, &bytes);
+    if (vr != 0) {
+        return vr;
+    }
+    struct linux_timespec timeout_local;
+    int tr = copy_from_user(&timeout_local, timeout, sizeof(timeout_local));
+    if (tr != 0) {
+        return tr;
+    }
+    int r = sys_select_common(nfds, readfds, writefds, exceptfds, true, timeout_local.tv_sec, timeout_local.tv_nsec, frame);
     if (r != 0 || frame == NULL || !has_other_runnable_process(current_process())) {
         return r;
     }
@@ -6775,16 +7190,24 @@ static int sys_pselect6(int nfds, void* readfds, void* writefds, void* exceptfds
     proc->wait.ptr1 = (uint64_t)(uintptr_t)writefds;
     proc->wait.ptr2 = (uint64_t)(uintptr_t)exceptfds;
     proc->wait.has_timeout = true;
-    proc->wait.deadline_ns = read_tsc() + timeout_to_tsc_cycles(timeout->tv_sec, timeout->tv_nsec);
-    size_t bytes = (size_t)((nfds + 7) >> 3);
+    proc->wait.deadline_ns = read_tsc() + timeout_to_tsc_cycles(timeout_local.tv_sec, timeout_local.tv_nsec);
     if (readfds != NULL && bytes > 0) {
-        memcpy(proc->wait.readfds, readfds, bytes);
+        int cr = copy_from_user(proc->wait.readfds, readfds, bytes);
+        if (cr != 0) {
+            return cr;
+        }
     }
     if (writefds != NULL && bytes > 0) {
-        memcpy(proc->wait.writefds, writefds, bytes);
+        int cr = copy_from_user(proc->wait.writefds, writefds, bytes);
+        if (cr != 0) {
+            return cr;
+        }
     }
     if (exceptfds != NULL && bytes > 0) {
-        memcpy(proc->wait.exceptfds, exceptfds, bytes);
+        int cr = copy_from_user(proc->wait.exceptfds, exceptfds, bytes);
+        if (cr != 0) {
+            return cr;
+        }
     }
     return (int)schedule_away(frame);
 }
@@ -6793,18 +7216,27 @@ static int sys_nanosleep(const struct linux_timespec* req, struct linux_timespec
     if (req == NULL) {
         return err(EFAULT);
     }
-    if (req->tv_sec < 0 || req->tv_nsec < 0 || req->tv_nsec >= 1000000000ll) {
+    struct linux_timespec req_local;
+    int rr = copy_from_user(&req_local, req, sizeof(req_local));
+    if (rr != 0) {
+        return rr;
+    }
+    if (req_local.tv_sec < 0 || req_local.tv_nsec < 0 || req_local.tv_nsec >= 1000000000ll) {
         return err(EINVAL);
     }
 
     uint64_t start = read_tsc();
-    uint64_t budget = timeout_to_tsc_cycles(req->tv_sec, req->tv_nsec);
+    uint64_t budget = timeout_to_tsc_cycles(req_local.tv_sec, req_local.tv_nsec);
+    struct linux_timespec rem_zero;
+    memset(&rem_zero, 0, sizeof(rem_zero));
     while (!timeout_expired(start, budget)) {
         bool keyboard_signal = deliver_pending_keyboard_signal_to_foreground();
         if (keyboard_signal || current_has_pending_signal()) {
             if (rem != NULL) {
-                rem->tv_sec = 0;
-                rem->tv_nsec = 0;
+                int cr = copy_to_user(rem, &rem_zero, sizeof(rem_zero));
+                if (cr != 0) {
+                    return cr;
+                }
             }
             struct process* current = current_process();
             if (current != NULL && (current->state == PROCESS_STOPPED || current->state == PROCESS_ZOMBIE) && frame != NULL) {
@@ -6828,8 +7260,10 @@ static int sys_nanosleep(const struct linux_timespec* req, struct linux_timespec
     }
 
     if (rem != NULL) {
-        rem->tv_sec = 0;
-        rem->tv_nsec = 0;
+        int cr = copy_to_user(rem, &rem_zero, sizeof(rem_zero));
+        if (cr != 0) {
+            return cr;
+        }
     }
     return 0;
 }
@@ -6846,9 +7280,10 @@ static int sys_getrlimit(int resource, struct linux_rlimit* rlim) {
         return err(EFAULT);
     }
 
-    rlim->rlim_cur = RLIM_INFINITY;
-    rlim->rlim_max = RLIM_INFINITY;
-    return 0;
+    struct linux_rlimit out;
+    out.rlim_cur = RLIM_INFINITY;
+    out.rlim_max = RLIM_INFINITY;
+    return copy_to_user(rlim, &out, sizeof(out));
 }
 
 static int sys_prlimit64(int pid, int resource, const struct linux_rlimit* new_limit, struct linux_rlimit* old_limit) {
@@ -6857,10 +7292,23 @@ static int sys_prlimit64(int pid, int resource, const struct linux_rlimit* new_l
         return err(ESRCH);
     }
     if (old_limit != NULL) {
-        old_limit->rlim_cur = RLIM_INFINITY;
-        old_limit->rlim_max = RLIM_INFINITY;
+        struct linux_rlimit out;
+        out.rlim_cur = RLIM_INFINITY;
+        out.rlim_max = RLIM_INFINITY;
+        int cr = copy_to_user(old_limit, &out, sizeof(out));
+        if (cr != 0) {
+            return cr;
+        }
     }
     if (new_limit != NULL) {
+        struct linux_rlimit in;
+        int cr = copy_from_user(&in, new_limit, sizeof(in));
+        if (cr != 0) {
+            return cr;
+        }
+        if (in.rlim_cur > in.rlim_max) {
+            return err(EINVAL);
+        }
         return 0;
     }
     return 0;
@@ -7004,8 +7452,10 @@ static int sys_prctl(uint64_t option, uint64_t arg2, uint64_t arg3, uint64_t arg
             if (arg2 == 0) {
                 return err(EFAULT);
             }
-            *(int*)(uintptr_t)arg2 = (int)g_pdeath_signal;
-            return 0;
+        {
+            int sig = (int)g_pdeath_signal;
+            return copy_to_user((void*)(uintptr_t)arg2, &sig, sizeof(sig));
+        }
         case PR_GET_DUMPABLE:
             return g_dumpable ? 1 : 0;
         case PR_SET_DUMPABLE:
@@ -7022,7 +7472,11 @@ static int sys_prctl(uint64_t option, uint64_t arg2, uint64_t arg3, uint64_t arg
             char name[sizeof(g_task_name)];
             memset(name, 0, sizeof(name));
             for (size_t i = 0; i + 1 < sizeof(name); ++i) {
-                char c = ((const char*)(uintptr_t)arg2)[i];
+                char c = '\0';
+                int cr = copy_from_user(&c, (const void*)(uintptr_t)(arg2 + i), sizeof(c));
+                if (cr != 0) {
+                    return cr;
+                }
                 name[i] = c;
                 if (c == '\0') {
                     break;
@@ -7035,9 +7489,7 @@ static int sys_prctl(uint64_t option, uint64_t arg2, uint64_t arg3, uint64_t arg
             if (arg2 == 0) {
                 return err(EFAULT);
             }
-            memset((void*)(uintptr_t)arg2, 0, sizeof(g_task_name));
-            memcpy((void*)(uintptr_t)arg2, g_task_name, sizeof(g_task_name));
-            return 0;
+            return copy_to_user((void*)(uintptr_t)arg2, g_task_name, sizeof(g_task_name));
         case PR_SET_MM:
             if (arg2 == PR_SET_MM_ARG_START) {
                 return 0;
@@ -7124,10 +7576,15 @@ static int sys_futex(uint32_t* uaddr, uint32_t op, uint32_t val, const struct li
             uint64_t deadline = 0;
             bool has_timeout = false;
             if (timeout != NULL) {
-                if (timeout->tv_sec < 0 || timeout->tv_nsec < 0 || timeout->tv_nsec >= 1000000000ll) {
+                struct linux_timespec timeout_local;
+                int cr = copy_from_user(&timeout_local, timeout, sizeof(timeout_local));
+                if (cr != 0) {
+                    return cr;
+                }
+                if (timeout_local.tv_sec < 0 || timeout_local.tv_nsec < 0 || timeout_local.tv_nsec >= 1000000000ll) {
                     return err(EINVAL);
                 }
-                deadline = read_tsc() + timeout_to_tsc_cycles(timeout->tv_sec, timeout->tv_nsec);
+                deadline = read_tsc() + timeout_to_tsc_cycles(timeout_local.tv_sec, timeout_local.tv_nsec);
                 has_timeout = true;
                 if (read_tsc() >= deadline) {
                     return err(ETIMEDOUT);
@@ -7319,10 +7776,25 @@ static int64_t sys_brk(uint64_t brk) {
 }
 
 static int sys_getrandom(void* buf, size_t len) {
-    uint8_t* out = (uint8_t*)buf;
-    for (size_t i = 0; i < len; ++i) {
-        out[i] = (uint8_t)xorshift64();
+    if (!user_range_valid(buf, len)) {
+        return err(EFAULT);
     }
+    uint8_t block[64];
+    size_t done = 0;
+    while (done < len) {
+        syscall_random_bytes(block, sizeof(block));
+        size_t take = len - done;
+        if (take > sizeof(block)) {
+            take = sizeof(block);
+        }
+        int cr = copy_to_user((uint8_t*)buf + done, block, take);
+        if (cr != 0) {
+            memset(block, 0, sizeof(block));
+            return cr;
+        }
+        done += take;
+    }
+    memset(block, 0, sizeof(block));
     return (int)len;
 }
 
@@ -7336,8 +7808,7 @@ static int sys_arch_prctl(uint64_t code, uint64_t addr) {
     }
     if (code == ARCH_GET_FS) {
         uint64_t fs_now = ((read_cr4() & (1ull << 16)) != 0ull) ? read_fs_base_inst() : rdmsr(IA32_FS_BASE);
-        *(uint64_t*)(uintptr_t)addr = fs_now;
-        return 0;
+        return copy_to_user((void*)(uintptr_t)addr, &fs_now, sizeof(fs_now));
     }
     return err(EINVAL);
 }
@@ -8283,6 +8754,9 @@ static void remove_zombie(int idx) {
 }
 
 static int sys_set_tid_address(uint64_t tidptr) {
+    if (tidptr != 0 && !user_range_valid((void*)(uintptr_t)tidptr, sizeof(uint32_t))) {
+        return err(EFAULT);
+    }
     g_tid_address = tidptr;
     struct process* current = current_process();
     if (current != NULL) {
@@ -8339,6 +8813,10 @@ static int sys_fork_like(struct syscall_frame* frame, uint64_t clone_flags, uint
         }
         if ((clone_flags & (CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID)) != 0ull && child_tid_ptr == 0) {
             return err(EINVAL);
+        }
+        if ((clone_flags & (CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID)) != 0ull &&
+            !user_range_valid((void*)(uintptr_t)child_tid_ptr, sizeof(uint32_t))) {
+            return err(EFAULT);
         }
     }
 
@@ -8407,7 +8885,12 @@ static int sys_fork_like(struct syscall_frame* frame, uint64_t clone_flags, uint
 
     current->saved_frame.rax = (uint64_t)child->pid;
     if (from_clone && (clone_flags & CLONE_CHILD_SETTID) != 0ull) {
-        *(uint32_t*)(uintptr_t)child_tid_ptr = (uint32_t)child->pid;
+        uint32_t child_pid = (uint32_t)child->pid;
+        int cr = copy_to_user((void*)(uintptr_t)child_tid_ptr, &child_pid, sizeof(child_pid));
+        if (cr != 0) {
+            process_free(child);
+            return cr;
+        }
     }
 
     return child->pid;
@@ -8415,7 +8898,8 @@ static int sys_fork_like(struct syscall_frame* frame, uint64_t clone_flags, uint
 
 static uint64_t sys_exit_common(struct syscall_frame* frame, uint64_t code) {
     if (g_tid_address != 0) {
-        *(uint32_t*)(uintptr_t)g_tid_address = 0;
+        uint32_t zero = 0;
+        (void)copy_to_user((void*)(uintptr_t)g_tid_address, &zero, sizeof(zero));
     }
 
     struct process* current = current_process();

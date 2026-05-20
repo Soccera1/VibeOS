@@ -33,6 +33,7 @@
 #define VIRTIO_NET_QUEUE_RX 0u
 #define VIRTIO_NET_QUEUE_TX 1u
 #define VIRTIO_NET_RX_BUFFERS 32u
+#define VIRTIO_NET_TX_BUFFERS 32u
 #define VIRTIO_NET_FRAME_CAPACITY 2048u
 #define VIRTIO_NET_TX_SPIN_LIMIT 200000u
 
@@ -76,6 +77,7 @@ struct virtio_net_hdr {
 struct virtio_net_queue {
     void* raw;
     uint16_t size;
+    uint16_t next_desc;
     struct vring_desc* desc;
     volatile struct vring_avail* avail;
     volatile struct vring_used* used;
@@ -95,7 +97,7 @@ struct tx_buffer {
 static struct virtio_net_queue g_rx_queue;
 static struct virtio_net_queue g_tx_queue;
 static struct rx_buffer g_rx_buffers[VIRTIO_NET_RX_BUFFERS];
-static struct tx_buffer g_tx_buffer;
+static struct tx_buffer g_tx_buffers[VIRTIO_NET_TX_BUFFERS];
 static uint16_t g_io_base;
 static uint8_t g_mac[NET_ETH_ADDR_LEN];
 static bool g_present;
@@ -174,9 +176,24 @@ static void virtio_net_submit_rx(uint16_t desc_id) {
     g_rx_queue.desc[desc_id].len = sizeof(g_rx_buffers[desc_id]);
     g_rx_queue.desc[desc_id].flags = VRING_DESC_F_WRITE;
     g_rx_queue.desc[desc_id].next = 0u;
+    __asm__ volatile("mfence" : : : "memory");
     g_rx_queue.avail->ring[g_rx_queue.avail->idx % g_rx_queue.size] = desc_id;
-    __asm__ volatile("" : : : "memory");
+    __asm__ volatile("mfence" : : : "memory");
     ++g_rx_queue.avail->idx;
+    __asm__ volatile("mfence" : : : "memory");
+}
+
+static void virtio_net_notify_queue(uint16_t queue_index) {
+    outw((uint16_t)(g_io_base + VIRTIO_PCI_QUEUE_NOTIFY), queue_index);
+}
+
+static uint16_t virtio_net_alloc_tx_desc(void) {
+    uint16_t desc = g_tx_queue.next_desc;
+    ++g_tx_queue.next_desc;
+    if (g_tx_queue.next_desc >= g_tx_queue.size || g_tx_queue.next_desc >= VIRTIO_NET_TX_BUFFERS) {
+        g_tx_queue.next_desc = 0u;
+    }
+    return desc;
 }
 
 void virtio_net_poll(void) {
@@ -188,13 +205,16 @@ void virtio_net_poll(void) {
     while (g_rx_queue.last_used_idx != g_rx_queue.used->idx) {
         struct vring_used_elem elem = g_rx_queue.used->ring[g_rx_queue.last_used_idx % g_rx_queue.size];
         ++g_rx_queue.last_used_idx;
-        if (elem.id < VIRTIO_NET_RX_BUFFERS && elem.len > sizeof(struct virtio_net_hdr)) {
-            size_t frame_len = elem.len - sizeof(struct virtio_net_hdr);
-            if (frame_len > VIRTIO_NET_FRAME_CAPACITY) {
-                frame_len = VIRTIO_NET_FRAME_CAPACITY;
+        if (elem.id < VIRTIO_NET_RX_BUFFERS && elem.id < g_rx_queue.size) {
+            if (elem.len > sizeof(struct virtio_net_hdr)) {
+                size_t frame_len = elem.len - sizeof(struct virtio_net_hdr);
+                if (frame_len > VIRTIO_NET_FRAME_CAPACITY) {
+                    frame_len = VIRTIO_NET_FRAME_CAPACITY;
+                }
+                net_receive_ethernet(g_rx_buffers[elem.id].frame, frame_len);
             }
-            net_receive_ethernet(g_rx_buffers[elem.id].frame, frame_len);
             virtio_net_submit_rx((uint16_t)elem.id);
+            virtio_net_notify_queue(VIRTIO_NET_QUEUE_RX);
         }
     }
 }
@@ -205,19 +225,20 @@ bool virtio_net_send(const void* frame, size_t len) {
     }
 
     virtio_net_poll();
-    uint16_t desc = 0u;
-    memset(&g_tx_buffer, 0, sizeof(g_tx_buffer));
-    memcpy(g_tx_buffer.frame, frame, len);
-    memset(g_tx_queue.desc, 0, sizeof(*g_tx_queue.desc) * g_tx_queue.size);
-    g_tx_queue.desc[desc].addr = (uint64_t)(uintptr_t)&g_tx_buffer;
+    uint16_t desc = virtio_net_alloc_tx_desc();
+    struct tx_buffer* tx = &g_tx_buffers[desc];
+    memset(tx, 0, sizeof(*tx));
+    memcpy(tx->frame, frame, len);
+    g_tx_queue.desc[desc].addr = (uint64_t)(uintptr_t)tx;
     g_tx_queue.desc[desc].len = (uint32_t)(sizeof(struct virtio_net_hdr) + len);
     g_tx_queue.desc[desc].flags = 0u;
     g_tx_queue.desc[desc].next = 0u;
+    __asm__ volatile("mfence" : : : "memory");
     g_tx_queue.avail->ring[g_tx_queue.avail->idx % g_tx_queue.size] = desc;
-    __asm__ volatile("" : : : "memory");
+    __asm__ volatile("mfence" : : : "memory");
     ++g_tx_queue.avail->idx;
-    __asm__ volatile("" : : : "memory");
-    outw((uint16_t)(g_io_base + VIRTIO_PCI_QUEUE_NOTIFY), VIRTIO_NET_QUEUE_TX);
+    __asm__ volatile("mfence" : : : "memory");
+    virtio_net_notify_queue(VIRTIO_NET_QUEUE_TX);
 
     for (uint32_t spins = 0; spins < VIRTIO_NET_TX_SPIN_LIMIT; ++spins) {
         virtio_net_poll();
@@ -227,6 +248,9 @@ bool virtio_net_send(const void* frame, size_t len) {
         }
         __asm__ volatile("pause" : : : "memory");
     }
+    console_write("virtio-net: transmit timed out; disabling driver\n");
+    g_present = false;
+    virtio_status_or(VIRTIO_STATUS_FAILED);
     return false;
 }
 
@@ -279,7 +303,7 @@ void virtio_net_init(void) {
     for (uint16_t i = 0; i < VIRTIO_NET_RX_BUFFERS; ++i) {
         virtio_net_submit_rx(i);
     }
-    outw((uint16_t)(g_io_base + VIRTIO_PCI_QUEUE_NOTIFY), VIRTIO_NET_QUEUE_RX);
+    virtio_net_notify_queue(VIRTIO_NET_QUEUE_RX);
 
     g_present = true;
     virtio_status_or(VIRTIO_STATUS_DRIVER_OK);

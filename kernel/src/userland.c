@@ -8,6 +8,7 @@
 #include "initramfs.h"
 #include "kmalloc.h"
 #include "process.h"
+#include "syscall.h"
 #include "string.h"
 #include "vm.h"
 
@@ -134,9 +135,8 @@ static uint64_t build_user_stack(const struct user_exec_info* exec, const char* 
 
     uint64_t sp = VM_USER_STACK_TOP;
 
-    uint8_t at_random[16] = {
-        0x12, 0x6E, 0xA7, 0x39, 0x55, 0xC8, 0x03, 0xF1, 0x88, 0x22, 0x74, 0xB5, 0xE1, 0x9C, 0x41, 0x0D,
-    };
+    uint8_t at_random[16];
+    syscall_random_bytes(at_random, sizeof(at_random));
 
     (void)vm_space_map_zero(space, VM_USER_STACK_BASE, VM_USER_STACK_SIZE, VM_PROT_READ | VM_PROT_WRITE);
 
