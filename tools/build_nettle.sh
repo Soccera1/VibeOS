@@ -17,6 +17,7 @@ if [[ ! -f "$TARBALL" ]]; then
   echo "Nettle tarball not found: $TARBALL" >&2
   exit 1
 fi
+"$SCRIPT_DIR/check_distfile_hash.sh" "nettle-3.10.2.tar.gz" "$TARBALL"
 
 if [[ ! -f "$GMP_SYSROOT/usr/include/gmp.h" || ! -f "$GMP_SYSROOT/usr/lib/libgmp.a" ]]; then
   echo "GMP sysroot missing headers or static library: $GMP_SYSROOT" >&2

@@ -16,6 +16,7 @@ if [[ ! -f "$TARBALL" ]]; then
   echo "GMP tarball not found: $TARBALL" >&2
   exit 1
 fi
+"$SCRIPT_DIR/check_distfile_hash.sh" "gmp-6.3.0.tar.xz" "$TARBALL"
 
 mkdir -p "$(dirname "$OUT_DIR")"
 OUT_DIR="$(cd "$(dirname "$OUT_DIR")" && pwd)/$(basename "$OUT_DIR")"
