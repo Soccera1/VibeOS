@@ -171,6 +171,9 @@ tty1
 SECURETTY
 
 cat > "$ROOT/etc/profile" <<'PROFILE'
+if [ -z "$TERM" ] || [ "$TERM" = "-" ]; then
+  export TERM=vibeos
+fi
 export USER="${USER:-root}"
 export LOGNAME="${LOGNAME:-root}"
 export HOME="${HOME:-/root}"
@@ -214,10 +217,12 @@ cat > "$ROOT/sbin/root-shell" <<'ROOTSHELL'
 #!/bin/busybox sh
 if [ -x /usr/bin/bash ]; then
   export SHELL=/usr/bin/bash
+  export TERM="${TERM:-vibeos}"
   exec /usr/bin/bash -i
   echo "/sbin/root-shell: /usr/bin/bash failed, falling back to BusyBox sh" >&2
 fi
 export SHELL=/bin/sh
+export TERM="${TERM:-vibeos}"
 exec /bin/busybox sh -i
 ROOTSHELL
 chmod +x "$ROOT/sbin/root-shell"
@@ -228,10 +233,11 @@ export USER=root
 export LOGNAME=root
 export HOME=/root
 export SHELL=/bin/sh
+export TERM=vibeos
 export PATH=/bin:/sbin:/usr/bin
 hostname -F /etc/hostname 2>/dev/null || true
 while true; do
-  /sbin/getty -n -l /sbin/autologin-root 0 -
+  /sbin/getty -n -l /sbin/autologin-root 0 - vibeos
 done
 INIT
 chmod +x "$ROOT/init"
