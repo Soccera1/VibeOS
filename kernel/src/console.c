@@ -1470,6 +1470,8 @@ void console_init(uint64_t mb2_info) {
 
 bool console_configure_framebuffer(const struct console_framebuffer_info* info, console_framebuffer_flush_fn flush_callback) {
     soft_cursor_drawn = false;
+    g_fb_bulk_depth = 0;
+    g_fb_bulk_dirty = false;
     if (!setup_framebuffer_info(info, flush_callback)) {
         return false;
     }
@@ -1503,6 +1505,13 @@ bool console_get_framebuffer_info(struct console_framebuffer_info* out) {
     }
     *out = g_fb_info;
     return out->present;
+}
+
+void console_flush_framebuffer(void) {
+    if (!framebuffer_active()) {
+        return;
+    }
+    framebuffer_flush_rect(0, 0, g_fb_info.width, g_fb_info.height);
 }
 
 void console_putc(char c) {

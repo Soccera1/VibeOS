@@ -3672,6 +3672,7 @@ static int sys_write(int fd, const void* buf, size_t count, struct syscall_frame
             n = fb.size - off;
         }
         memcpy((void*)(uintptr_t)(fb.phys_addr + off), buf, n);
+        console_flush_framebuffer();
         g_fds[fd].offset += n;
         return (int)n;
     }
@@ -3850,6 +3851,7 @@ static int sys_pwrite64(int fd, const void* buf, size_t count, int64_t offset) {
             n = fb.size - off;
         }
         memcpy((void*)(uintptr_t)(fb.phys_addr + off), buf, n);
+        console_flush_framebuffer();
         return (int)n;
     }
 
@@ -4079,6 +4081,7 @@ static int sys_ioctl(int fd, uint64_t req, void* argp) {
             if (requested.xoffset != 0u || requested.yoffset != 0u) {
                 return err(EINVAL);
             }
+            console_flush_framebuffer();
             return copy_to_user(argp, &current, sizeof(current));
         }
 

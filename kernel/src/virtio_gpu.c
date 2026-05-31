@@ -59,7 +59,6 @@
 #define VIRTIO_GPU_DEFAULT_HEIGHT 768u
 #define VIRTIO_GPU_CMD_SPIN_LIMIT 200000u
 #define VIRTIO_GPU_EVENT_DISPLAY 1u
-#define VIRTIO_GPU_RESIZE_STABLE_POLLS 3u
 
 struct vring_desc {
     uint64_t addr;
@@ -187,9 +186,6 @@ static uint32_t g_width;
 static uint32_t g_height;
 static uint8_t* g_framebuffer;
 static uint32_t g_poll_counter;
-static uint32_t g_pending_width;
-static uint32_t g_pending_height;
-static uint8_t g_pending_stable_polls;
 static bool g_failure_reported;
 static struct virtio_gpu_ctrl_hdr g_response __attribute__((aligned(16)));
 
@@ -563,6 +559,8 @@ static bool apply_resize(uint32_t width, uint32_t height) {
     info.transp_length = 8u;
 
     uint32_t old_resource_id = g_resource_id;
+    uint32_t old_width = g_width;
+    uint32_t old_height = g_height;
     uint8_t* old_framebuffer = g_framebuffer;
     g_resource_id = new_resource_id;
     g_framebuffer = new_framebuffer;
@@ -570,39 +568,15 @@ static bool apply_resize(uint32_t width, uint32_t height) {
     g_height = height;
     if (!console_configure_framebuffer(&info, virtio_gpu_flush_rect)) {
         g_resource_id = old_resource_id;
+        g_width = old_width;
+        g_height = old_height;
         g_framebuffer = old_framebuffer;
         destroy_scanout(new_resource_id, new_framebuffer);
         return false;
     }
 
     destroy_scanout(old_resource_id, old_framebuffer);
-    g_pending_width = 0u;
-    g_pending_height = 0u;
-    g_pending_stable_polls = 0u;
     return true;
-}
-
-static void stage_resize(uint32_t width, uint32_t height) {
-    if (width == g_width && height == g_height) {
-        g_pending_width = 0u;
-        g_pending_height = 0u;
-        g_pending_stable_polls = 0u;
-        return;
-    }
-
-    if (width != g_pending_width || height != g_pending_height) {
-        g_pending_width = width;
-        g_pending_height = height;
-        g_pending_stable_polls = 1u;
-        return;
-    }
-
-    if (g_pending_stable_polls < VIRTIO_GPU_RESIZE_STABLE_POLLS) {
-        ++g_pending_stable_polls;
-        return;
-    }
-
-    (void)apply_resize(width, height);
 }
 
 void virtio_gpu_init(void) {
@@ -679,7 +653,7 @@ void virtio_gpu_poll(void) {
     if (!query_display_size(&width, &height)) {
         return;
     }
-    stage_resize(width, height);
+    (void)apply_resize(width, height);
 }
 
 bool virtio_gpu_present(void) {

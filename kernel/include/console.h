@@ -29,6 +29,7 @@ typedef void (*console_framebuffer_flush_fn)(uint32_t x, uint32_t y, uint32_t wi
 void console_init(uint64_t mb2_info);
 bool console_configure_framebuffer(const struct console_framebuffer_info* info,
                                    console_framebuffer_flush_fn flush_callback);
+void console_flush_framebuffer(void);
 void console_set_color(unsigned fg, unsigned bg);
 void console_putc(char c);
 void console_write(const char* s);
