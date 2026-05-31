@@ -732,6 +732,7 @@ static uint64_t g_robust_list_len;
 static bool g_dumpable = true;
 static bool g_no_new_privs;
 static char g_task_name[16] = "init";
+static char g_hostname[sizeof(((struct linux_utsname*)0)->nodename)] = "localhost";
 static uint16_t g_fb_cmap_red[256];
 static uint16_t g_fb_cmap_green[256];
 static uint16_t g_fb_cmap_blue[256];
@@ -7060,11 +7061,30 @@ static int sys_stat_compat(const char* path_user, struct linux_stat* st, bool fo
 static int sys_uname(struct linux_utsname* uts) {
     memset(uts, 0, sizeof(*uts));
     strcpy(uts->sysname, "VibeOS");
-    strcpy(uts->nodename, "vibe");
+    strcpy(uts->nodename, g_hostname);
     strcpy(uts->release, "0.1");
     strcpy(uts->version, "monolithic-kernel-prototype");
     strcpy(uts->machine, "x86_64");
     strcpy(uts->domainname, "local");
+    return 0;
+}
+
+static int sys_sethostname(const char* name, size_t len) {
+    if (!current_is_superuser()) {
+        return err(EPERM);
+    }
+    if (name == NULL) {
+        return err(EFAULT);
+    }
+    if (len >= sizeof(g_hostname)) {
+        return err(EINVAL);
+    }
+
+    int cr = copy_from_user(g_hostname, name, len);
+    if (cr != 0) {
+        return cr;
+    }
+    g_hostname[len] = '\0';
     return 0;
 }
 
@@ -9629,6 +9649,8 @@ static uint64_t syscall_dispatch_body(struct syscall_frame* frame) {
             return (uint64_t)sys_sync();
         case 169:
             return (uint64_t)sys_reboot((int)a0, (int)a1, a2);
+        case 170:
+            return (uint64_t)sys_sethostname((const char*)(uintptr_t)a0, (size_t)a1);
         case 186:
             return (uint64_t)g_current_pid;
         case 202:

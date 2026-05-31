@@ -532,6 +532,10 @@ static void fs_ensure_default_user_home(void) {
 
     (void)fs_chown("/home/user", 1000u, 1000u);
     (void)fs_chmod("/home/user", 0755u);
+
+    if (fs_lookup("/home/user/.bashrc", &entry) != 0) {
+        (void)fs_symlink("/.bashrc", "/home/user/.bashrc", 1000u, 1000u, NULL);
+    }
 }
 
 void fs_init(const uint8_t* usrfs_start, size_t usrfs_size) {

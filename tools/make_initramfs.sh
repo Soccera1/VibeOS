@@ -130,6 +130,10 @@ cat > "$ROOT/etc/resolv.conf" <<'RESOLV'
 nameserver 10.0.2.3
 RESOLV
 
+cat > "$ROOT/etc/hostname" <<'HOSTNAME'
+vibeos
+HOSTNAME
+
 cat > "$ROOT/etc/passwd" <<'PASSWD'
 root:x:0:0:root:/root:/sbin/root-shell
 user:x:1000:1000:user:/home/user:/usr/bin/bash
@@ -175,6 +179,8 @@ export PATH="${PATH:-/bin:/sbin:/usr/bin}"
 PROFILE
 
 cat > "$ROOT/.bashrc" <<'BASHRC'
+export PS1='\[\e[01;32m\]\u@\h\[\e[01;34m\] \w \$\[\e[00m\] '
+
 if command -v dircolors >/dev/null 2>&1; then
   eval "$(dircolors -b)"
 fi
@@ -223,6 +229,7 @@ export LOGNAME=root
 export HOME=/root
 export SHELL=/bin/sh
 export PATH=/bin:/sbin:/usr/bin
+hostname -F /etc/hostname 2>/dev/null || true
 while true; do
   /sbin/getty -n -l /sbin/autologin-root 0 -
 done

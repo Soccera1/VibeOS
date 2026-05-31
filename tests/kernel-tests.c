@@ -146,6 +146,13 @@ static void test_identity_and_paths(void) {
     REQUIRE(uname(&uts) == 0, "uname failed: %s", strerror(errno));
     REQUIRE(strcmp(uts.sysname, "VibeOS") == 0, "unexpected sysname: %s", uts.sysname);
     REQUIRE(strcmp(uts.machine, "x86_64") == 0, "unexpected machine: %s", uts.machine);
+    char original_nodename[sizeof(uts.nodename)];
+    strncpy(original_nodename, uts.nodename, sizeof(original_nodename));
+    original_nodename[sizeof(original_nodename) - 1] = '\0';
+    REQUIRE(sethostname("vibeos-test", strlen("vibeos-test")) == 0, "sethostname failed: %s", strerror(errno));
+    REQUIRE(uname(&uts) == 0, "uname after sethostname failed: %s", strerror(errno));
+    REQUIRE(strcmp(uts.nodename, "vibeos-test") == 0, "unexpected nodename: %s", uts.nodename);
+    REQUIRE(sethostname(original_nodename, strlen(original_nodename)) == 0, "restoring hostname failed: %s", strerror(errno));
     REQUIRE(getpid() > 0, "getpid returned %d", (int)getpid());
     REQUIRE(getppid() >= 0, "getppid returned %d", (int)getppid());
     REQUIRE(getuid() == 0 && geteuid() == 0, "uid/euid were not zero");
