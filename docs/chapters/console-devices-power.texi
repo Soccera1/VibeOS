@@ -57,7 +57,7 @@ and scaling that bitmap into the current framebuffer cell size.
 @section ANSI and Terminal Features
 
 The console parser supports the capabilities advertised by the shipped
-@code{ansi} terminfo entry:
+@code{vibeos} terminfo entry:
 
 @itemize @bullet
 @item cursor movement,

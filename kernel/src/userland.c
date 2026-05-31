@@ -122,7 +122,7 @@ static uint32_t elf_segment_prot(uint32_t flags) {
 static uint64_t build_user_stack(const struct user_exec_info* exec, const char* execfn,
                                  const char* const* argv, size_t argc, struct vm_space* space) {
     const char* envp[] = {
-        "TERM=ansi",
+        "TERM=vibeos",
         "HOME=/root",
         "USER=root",
         "LOGNAME=root",
