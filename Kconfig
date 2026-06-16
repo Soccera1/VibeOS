@@ -1,0 +1,69 @@
+mainmenu "VibeOS Configuration"
+
+menu "Build"
+
+config STRIP_BINARIES
+	bool "Strip generated binaries"
+	default y
+
+endmenu
+
+menu "Kernel"
+
+config KERNEL_WERROR
+	bool "Build the kernel with -Werror"
+	default y
+
+endmenu
+
+menu "Userspace"
+
+config USER_HELP
+	bool "VibeOS help command"
+	default y
+
+config USER_COREUTILS
+	bool "GNU coreutils"
+	default y
+
+config USER_BASH
+	bool "Bash shell"
+	default y
+
+config USER_FILE
+	bool "file(1)"
+	default y
+
+config USER_NANO
+	bool "nano editor"
+	default y
+
+config USER_LESS
+	bool "less pager"
+	default y
+
+config USER_VIM
+	bool "Vim editor"
+	default y
+
+config USER_SL
+	bool "sl demo program"
+	default y
+
+config USER_MAN_PAGES
+	bool "Linux man-pages"
+	default y
+
+config USER_MAN_DB
+	bool "man-db reader"
+	default y
+
+config USER_WGET
+	bool "wget with TLS support"
+	default y
+
+config USER_KERNEL_TESTS
+	bool "Kernel test suite in /usr"
+	default y
+
+endmenu
