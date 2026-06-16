@@ -1,6 +1,12 @@
 SHELL := /bin/bash
 
 BUILD_DIR := build
+KCONFIG := Kconfig
+CONFIG_FILE := .config
+KCONFIG_TOOL := tools/kconfig.py
+MENUCONFIG := $(BUILD_DIR)/tools/menuconfig
+CONFIG_MK := $(BUILD_DIR)/config.mk
+CONFIG_HEADER := $(BUILD_DIR)/include/generated/autoconf.h
 KERNEL_BIN := $(BUILD_DIR)/vibeos-kernel.bin
 INITRAMFS := $(BUILD_DIR)/initramfs.cpio
 USR_EXT3 := $(BUILD_DIR)/usr.ext3
@@ -20,6 +26,8 @@ CC := gcc
 LD := ld
 NASM := nasm
 STRIP ?= strip
+HOST_CC ?= cc
+PKG_CONFIG ?= pkg-config
 USER_CC := gcc
 BUSYBOX_SRC := external/busybox-src
 BUSYBOX_STATIC := external/busybox-static
@@ -29,10 +37,37 @@ ZIG_GLOBAL_CACHE := $(BUSYBOX_SRC)/.zig-global-cache
 ZIG_LOCAL_CACHE := $(BUSYBOX_SRC)/.zig-local-cache
 COREUTILS_ZIG_GLOBAL_CACHE := $(COREUTILS_SRC)/.zig-global-cache
 COREUTILS_ZIG_LOCAL_CACHE := $(COREUTILS_SRC)/.zig-local-cache
+NCURSES_CFLAGS := $(shell $(PKG_CONFIG) --cflags ncursesw 2>/dev/null)
+NCURSES_LIBS := $(or $(shell $(PKG_CONFIG) --libs ncursesw 2>/dev/null),-lncursesw)
 
 CFLAGS := -m64 -ffreestanding -fno-stack-protector -fno-pie -fno-pic -fno-omit-frame-pointer -fno-builtin \
-	-mno-red-zone -mno-mmx -mno-sse -mno-sse2 -mcmodel=large -Wall -Wextra -Werror -O2 -std=gnu11 -Ikernel/include
+	-mno-red-zone -mno-mmx -mno-sse -mno-sse2 -mcmodel=large -Wall -Wextra -O2 -std=gnu11 \
+	-Ikernel/include -I$(BUILD_DIR)/include -include generated/autoconf.h
 LDFLAGS := -nostdlib -z max-page-size=0x1000 -T kernel/linker.ld
+
+CONFIG_GOALS := config oldconfig menuconfig defconfig olddefconfig savedefconfig clean
+ifeq ($(filter $(CONFIG_GOALS),$(MAKECMDGOALS)),)
+-include $(CONFIG_MK)
+endif
+
+CONFIG_STRIP_BINARIES ?= y
+CONFIG_KERNEL_WERROR ?= y
+CONFIG_USER_HELP ?= y
+CONFIG_USER_COREUTILS ?= y
+CONFIG_USER_BASH ?= y
+CONFIG_USER_FILE ?= y
+CONFIG_USER_NANO ?= y
+CONFIG_USER_LESS ?= y
+CONFIG_USER_VIM ?= y
+CONFIG_USER_SL ?= y
+CONFIG_USER_MAN_PAGES ?= y
+CONFIG_USER_MAN_DB ?= y
+CONFIG_USER_WGET ?= y
+CONFIG_USER_KERNEL_TESTS ?= y
+
+ifeq ($(CONFIG_KERNEL_WERROR),y)
+CFLAGS += -Werror
+endif
 
 KERNEL_ASM := \
 	kernel/boot/boot.asm \
@@ -99,10 +134,11 @@ VIM_SRC_FILES := $(shell find $(VIM_SRC) \
 	-type f -print | sort)
 WGET_SRC_FILES := $(shell find $(WGET_SRC) -path "$(WGET_SRC)/build-musl" -prune -o -type f -print | sort)
 
-export STRIP_BINARIES ?= 1
+export STRIP_BINARIES := $(if $(filter y,$(CONFIG_STRIP_BINARIES)),1,0)
 export STRIP
 
-.PHONY: all clean run iso disk docs check-toolchain all-debug iso-debug disk-debug run-debug
+.PHONY: all clean run iso disk docs check-toolchain all-debug iso-debug disk-debug run-debug \
+	config oldconfig menuconfig defconfig olddefconfig savedefconfig
 
 all: disk
 
@@ -119,7 +155,9 @@ run-debug: export STRIP_BINARIES := 0
 run-debug: run
 
 check-toolchain:
+	@command -v python3 >/dev/null
 	@command -v $(CC) >/dev/null
+	@command -v $(HOST_CC) >/dev/null
 	@command -v $(LD) >/dev/null
 	@command -v $(NASM) >/dev/null
 	@if [[ "$(STRIP_BINARIES)" != "0" ]]; then command -v $(STRIP) >/dev/null; fi
@@ -131,6 +169,39 @@ check-toolchain:
 $(BUILD_DIR):
 	@mkdir -p $(BUILD_DIR)
 
+$(CONFIG_FILE): $(KCONFIG_TOOL) $(KCONFIG)
+	$(KCONFIG_TOOL) olddefconfig --kconfig $(KCONFIG) --config $@
+
+$(CONFIG_MK) $(CONFIG_HEADER): $(KCONFIG_TOOL) $(KCONFIG) $(CONFIG_FILE) | $(BUILD_DIR)
+	$(KCONFIG_TOOL) sync --kconfig $(KCONFIG) --config $(CONFIG_FILE) --out-mk $(CONFIG_MK) --out-header $(CONFIG_HEADER)
+
+$(MENUCONFIG): tools/menuconfig.c | $(BUILD_DIR)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -Wall -Wextra -O2 $(NCURSES_CFLAGS) -o $@ $< $(NCURSES_LIBS)
+
+config: $(KCONFIG_TOOL) $(KCONFIG)
+	$(KCONFIG_TOOL) config --kconfig $(KCONFIG) --config $(CONFIG_FILE)
+	$(KCONFIG_TOOL) sync --kconfig $(KCONFIG) --config $(CONFIG_FILE) --out-mk $(CONFIG_MK) --out-header $(CONFIG_HEADER)
+
+oldconfig: $(KCONFIG_TOOL) $(KCONFIG)
+	$(KCONFIG_TOOL) oldconfig --kconfig $(KCONFIG) --config $(CONFIG_FILE)
+	$(KCONFIG_TOOL) sync --kconfig $(KCONFIG) --config $(CONFIG_FILE) --out-mk $(CONFIG_MK) --out-header $(CONFIG_HEADER)
+
+menuconfig: $(MENUCONFIG) $(KCONFIG_TOOL) $(KCONFIG)
+	$(MENUCONFIG) --kconfig $(KCONFIG) --config $(CONFIG_FILE)
+	$(KCONFIG_TOOL) sync --kconfig $(KCONFIG) --config $(CONFIG_FILE) --out-mk $(CONFIG_MK) --out-header $(CONFIG_HEADER)
+
+defconfig: $(KCONFIG_TOOL) $(KCONFIG)
+	$(KCONFIG_TOOL) defconfig --kconfig $(KCONFIG) --config $(CONFIG_FILE)
+	$(KCONFIG_TOOL) sync --kconfig $(KCONFIG) --config $(CONFIG_FILE) --out-mk $(CONFIG_MK) --out-header $(CONFIG_HEADER)
+
+olddefconfig: $(KCONFIG_TOOL) $(KCONFIG)
+	$(KCONFIG_TOOL) olddefconfig --kconfig $(KCONFIG) --config $(CONFIG_FILE)
+	$(KCONFIG_TOOL) sync --kconfig $(KCONFIG) --config $(CONFIG_FILE) --out-mk $(CONFIG_MK) --out-header $(CONFIG_HEADER)
+
+savedefconfig: $(KCONFIG_TOOL) $(KCONFIG) $(CONFIG_FILE)
+	$(KCONFIG_TOOL) savedefconfig --kconfig $(KCONFIG) --config $(CONFIG_FILE) --output defconfig
+
 $(DOCS_OUT):
 	@mkdir -p $(DOCS_OUT)
 
@@ -138,7 +209,7 @@ $(BUILD_DIR)/kernel/boot/%.o: kernel/boot/%.asm | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
 	$(NASM) -f elf64 $< -o $@
 
-$(BUILD_DIR)/kernel/src/%.o: kernel/src/%.c | $(BUILD_DIR)
+$(BUILD_DIR)/kernel/src/%.o: kernel/src/%.c $(CONFIG_HEADER) | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -146,77 +217,143 @@ $(KERNEL_BIN): $(KERNEL_OBJS) kernel/linker.ld | $(BUILD_DIR)
 	$(LD) $(LDFLAGS) -o $@ $(KERNEL_OBJS)
 	@if [[ "$(STRIP_BINARIES)" != "0" ]]; then $(STRIP) $@; fi
 
-$(USER_BUSYBOX): tools/build_busybox.sh | $(BUILD_DIR)
+$(USER_BUSYBOX): tools/build_busybox.sh $(CONFIG_MK) | $(BUILD_DIR)
 	./tools/build_busybox.sh $@ "$(BUSYBOX_SRC)" "$(BUSYBOX_STATIC)" "$(BUSYBOX_ROOTFS)"
 
-$(USER_COREUTILS): | $(BUILD_DIR)
+$(USER_COREUTILS): $(CONFIG_MK) | $(BUILD_DIR)
 	./tools/build_coreutils.sh $@ "$(USER_COREUTILS_PROGS)" "$(COREUTILS_SRC)"
 
 $(USER_COREUTILS_PROGS): $(USER_COREUTILS)
 	@test -f "$@"
 
-$(USER_BASH): $(NCURSES_BUILD)/lib/libncursesw.a | $(BUILD_DIR)
+$(USER_BASH): $(NCURSES_BUILD)/lib/libncursesw.a $(CONFIG_MK) | $(BUILD_DIR)
 	./tools/build_bash.sh $@ "$(BASH_SRC)"
 
 $(NCURSES_BUILD)/lib/libncursesw.a: | $(BUILD_DIR)
 	./tools/build_ncurses.sh $@ "$(NCURSES_SRC)"
 
-$(USER_SL): $(NCURSES_BUILD)/lib/libncursesw.a | $(BUILD_DIR)
+$(USER_SL): $(NCURSES_BUILD)/lib/libncursesw.a $(CONFIG_MK) | $(BUILD_DIR)
 	./tools/build_sl.sh $@ "$(SL_SRC)" "$(NCURSES_BUILD)"
 
-$(USER_HELP): $(HELP_SRC) | $(BUILD_DIR)
+$(USER_HELP): $(HELP_SRC) $(CONFIG_MK) | $(BUILD_DIR)
 	./tools/build_help.sh $@ "$(HELP_SRC)"
 
-$(USER_FILE): | $(BUILD_DIR)
+$(USER_FILE): $(CONFIG_MK) | $(BUILD_DIR)
 	./tools/build_file.sh $@ "$(USER_FILE_MAGIC)" "$(FILE_SRC)"
 
 $(USER_FILE_MAGIC): $(USER_FILE)
 	@test -f "$@"
 
-$(USER_NANO): $(NCURSES_BUILD)/lib/libncursesw.a | $(BUILD_DIR)
+$(USER_NANO): $(NCURSES_BUILD)/lib/libncursesw.a $(CONFIG_MK) | $(BUILD_DIR)
 	./tools/build_nano.sh $@ "$(NANO_SRC)"
 
-$(USER_LESS): $(NCURSES_BUILD)/lib/libncursesw.a $(LESS_SRC_FILES) tools/build_less.sh | $(BUILD_DIR)
+$(USER_LESS): $(NCURSES_BUILD)/lib/libncursesw.a $(LESS_SRC_FILES) tools/build_less.sh $(CONFIG_MK) | $(BUILD_DIR)
 	./tools/build_less.sh $@ "$(LESS_SRC)" "$(NCURSES_BUILD)"
 
-$(USER_VIM): $(NCURSES_BUILD)/lib/libncursesw.a $(VIM_SRC_FILES) tools/build_vim.sh | $(BUILD_DIR)
+$(USER_VIM): $(NCURSES_BUILD)/lib/libncursesw.a $(VIM_SRC_FILES) tools/build_vim.sh $(CONFIG_MK) | $(BUILD_DIR)
 	./tools/build_vim.sh $@ "$(VIM_SRC)" "$(NCURSES_BUILD)"
 
-$(USER_MAN_PAGES): | $(BUILD_DIR)
+$(USER_MAN_PAGES): $(CONFIG_MK) | $(BUILD_DIR)
 	./tools/build_man_pages.sh $@ "$(MAN_PAGES_SRC)"
 
-$(USER_LIBPIPELINE): | $(BUILD_DIR)
+$(USER_LIBPIPELINE): $(CONFIG_MK) | $(BUILD_DIR)
 	./tools/build_libpipeline.sh $@ "$(LIBPIPELINE_SRC)"
 
-$(USER_GDBM): | $(BUILD_DIR)
+$(USER_GDBM): $(CONFIG_MK) | $(BUILD_DIR)
 	./tools/build_gdbm.sh $@ "$(GDBM_SRC)"
 
-$(USER_GROFF): | $(BUILD_DIR)
+$(USER_GROFF): $(CONFIG_MK) | $(BUILD_DIR)
 	./tools/build_groff.sh $@ "$(GROFF_SRC)"
 
 $(USER_MAN_DB): $(USER_LIBPIPELINE) $(USER_GDBM) $(USER_GROFF) tools/build_man_db.sh | $(BUILD_DIR)
 	./tools/build_man_db.sh $@ "$(MAN_DB_SRC)" "$(USER_LIBPIPELINE)" "$(USER_GDBM)" "$(USER_GROFF)"
 
-$(USER_GMP): tools/build_gmp.sh $(GMP_TARBALL) | $(BUILD_DIR)
+$(USER_GMP): tools/build_gmp.sh $(GMP_TARBALL) $(CONFIG_MK) | $(BUILD_DIR)
 	./tools/build_gmp.sh $@ "$(GMP_TARBALL)"
 
-$(USER_NETTLE): $(USER_GMP) tools/build_nettle.sh $(NETTLE_TARBALL) | $(BUILD_DIR)
+$(USER_NETTLE): $(USER_GMP) tools/build_nettle.sh $(NETTLE_TARBALL) $(CONFIG_MK) | $(BUILD_DIR)
 	./tools/build_nettle.sh $@ "$(NETTLE_TARBALL)" "$(USER_GMP)"
 
-$(USER_GNUTLS): $(USER_NETTLE) $(USER_GMP) tools/build_gnutls.sh | $(BUILD_DIR)
+$(USER_GNUTLS): $(USER_NETTLE) $(USER_GMP) tools/build_gnutls.sh $(CONFIG_MK) | $(BUILD_DIR)
 	./tools/build_gnutls.sh $@ "$(GNUTLS_SRC)" "$(USER_NETTLE)" "$(USER_GMP)"
 
-$(USER_WGET): $(USER_GNUTLS) $(USER_NETTLE) $(USER_GMP) $(WGET_SRC_FILES) tools/build_wget.sh $(CA_CERT_BUNDLE) | $(BUILD_DIR)
+$(USER_WGET): $(USER_GNUTLS) $(USER_NETTLE) $(USER_GMP) $(WGET_SRC_FILES) tools/build_wget.sh $(CA_CERT_BUNDLE) $(CONFIG_MK) | $(BUILD_DIR)
 	./tools/build_wget.sh $@ "$(WGET_SRC)" "$(USER_GNUTLS)" "$(USER_NETTLE)" "$(USER_GMP)" "$(CA_CERT_BUNDLE)"
 
-$(USER_TESTS): $(TESTS_SRC) tools/build_kernel_tests.sh | $(BUILD_DIR)
+$(USER_TESTS): $(TESTS_SRC) tools/build_kernel_tests.sh $(CONFIG_MK) | $(BUILD_DIR)
 	./tools/build_kernel_tests.sh $@ tests
 
-$(INITRAMFS): tools/make_initramfs.sh $(USER_BUSYBOX) $(USER_HELP) $(USER_COREUTILS) $(USER_COREUTILS_PROGS)
-	./tools/make_initramfs.sh $@ $(USER_BUSYBOX) $(USER_HELP) $(USER_COREUTILS) $(USER_COREUTILS_PROGS)
+INITRAMFS_DEPS := $(USER_BUSYBOX)
+INITRAMFS_ARGS :=
+INITRAMFS_BUSYBOX_ARG := $(USER_BUSYBOX)
+ifeq ($(CONFIG_USER_HELP),y)
+INITRAMFS_DEPS += $(USER_HELP)
+INITRAMFS_HELP_ARG := $(USER_HELP)
+endif
+ifeq ($(CONFIG_USER_COREUTILS),y)
+INITRAMFS_DEPS += $(USER_COREUTILS) $(USER_COREUTILS_PROGS)
+INITRAMFS_COREUTILS_DIR_ARG := $(USER_COREUTILS)
+INITRAMFS_COREUTILS_PROGS_ARG := $(USER_COREUTILS_PROGS)
+endif
 
-$(USR_EXT3): tools/make_usr_ext2.sh $(USER_BASH) $(USER_HELP) $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO) $(USER_LESS) $(USER_VIM) $(USER_COREUTILS) $(USER_COREUTILS_PROGS) $(USER_MAN_PAGES) $(USER_GROFF) $(USER_MAN_DB) $(USER_WGET) $(USER_TESTS)
-	./tools/make_usr_ext2.sh $@ $(USER_BASH) $(USER_HELP) $(USER_SL) $(USER_FILE) $(USER_FILE_MAGIC) $(USER_NANO) $(USER_LESS) $(USER_COREUTILS) $(USER_COREUTILS_PROGS) $(USER_MAN_PAGES) $(USER_GROFF) $(USER_MAN_DB) $(USER_WGET) $(USER_TESTS) $(USER_VIM)
+$(INITRAMFS): tools/make_initramfs.sh $(CONFIG_MK) $(INITRAMFS_DEPS)
+	./tools/make_initramfs.sh $@ "$(INITRAMFS_BUSYBOX_ARG)" "$(INITRAMFS_HELP_ARG)" "$(INITRAMFS_COREUTILS_DIR_ARG)" "$(INITRAMFS_COREUTILS_PROGS_ARG)"
+
+USR_DEPS :=
+USR_TREE_ARGS :=
+ifeq ($(CONFIG_USER_BASH),y)
+USR_DEPS += $(USER_BASH)
+USR_BASH_ARG := $(USER_BASH)
+endif
+ifeq ($(CONFIG_USER_HELP),y)
+USR_DEPS += $(USER_HELP)
+USR_HELP_ARG := $(USER_HELP)
+endif
+ifeq ($(CONFIG_USER_SL),y)
+USR_DEPS += $(USER_SL)
+USR_SL_ARG := $(USER_SL)
+endif
+ifeq ($(CONFIG_USER_FILE),y)
+USR_DEPS += $(USER_FILE) $(USER_FILE_MAGIC)
+USR_FILE_ARG := $(USER_FILE)
+USR_FILE_MAGIC_ARG := $(USER_FILE_MAGIC)
+endif
+ifeq ($(CONFIG_USER_NANO),y)
+USR_DEPS += $(USER_NANO)
+USR_NANO_ARG := $(USER_NANO)
+endif
+ifeq ($(CONFIG_USER_LESS),y)
+USR_DEPS += $(USER_LESS)
+USR_LESS_ARG := $(USER_LESS)
+endif
+ifeq ($(CONFIG_USER_COREUTILS),y)
+USR_DEPS += $(USER_COREUTILS) $(USER_COREUTILS_PROGS)
+USR_COREUTILS_DIR_ARG := $(USER_COREUTILS)
+USR_COREUTILS_PROGS_ARG := $(USER_COREUTILS_PROGS)
+endif
+ifeq ($(CONFIG_USER_MAN_PAGES),y)
+USR_DEPS += $(USER_MAN_PAGES)
+USR_TREE_ARGS += $(USER_MAN_PAGES)
+endif
+ifeq ($(CONFIG_USER_MAN_DB),y)
+USR_DEPS += $(USER_GROFF) $(USER_MAN_DB)
+USR_TREE_ARGS += $(USER_GROFF) $(USER_MAN_DB)
+endif
+ifeq ($(CONFIG_USER_WGET),y)
+USR_DEPS += $(USER_WGET)
+USR_TREE_ARGS += $(USER_WGET)
+endif
+ifeq ($(CONFIG_USER_KERNEL_TESTS),y)
+USR_DEPS += $(USER_TESTS)
+USR_TREE_ARGS += $(USER_TESTS)
+endif
+ifeq ($(CONFIG_USER_VIM),y)
+USR_DEPS += $(USER_VIM)
+USR_TREE_ARGS += $(USER_VIM)
+endif
+
+$(USR_EXT3): tools/make_usr_ext2.sh $(CONFIG_MK) $(USR_DEPS)
+	./tools/make_usr_ext2.sh $@ "$(USR_BASH_ARG)" "$(USR_HELP_ARG)" "$(USR_SL_ARG)" "$(USR_FILE_ARG)" "$(USR_FILE_MAGIC_ARG)" "$(USR_NANO_ARG)" "$(USR_LESS_ARG)" "$(USR_COREUTILS_DIR_ARG)" "$(USR_COREUTILS_PROGS_ARG)" $(USR_TREE_ARGS)
 
 $(HOME_EXT3): tools/make_home_ext2.sh | $(BUILD_DIR)
 	./tools/make_home_ext2.sh $@

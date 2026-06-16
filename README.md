@@ -39,6 +39,30 @@ make iso   # Build bootable ISO image
 make disk  # Build BIOS+GPT raw disk image (requires sudo for loop mounts)
 ```
 
+### Configuration
+
+VibeOS has a small Kconfig-like configuration layer. A missing `.config` is
+created from defaults automatically during a normal build.
+
+```bash
+make defconfig       # Reset .config to defaults
+make olddefconfig    # Refresh .config after Kconfig changes
+make menuconfig      # Toggle options in a C ncurses menu
+make savedefconfig   # Write a minimal defconfig
+```
+
+The generated files live under `build/`:
+
+- `build/config.mk` for Makefile conditionals
+- `build/include/generated/autoconf.h` for kernel C code
+
+The default configuration preserves the existing full image. Current options
+cover binary stripping, kernel `-Werror`, and which optional userspace packages
+are staged into the initramfs and `/usr` image. BusyBox remains mandatory
+because it provides the initramfs base shell and login applets. `make
+menuconfig` builds the host helper `build/tools/menuconfig` from
+`tools/menuconfig.c` and links it against ncurses.
+
 Artifacts:
 - `build/vibeos-kernel.bin`
 - `build/initramfs.cpio`
