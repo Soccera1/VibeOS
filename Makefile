@@ -98,6 +98,7 @@ USER_GNUTLS := $(BUILD_DIR)/userspace/gnutls
 USER_WGET := $(BUILD_DIR)/userspace/wget
 USER_TESTS := $(BUILD_DIR)/userspace/kernel-tests-root
 KMALLOC_HOST_TEST := $(BUILD_DIR)/tests/kmalloc-host-test
+CONSOLE_REFLOW_HOST_TEST := $(BUILD_DIR)/tests/console-reflow-host-test
 HOST_TEST_ZIG_GLOBAL_CACHE := $(abspath $(BUILD_DIR)/zig-global-cache)
 HOST_TEST_ZIG_LOCAL_CACHE := $(abspath $(BUILD_DIR)/zig-local-cache)
 BASH_SRC := external/bash-src
@@ -120,7 +121,7 @@ MAN_DB_SRC := external/man-db-src
 CA_CERT_BUNDLE ?= /etc/ssl/certs/ca-certificates.crt
 USER_SL := $(BUILD_DIR)/userspace/sl
 HELP_SRC := userspace/help.c
-TESTS_SRC := $(shell find tests -type f | sort)
+KERNEL_TESTS_SRC := tests/kernel-tests.c tests/kernel-test-helper.c
 LESS_SRC_FILES := $(shell find $(LESS_SRC) -path "$(LESS_SRC)/build-musl" -prune -o -type f -print | sort)
 VIM_SRC_FILES := $(shell find $(VIM_SRC) \
 	-name build-musl-zigcc-wrapper.sh -prune -o \
@@ -140,7 +141,7 @@ WGET_SRC_FILES := $(shell find $(WGET_SRC) -path "$(WGET_SRC)/build-musl" -prune
 export STRIP_BINARIES := $(if $(filter y,$(CONFIG_STRIP_BINARIES)),1,0)
 export STRIP
 
-.PHONY: all clean run iso disk docs check check-kmalloc check-toolchain check-build-tools check-image-tools \
+.PHONY: all clean run iso disk docs check check-kmalloc check-console-reflow check-toolchain check-build-tools check-image-tools \
 	check-iso-tools check-disk-tools check-run-tools all-debug iso-debug disk-debug run-debug \
 	config oldconfig menuconfig defconfig olddefconfig savedefconfig
 
@@ -187,9 +188,12 @@ check-run-tools:
 
 check-toolchain: check-iso-tools check-disk-tools check-run-tools
 
-check: check-kmalloc
+check: check-kmalloc check-console-reflow
 
 check-kmalloc: $(KMALLOC_HOST_TEST)
+	$<
+
+check-console-reflow: $(CONSOLE_REFLOW_HOST_TEST)
 	$<
 
 $(BUILD_DIR):
@@ -245,6 +249,13 @@ $(KMALLOC_HOST_TEST): tests/kmalloc-host-test.c kernel/src/kmalloc.c kernel/incl
 	ZIG_LOCAL_CACHE_DIR="$(HOST_TEST_ZIG_LOCAL_CACHE)" \
 	zig cc -target x86_64-linux-musl -static -no-pie -std=gnu11 -Wall -Wextra -Werror \
 		-Ikernel/include -o $@ $<
+
+$(CONSOLE_REFLOW_HOST_TEST): tests/console-reflow-host-test.c kernel/src/console.c kernel/include/console.h | $(BUILD_DIR)
+	@mkdir -p $(dir $@)
+	ZIG_GLOBAL_CACHE_DIR="$(HOST_TEST_ZIG_GLOBAL_CACHE)" \
+	ZIG_LOCAL_CACHE_DIR="$(HOST_TEST_ZIG_LOCAL_CACHE)" \
+	zig cc -target x86_64-linux-musl -static -no-pie -std=gnu11 -O2 -ffunction-sections -fdata-sections \
+		-Wall -Wextra -Werror -Ikernel/include -Wl,--gc-sections -o $@ $<
 
 $(KERNEL_BIN): $(KERNEL_OBJS) kernel/linker.ld | $(BUILD_DIR)
 	$(LD) $(LDFLAGS) -o $@ $(KERNEL_OBJS)
@@ -313,7 +324,7 @@ $(USER_GNUTLS): $(USER_NETTLE) $(USER_GMP) tools/build_gnutls.sh $(CONFIG_MK) | 
 $(USER_WGET): $(USER_GNUTLS) $(USER_NETTLE) $(USER_GMP) $(WGET_SRC_FILES) tools/build_wget.sh $(CA_CERT_BUNDLE) $(CONFIG_MK) | $(BUILD_DIR)
 	./tools/build_wget.sh $@ "$(WGET_SRC)" "$(USER_GNUTLS)" "$(USER_NETTLE)" "$(USER_GMP)" "$(CA_CERT_BUNDLE)"
 
-$(USER_TESTS): $(TESTS_SRC) tools/build_kernel_tests.sh $(CONFIG_MK) | $(BUILD_DIR)
+$(USER_TESTS): $(KERNEL_TESTS_SRC) tools/build_kernel_tests.sh $(CONFIG_MK) | $(BUILD_DIR)
 	./tools/build_kernel_tests.sh $@ tests
 
 INITRAMFS_DEPS := $(USER_BUSYBOX)
