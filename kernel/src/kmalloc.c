@@ -23,10 +23,34 @@ struct block_header {
     struct block_header* next;
     struct block_header* prev;
     bool free;
+    uint8_t padding[15];
 };
+
+_Static_assert(sizeof(struct block_header) % KMALLOC_ALIGN == 0,
+               "allocator metadata must preserve payload alignment");
 
 static bool g_initialized = false;
 static uintptr_t g_heap_break;
+
+static bool allocation_size(size_t size, size_t* aligned_size, size_t* total_size) {
+    const size_t overhead = sizeof(struct block_header) * 2u;
+
+    if (size == 0u) {
+        size = 1u;
+    }
+    const size_t alignment_mask = (size_t)KMALLOC_ALIGN - 1u;
+    if (size > SIZE_MAX - alignment_mask) {
+        return false;
+    }
+    size = (size + alignment_mask) & ~alignment_mask;
+    if (size > SIZE_MAX - overhead) {
+        return false;
+    }
+
+    *aligned_size = size;
+    *total_size = size + overhead;
+    return true;
+}
 
 static struct block_header* get_footer(struct block_header* header) {
     return (struct block_header*)((uintptr_t)header + header->size - sizeof(struct block_header));
@@ -40,7 +64,7 @@ static void set_footer(struct block_header* header) {
 }
 
 static struct block_header* request_space(size_t total_size) {
-    if (g_heap_break + total_size > HEAP_END) {
+    if (g_heap_break > HEAP_END || total_size > HEAP_END - g_heap_break) {
         return NULL;
     }
 
@@ -122,12 +146,10 @@ void kmalloc_init(void) {
 }
 
 void* kmalloc(size_t size) {
-    if (size == 0) {
-        size = 1;
+    size_t total_size;
+    if (!allocation_size(size, &size, &total_size)) {
+        return NULL;
     }
-
-    size = (size + (KMALLOC_ALIGN - 1u)) & ~(KMALLOC_ALIGN - 1u);
-    size_t total_size = size + sizeof(struct block_header) * 2;
 
     struct block_header* best = NULL;
     struct block_header* current = (struct block_header*)HEAP_START;
@@ -214,8 +236,10 @@ void* krealloc(void* ptr, size_t new_size) {
         return NULL;
     }
 
-    new_size = (new_size + 15) & ~15;
-    size_t total_new = new_size + sizeof(struct block_header) * 2;
+    size_t total_new;
+    if (!allocation_size(new_size, &new_size, &total_new)) {
+        return NULL;
+    }
 
     if (block->size >= total_new) {
         return ptr;
@@ -238,7 +262,11 @@ void* kmalloc_aligned(size_t size, size_t alignment) {
         return NULL;
     }
 
-    size_t total = size + alignment + sizeof(void*);
+    const size_t padding = alignment - 1u;
+    if (size > SIZE_MAX - sizeof(void*) || size + sizeof(void*) > SIZE_MAX - padding) {
+        return NULL;
+    }
+    size_t total = size + sizeof(void*) + padding;
     void* raw = kmalloc(total);
     if (raw == NULL) {
         return NULL;

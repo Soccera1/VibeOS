@@ -1,9 +1,20 @@
-build/
-docs/out/
-review/
-.config
-*.img
-*.iso
+# Repository build and configuration output
+/build/
+/docs/out/
+/review/
+/.config
+/*.img
+/*.iso
+
+# Local tooling and editor state
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.swp
+*.swo
+*~
 
 # Generic binary artifacts
 *.bin
@@ -43,38 +54,40 @@ external/busybox-src/busybox_unstripped.out
 external/busybox-src/**/*.cmd
 external/busybox-src/include/config/
 
-# Zig caches under BusyBox source
-external/busybox-src/.zig-global-cache/
-external/busybox-src/.zig-local-cache/
-external/bash-src/.zig-global-cache/
-external/bash-src/.zig-local-cache/
-external/coreutils-src/.zig-global-cache/
-external/coreutils-src/.zig-local-cache/
+# Generated state from in-tree external builds
+/external/*-src/.zig-global-cache/
+/external/*-src/.zig-local-cache/
+/external/*-src/autom4te.cache/
+/external/*-src/build-musl/
+/external/*-src/config.cache
+/external/*-src/config.log
+/external/*-src/config.status
 
 # Other external build outputs
 external/bash-src/.build
 external/bash-src/.made
 external/bash-src/bash
-external/bash-src/build-musl/
-external/coreutils-src/autom4te.cache/
-external/coreutils-src/build-musl/
-external/less-src/build-musl/
-external/ncurses-src/build-musl/
-external/nano-src/build-musl/
+external/bash-src/Makefile
+external/bash-src/bashbug
+external/bash-src/bashversion
+external/bash-src/builtins/Makefile
+external/bash-src/config.h
+external/bash-src/lib/glob/Makefile
+external/bash-src/lib/intl/Makefile
+external/bash-src/lib/malloc/Makefile
+external/bash-src/lib/readline/Makefile
+external/bash-src/lib/sh/Makefile
+external/bash-src/lib/termcap/Makefile
+external/bash-src/lib/tilde/Makefile
+external/bash-src/version.h
+external/man-pages-src/build/
 external/man-pages-src/.tmp/
-external/libpipeline-src/build-musl/
-external/man-db-src/build-musl/
-external/groff-src/build-musl/
 external/groff-src/contrib/mom/examples/penguin.pdf
 external/groff-src/contrib/mom/examples/penguin.ps
 external/groff-src/doc/gnu.eps
 external/groff-src/doc/groff.dvi
 external/groff-src/doc/groff.pdf
 external/groff-src/font/devps/prologue.ps
-external/gdbm-src/build-musl/
-external/gnutls-src/build-musl/
-external/wget-src/build-musl/
-external/file-src/build-musl/
 external/vim-src/build-musl-build.log
 external/vim-src/build-musl-configure.log
 external/vim-src/build-musl-zigcc-wrapper.sh
@@ -89,9 +102,3 @@ external/vim-src/src/auto/pathdef.c
 external/vim-src/src/objects/
 external/vim-src/src/tags
 external/vim-src/src/vim
-
-# Autoconf/configure churn in in-tree external builds
-external/bash-src/config.log
-external/bash-src/config.status
-external/nano-src/config.log
-external/nano-src/config.status

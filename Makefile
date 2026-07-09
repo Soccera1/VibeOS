@@ -97,6 +97,9 @@ USER_NETTLE := $(BUILD_DIR)/userspace/nettle
 USER_GNUTLS := $(BUILD_DIR)/userspace/gnutls
 USER_WGET := $(BUILD_DIR)/userspace/wget
 USER_TESTS := $(BUILD_DIR)/userspace/kernel-tests-root
+KMALLOC_HOST_TEST := $(BUILD_DIR)/tests/kmalloc-host-test
+HOST_TEST_ZIG_GLOBAL_CACHE := $(abspath $(BUILD_DIR)/zig-global-cache)
+HOST_TEST_ZIG_LOCAL_CACHE := $(abspath $(BUILD_DIR)/zig-local-cache)
 BASH_SRC := external/bash-src
 NCURSES_SRC := external/ncurses-src
 NCURSES_BUILD := $(NCURSES_SRC)/build-musl
@@ -137,7 +140,8 @@ WGET_SRC_FILES := $(shell find $(WGET_SRC) -path "$(WGET_SRC)/build-musl" -prune
 export STRIP_BINARIES := $(if $(filter y,$(CONFIG_STRIP_BINARIES)),1,0)
 export STRIP
 
-.PHONY: all clean run iso disk docs check-toolchain all-debug iso-debug disk-debug run-debug \
+.PHONY: all clean run iso disk docs check check-kmalloc check-toolchain check-build-tools check-image-tools \
+	check-iso-tools check-disk-tools check-run-tools all-debug iso-debug disk-debug run-debug \
 	config oldconfig menuconfig defconfig olddefconfig savedefconfig
 
 all: disk
@@ -154,17 +158,39 @@ disk-debug: disk
 run-debug: export STRIP_BINARIES := 0
 run-debug: run
 
-check-toolchain:
+check-build-tools:
 	@command -v python3 >/dev/null
 	@command -v $(CC) >/dev/null
 	@command -v $(HOST_CC) >/dev/null
 	@command -v $(LD) >/dev/null
 	@command -v $(NASM) >/dev/null
 	@if [[ "$(STRIP_BINARIES)" != "0" ]]; then command -v $(STRIP) >/dev/null; fi
-	@command -v grub-mkrescue >/dev/null
-	@command -v grub-install >/dev/null
+	@command -v zig >/dev/null
+	@command -v readelf >/dev/null
+
+check-image-tools: check-build-tools
+	@command -v cpio >/dev/null
 	@command -v mkfs.ext3 >/dev/null
+	@command -v tic >/dev/null
+
+check-iso-tools: check-image-tools
+	@command -v grub-mkrescue >/dev/null
+	@command -v xorriso >/dev/null
+	@command -v mformat >/dev/null
+
+check-disk-tools: check-image-tools
+	@command -v grub-mkimage >/dev/null
+	@command -v parted >/dev/null
+
+check-run-tools:
 	@command -v qemu-system-x86_64 >/dev/null
+
+check-toolchain: check-iso-tools check-disk-tools check-run-tools
+
+check: check-kmalloc
+
+check-kmalloc: $(KMALLOC_HOST_TEST)
+	$<
 
 $(BUILD_DIR):
 	@mkdir -p $(BUILD_DIR)
@@ -212,6 +238,13 @@ $(BUILD_DIR)/kernel/boot/%.o: kernel/boot/%.asm | $(BUILD_DIR)
 $(BUILD_DIR)/kernel/src/%.o: kernel/src/%.c $(CONFIG_HEADER) | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+$(KMALLOC_HOST_TEST): tests/kmalloc-host-test.c kernel/src/kmalloc.c kernel/include/kmalloc.h | $(BUILD_DIR)
+	@mkdir -p $(dir $@)
+	ZIG_GLOBAL_CACHE_DIR="$(HOST_TEST_ZIG_GLOBAL_CACHE)" \
+	ZIG_LOCAL_CACHE_DIR="$(HOST_TEST_ZIG_LOCAL_CACHE)" \
+	zig cc -target x86_64-linux-musl -static -no-pie -std=gnu11 -Wall -Wextra -Werror \
+		-Ikernel/include -o $@ $<
 
 $(KERNEL_BIN): $(KERNEL_OBJS) kernel/linker.ld | $(BUILD_DIR)
 	$(LD) $(LDFLAGS) -o $@ $(KERNEL_OBJS)
@@ -358,14 +391,14 @@ $(USR_EXT3): tools/make_usr_ext2.sh $(CONFIG_MK) $(USR_DEPS)
 $(HOME_EXT3): tools/make_home_ext2.sh | $(BUILD_DIR)
 	./tools/make_home_ext2.sh $@
 
-iso: check-toolchain $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT3)
+iso: check-iso-tools $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT3)
 	./tools/make_iso.sh $(ISO_IMAGE) $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT3)
 
-# BIOS + GPT raw disk image. Needs loop devices and mount permissions.
-disk: check-toolchain $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT3) $(HOME_EXT3)
+# BIOS + GPT raw disk image, built without loop devices or root privileges.
+disk: check-disk-tools $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT3) $(HOME_EXT3)
 	./tools/make_gpt_disk.sh $(DISK_IMAGE) $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT3)
 
-run: disk $(USR_EXT3) $(HOME_EXT3)
+run: check-run-tools disk $(USR_EXT3) $(HOME_EXT3)
 	qemu-system-x86_64 \
 		-machine q35,accel=kvm:tcg \
 		-m 1G \

@@ -164,9 +164,9 @@ two @code{module2} directives, and then runs @code{grub-mkrescue}.
 
 @item tools/make_gpt_disk.sh
 Creates a raw disk image, partitions it with GPT, creates a BIOS GRUB partition
-plus a main ext3 partition, mounts the filesystem, copies the kernel and module
-images into @file{/boot}, writes GRUB configuration, and installs BIOS GRUB
-into the resulting loop device.
+plus a main ext3 partition, populates the filesystem off-image, and embeds a
+GRUB core image directly.  It does not require mounts, loop devices, or root
+privileges.
 @end table
 
 @node Shared Helper Script
