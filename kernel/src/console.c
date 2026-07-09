@@ -33,10 +33,16 @@
 static volatile uint16_t* const vga_hw = (volatile uint16_t*)0xB8000;
 static uint16_t text_cells[TEXT_CELL_CAPACITY];
 static uint8_t text_cell_flags[TEXT_CELL_CAPACITY];
+static size_t text_line_lengths[FB_MAX_ROWS];
+static bool text_line_wrapped[FB_MAX_ROWS];
 static uint16_t main_vga[TEXT_CELL_CAPACITY];
 static uint8_t main_vga_flags[TEXT_CELL_CAPACITY];
+static size_t main_vga_line_lengths[FB_MAX_ROWS];
+static bool main_vga_line_wrapped[FB_MAX_ROWS];
 static uint16_t resize_cells[TEXT_CELL_CAPACITY];
 static uint8_t resize_cell_flags[TEXT_CELL_CAPACITY];
+static size_t resize_line_lengths[FB_MAX_ROWS];
+static bool resize_line_wrapped[FB_MAX_ROWS];
 static size_t text_cols = VGA_WIDTH;
 static size_t text_rows = VGA_HEIGHT;
 static size_t cursor_row;
@@ -146,8 +152,8 @@ static void set_text_geometry(size_t cols, size_t rows) {
     scroll_bottom = text_rows - 1u;
 }
 
-static void resize_cell_buffer(uint16_t* cells, uint8_t* flags, size_t old_cols, size_t old_rows, size_t new_cols,
-                               size_t new_rows) {
+static void resize_cell_buffer_rectangular(uint16_t* cells, uint8_t* flags, size_t* line_lengths, bool* line_wrapped,
+                                           size_t old_cols, size_t old_rows, size_t new_cols, size_t new_rows) {
     uint16_t blank = blank_cell();
     size_t copy_cols = (old_cols < new_cols) ? old_cols : new_cols;
     size_t copy_rows = (old_rows < new_rows) ? old_rows : new_rows;
@@ -170,6 +176,179 @@ static void resize_cell_buffer(uint16_t* cells, uint8_t* flags, size_t old_cols,
         cells[i] = resize_cells[i];
         flags[i] = resize_cell_flags[i];
     }
+    for (size_t row = 0; row < new_rows; ++row) {
+        resize_line_lengths[row] = 0u;
+        if (row < copy_rows) {
+            resize_line_lengths[row] = (line_lengths[row] < copy_cols) ? line_lengths[row] : copy_cols;
+        }
+        resize_line_wrapped[row] = row < copy_rows && line_wrapped[row];
+    }
+    if (new_rows != 0u) {
+        resize_line_wrapped[new_rows - 1u] = false;
+    }
+    for (size_t row = 0; row < new_rows; ++row) {
+        line_lengths[row] = resize_line_lengths[row];
+        line_wrapped[row] = resize_line_wrapped[row];
+    }
+}
+
+static size_t reflow_group_end(const bool* line_wrapped, size_t start, size_t rows) {
+    size_t end = start;
+    while (end + 1u < rows && line_wrapped[end]) {
+        ++end;
+    }
+    return end;
+}
+
+static size_t reflow_group_length(const size_t* line_lengths, size_t start, size_t end, size_t old_cols) {
+    return (end - start) * old_cols + line_lengths[end];
+}
+
+static size_t reflow_cursor_offset(size_t row, size_t col, size_t start, size_t end, size_t old_cols,
+                                   bool* belongs_to_group) {
+    *belongs_to_group = row >= start && row <= end;
+    if (!*belongs_to_group) {
+        return 0u;
+    }
+    return (row - start) * old_cols + col;
+}
+
+static size_t reflow_group_rows(size_t content_length, size_t new_cols, bool has_cursor, size_t cursor_offset,
+                                bool has_saved_cursor, size_t saved_cursor_offset) {
+    size_t rows = (content_length + new_cols - 1u) / new_cols;
+    if (rows == 0u) {
+        rows = 1u;
+    }
+    if (has_cursor && cursor_offset / new_cols + 1u > rows) {
+        rows = cursor_offset / new_cols + 1u;
+    }
+    if (has_saved_cursor && saved_cursor_offset / new_cols + 1u > rows) {
+        rows = saved_cursor_offset / new_cols + 1u;
+    }
+    return rows;
+}
+
+static void resize_cell_buffer_reflow(uint16_t* cells, uint8_t* flags, size_t* line_lengths, bool* line_wrapped,
+                                      size_t old_cols, size_t old_rows, size_t new_cols, size_t new_rows,
+                                      size_t* primary_cursor_row, size_t* primary_cursor_col,
+                                      size_t* secondary_cursor_row, size_t* secondary_cursor_col) {
+    size_t total_rows = 0u;
+    size_t primary_new_row = 0u;
+    size_t primary_new_col = 0u;
+    size_t secondary_new_row = 0u;
+    size_t secondary_new_col = 0u;
+
+    for (size_t start = 0; start < old_rows;) {
+        size_t end = reflow_group_end(line_wrapped, start, old_rows);
+        size_t content_length = reflow_group_length(line_lengths, start, end, old_cols);
+        bool has_primary = false;
+        bool has_secondary = false;
+        size_t primary_offset = reflow_cursor_offset(*primary_cursor_row, *primary_cursor_col, start, end, old_cols,
+                                                     &has_primary);
+        size_t secondary_offset = 0u;
+        if (secondary_cursor_row != NULL && secondary_cursor_col != NULL) {
+            secondary_offset = reflow_cursor_offset(*secondary_cursor_row, *secondary_cursor_col, start, end, old_cols,
+                                                    &has_secondary);
+        }
+        size_t group_rows = reflow_group_rows(content_length, new_cols, has_primary, primary_offset, has_secondary,
+                                              secondary_offset);
+        if (has_primary) {
+            primary_new_row = total_rows + primary_offset / new_cols;
+            primary_new_col = primary_offset % new_cols;
+        }
+        if (has_secondary) {
+            secondary_new_row = total_rows + secondary_offset / new_cols;
+            secondary_new_col = secondary_offset % new_cols;
+        }
+        total_rows += group_rows;
+        start = end + 1u;
+    }
+
+    size_t window_start = 0u;
+    if (total_rows > new_rows) {
+        size_t max_start = total_rows - new_rows;
+        if (primary_new_row >= new_rows) {
+            window_start = primary_new_row - new_rows + 1u;
+        }
+        if (window_start > max_start) {
+            window_start = max_start;
+        }
+    }
+
+    uint16_t blank = blank_cell();
+    for (size_t i = 0; i < new_cols * new_rows; ++i) {
+        resize_cells[i] = blank;
+        resize_cell_flags[i] = 0u;
+    }
+    for (size_t row = 0; row < new_rows; ++row) {
+        resize_line_lengths[row] = 0u;
+        resize_line_wrapped[row] = false;
+    }
+
+    size_t output_row = 0u;
+    for (size_t start = 0; start < old_rows;) {
+        size_t end = reflow_group_end(line_wrapped, start, old_rows);
+        size_t content_length = reflow_group_length(line_lengths, start, end, old_cols);
+        bool has_primary = false;
+        bool has_secondary = false;
+        size_t primary_offset = reflow_cursor_offset(*primary_cursor_row, *primary_cursor_col, start, end, old_cols,
+                                                     &has_primary);
+        size_t secondary_offset = 0u;
+        if (secondary_cursor_row != NULL && secondary_cursor_col != NULL) {
+            secondary_offset = reflow_cursor_offset(*secondary_cursor_row, *secondary_cursor_col, start, end, old_cols,
+                                                    &has_secondary);
+        }
+        size_t group_rows = reflow_group_rows(content_length, new_cols, has_primary, primary_offset, has_secondary,
+                                              secondary_offset);
+
+        for (size_t offset = 0; offset < content_length; ++offset) {
+            size_t source_row = start + offset / old_cols;
+            size_t source_col = offset % old_cols;
+            size_t absolute_row = output_row + offset / new_cols;
+            if (absolute_row < window_start || absolute_row >= window_start + new_rows) {
+                continue;
+            }
+            size_t target_row = absolute_row - window_start;
+            size_t target_col = offset % new_cols;
+            size_t source = source_row * old_cols + source_col;
+            size_t target = target_row * new_cols + target_col;
+            resize_cells[target] = cells[source];
+            resize_cell_flags[target] = flags[source];
+            if (resize_line_lengths[target_row] < target_col + 1u) {
+                resize_line_lengths[target_row] = target_col + 1u;
+            }
+        }
+        for (size_t row = 0; row + 1u < group_rows; ++row) {
+            size_t absolute_row = output_row + row;
+            if (absolute_row >= window_start && absolute_row < window_start + new_rows) {
+                resize_line_wrapped[absolute_row - window_start] = true;
+            }
+        }
+        output_row += group_rows;
+        start = end + 1u;
+    }
+
+    for (size_t i = 0; i < new_cols * new_rows; ++i) {
+        cells[i] = resize_cells[i];
+        flags[i] = resize_cell_flags[i];
+    }
+    for (size_t row = 0; row < new_rows; ++row) {
+        line_lengths[row] = resize_line_lengths[row];
+        line_wrapped[row] = resize_line_wrapped[row];
+    }
+
+    *primary_cursor_row = (primary_new_row < window_start) ? 0u : primary_new_row - window_start;
+    if (*primary_cursor_row >= new_rows) {
+        *primary_cursor_row = new_rows - 1u;
+    }
+    *primary_cursor_col = primary_new_col;
+    if (secondary_cursor_row != NULL && secondary_cursor_col != NULL) {
+        *secondary_cursor_row = (secondary_new_row < window_start) ? 0u : secondary_new_row - window_start;
+        if (*secondary_cursor_row >= new_rows) {
+            *secondary_cursor_row = new_rows - 1u;
+        }
+        *secondary_cursor_col = secondary_new_col;
+    }
 }
 
 static void resize_text_geometry(size_t cols, size_t rows) {
@@ -190,8 +369,15 @@ static void resize_text_geometry(size_t cols, size_t rows) {
         return;
     }
 
-    resize_cell_buffer(text_cells, text_cell_flags, old_cols, old_rows, cols, rows);
-    resize_cell_buffer(main_vga, main_vga_flags, old_cols, old_rows, cols, rows);
+    if (alt_mode_active) {
+        resize_cell_buffer_rectangular(text_cells, text_cell_flags, text_line_lengths, text_line_wrapped, old_cols,
+                                       old_rows, cols, rows);
+        resize_cell_buffer_reflow(main_vga, main_vga_flags, main_vga_line_lengths, main_vga_line_wrapped, old_cols,
+                                  old_rows, cols, rows, &saved_cursor_row, &saved_cursor_col, NULL, NULL);
+    } else {
+        resize_cell_buffer_reflow(text_cells, text_cell_flags, text_line_lengths, text_line_wrapped, old_cols, old_rows,
+                                  cols, rows, &cursor_row, &cursor_col, &saved_cursor_row, &saved_cursor_col);
+    }
     set_text_geometry(cols, rows);
     clamp_cursor();
 }
@@ -506,6 +692,12 @@ static void clear_row_range(size_t row, size_t start_col, size_t end_col) {
         text_cells[cell_index(row, x)] = blank_cell();
         text_cell_flags[cell_index(row, x)] = 0;
     }
+    if (end_col >= text_line_lengths[row] && start_col < text_line_lengths[row]) {
+        text_line_lengths[row] = start_col;
+    }
+    if (start_col == 0u && end_col == text_cols) {
+        text_line_wrapped[row] = false;
+    }
     present_row_range(row, start_col, end_col);
 }
 
@@ -515,6 +707,8 @@ static void clear_screen_entire(void) {
         text_cells[i] = blank;
         text_cell_flags[i] = 0;
     }
+    memset(text_line_lengths, 0, sizeof(text_line_lengths));
+    memset(text_line_wrapped, 0, sizeof(text_line_wrapped));
     present_all();
 }
 
@@ -535,11 +729,17 @@ static void scroll_up_region(size_t top, size_t bottom, size_t lines) {
             (height - lines) * text_cols * sizeof(text_cells[0]));
     memmove(&text_cell_flags[cell_index(top, 0)], &text_cell_flags[cell_index(top + lines, 0)],
             (height - lines) * text_cols * sizeof(text_cell_flags[0]));
+    memmove(&text_line_lengths[top], &text_line_lengths[top + lines],
+            (height - lines) * sizeof(text_line_lengths[0]));
+    memmove(&text_line_wrapped[top], &text_line_wrapped[top + lines],
+            (height - lines) * sizeof(text_line_wrapped[0]));
     for (size_t y = bottom + 1u - lines; y <= bottom; ++y) {
         for (size_t x = 0; x < text_cols; ++x) {
             text_cells[cell_index(y, x)] = blank_cell();
             text_cell_flags[cell_index(y, x)] = 0;
         }
+        text_line_lengths[y] = 0u;
+        text_line_wrapped[y] = false;
     }
     present_rows(top, bottom + 1u);
 }
@@ -561,11 +761,17 @@ static void scroll_down_region(size_t top, size_t bottom, size_t lines) {
             (height - lines) * text_cols * sizeof(text_cells[0]));
     memmove(&text_cell_flags[cell_index(top + lines, 0)], &text_cell_flags[cell_index(top, 0)],
             (height - lines) * text_cols * sizeof(text_cell_flags[0]));
+    memmove(&text_line_lengths[top + lines], &text_line_lengths[top],
+            (height - lines) * sizeof(text_line_lengths[0]));
+    memmove(&text_line_wrapped[top + lines], &text_line_wrapped[top],
+            (height - lines) * sizeof(text_line_wrapped[0]));
     for (size_t y = top; y < top + lines; ++y) {
         for (size_t x = 0; x < text_cols; ++x) {
             text_cells[cell_index(y, x)] = blank_cell();
             text_cell_flags[cell_index(y, x)] = 0;
         }
+        text_line_lengths[y] = 0u;
+        text_line_wrapped[y] = false;
     }
     present_rows(top, bottom + 1u);
 }
@@ -759,6 +965,10 @@ static void insert_blank_chars(size_t count) {
         text_cells[row_base + x] = blank_cell();
         text_cell_flags[row_base + x] = 0;
     }
+    if (cursor_col < text_line_lengths[cursor_row]) {
+        size_t length = text_line_lengths[cursor_row] + count;
+        text_line_lengths[cursor_row] = (length < text_cols) ? length : text_cols;
+    }
     present_row_range(cursor_row, cursor_col, text_cols);
 }
 
@@ -780,6 +990,13 @@ static void delete_chars(size_t count) {
         text_cells[row_base + x] = blank_cell();
         text_cell_flags[row_base + x] = 0;
     }
+    if (cursor_col < text_line_lengths[cursor_row]) {
+        size_t removed = text_line_lengths[cursor_row] - cursor_col;
+        if (removed > count) {
+            removed = count;
+        }
+        text_line_lengths[cursor_row] -= removed;
+    }
     present_row_range(cursor_row, cursor_col, text_cols);
 }
 
@@ -794,7 +1011,7 @@ static void erase_chars(size_t count) {
     clear_row_range(cursor_row, cursor_col, cursor_col + count);
 }
 
-static void linefeed(void);
+static void linefeed(bool soft_wrap);
 static uint8_t translate_graphics_char(uint8_t c);
 
 static void cursor_tab_forward(size_t count) {
@@ -866,11 +1083,14 @@ static void repeat_last_printed_char(size_t count) {
         serial_putc((char)last_printed_char);
         text_cells[cell_index(cursor_row, cursor_col)] = ((uint16_t)color << 8) | ch;
         text_cell_flags[cell_index(cursor_row, cursor_col)] = current_cell_flags();
+        if (text_line_lengths[cursor_row] < cursor_col + 1u) {
+            text_line_lengths[cursor_row] = cursor_col + 1u;
+        }
         present_row_range(cursor_row, cursor_col, cursor_col + 1u);
         ++cursor_col;
         if (cursor_col >= text_cols) {
             cursor_col = 0;
-            linefeed();
+            linefeed(true);
         }
     }
 }
@@ -917,8 +1137,9 @@ static void delete_lines(size_t count) {
     scroll_up_region(cursor_row, scroll_bottom, count);
 }
 
-static void linefeed(void) {
+static void linefeed(bool soft_wrap) {
     clamp_cursor();
+    text_line_wrapped[cursor_row] = soft_wrap;
 
     if (cursor_row >= scroll_top && cursor_row <= scroll_bottom) {
         if (cursor_row == scroll_bottom) {
@@ -1030,22 +1251,18 @@ static bool setup_framebuffer_info(const struct console_framebuffer_info* info, 
 
     if (info == NULL || !info->present || info->phys_addr == 0 || info->phys_addr >= (1ull << 32) ||
         info->width < VGA_WIDTH || info->height < VGA_HEIGHT) {
-        set_text_geometry(VGA_WIDTH, VGA_HEIGHT);
+        resize_text_geometry(VGA_WIDTH, VGA_HEIGHT);
         return false;
     }
     if (info->bpp != 15u && info->bpp != 16u && info->bpp != 24u && info->bpp != 32u) {
         if (!had_framebuffer) {
-            set_text_geometry(VGA_WIDTH, VGA_HEIGHT);
+            resize_text_geometry(VGA_WIDTH, VGA_HEIGHT);
         }
         return false;
     }
 
     size_t framebuffer_cols = framebuffer_text_cols_for_size(info->width, info->height);
-    if (had_framebuffer) {
-        resize_text_geometry(framebuffer_cols, FRAMEBUFFER_TEXT_ROWS);
-    } else {
-        set_text_geometry(framebuffer_cols, FRAMEBUFFER_TEXT_ROWS);
-    }
+    resize_text_geometry(framebuffer_cols, FRAMEBUFFER_TEXT_ROWS);
 
     g_fb_info = *info;
     g_fb_info.text_cols = (uint32_t)text_cols;
@@ -1113,6 +1330,10 @@ static void enter_alt_mode(void) {
         main_vga[i] = text_cells[i];
         main_vga_flags[i] = text_cell_flags[i];
     }
+    for (size_t row = 0; row < text_rows; ++row) {
+        main_vga_line_lengths[row] = text_line_lengths[row];
+        main_vga_line_wrapped[row] = text_line_wrapped[row];
+    }
 
     saved_cursor_row = cursor_row;
     saved_cursor_col = cursor_col;
@@ -1143,6 +1364,10 @@ static void exit_alt_mode(void) {
     for (size_t i = 0; i < cell_count(); ++i) {
         text_cells[i] = main_vga[i];
         text_cell_flags[i] = main_vga_flags[i];
+    }
+    for (size_t row = 0; row < text_rows; ++row) {
+        text_line_lengths[row] = main_vga_line_lengths[row];
+        text_line_wrapped[row] = main_vga_line_wrapped[row];
     }
 
     cursor_row = saved_cursor_row;
@@ -1209,14 +1434,14 @@ static bool handle_ansi_char(char c) {
             return true;
         }
         if (c == 'D') {
-            linefeed();
+            linefeed(false);
             update_hw_cursor();
             ansi_state = 0;
             return true;
         }
         if (c == 'E') {
             cursor_col = 0;
-            linefeed();
+            linefeed(false);
             update_hw_cursor();
             ansi_state = 0;
             return true;
@@ -1549,7 +1774,7 @@ void console_putc(char c) {
         cursor_col = 0;
         serial_putc('\r');
         serial_putc('\n');
-        linefeed();
+        linefeed(false);
         update_hw_cursor();
         return;
     }
@@ -1575,11 +1800,14 @@ void console_putc(char c) {
     last_printed_char = (uint8_t)c;
     text_cells[cell_index(cursor_row, cursor_col)] = ((uint16_t)color << 8) | translate_graphics_char((uint8_t)c);
     text_cell_flags[cell_index(cursor_row, cursor_col)] = current_cell_flags();
+    if (text_line_lengths[cursor_row] < cursor_col + 1u) {
+        text_line_lengths[cursor_row] = cursor_col + 1u;
+    }
     present_row_range(cursor_row, cursor_col, cursor_col + 1u);
     ++cursor_col;
     if (cursor_col >= text_cols) {
         cursor_col = 0;
-        linefeed();
+        linefeed(true);
     }
     update_hw_cursor();
 }
