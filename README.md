@@ -26,8 +26,8 @@ VibeOS is an amd64 monolithic-kernel OS prototype that boots via Multiboot2 and 
 ### Prerequisites
 
 - `gcc`, `ld`, `nasm` (for the kernel)
-- `grub-mkrescue`, `grub-install` (for bootable images)
-- `mkfs.ext3`, `parted`, `losetup`, and `sudo` (for ext3 and GPT images)
+- `grub-mkrescue`, `grub-mkimage` (for bootable images)
+- `mkfs.ext3` and `parted` (for ext3 and GPT images)
 - `qemu-system-x86_64` (for `make run`)
 - `xorriso`, `mtools`, `libisoboot` (usually dependencies of `grub-mkrescue`)
 - `zig` (required for musl userspace builds via `zig cc`)
@@ -36,8 +36,13 @@ VibeOS is an amd64 monolithic-kernel OS prototype that boots via Multiboot2 and 
 
 ```bash
 make iso   # Build bootable ISO image
-make disk  # Build BIOS+GPT raw disk image (requires sudo for loop mounts)
+make disk  # Build BIOS+GPT raw disk image without root privileges
 ```
+
+Each image target checks only the host tools it actually needs before starting.
+Run `make check-toolchain` to preflight the combined ISO, disk, and QEMU toolset.
+Run `make check` for static-musl host-side regression tests that do not require
+booting VibeOS.
 
 ### Configuration
 

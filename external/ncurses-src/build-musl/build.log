@@ -1,9 +1,0 @@
-make[1]: Entering directory '/home/lily/code/vibeos/external/ncurses-src'
-mkdir lib
-mkdir objects
-mkdir: cannot create directory ‘lib’: File exists
-make[1]: *** [Makefile:88: lib] Error 1
-make[1]: *** Waiting for unfinished jobs....
-mkdir: cannot create directory ‘objects’: File exists
-make[1]: *** [Makefile:88: objects] Error 1
-make[1]: Leaving directory '/home/lily/code/vibeos/external/ncurses-src'

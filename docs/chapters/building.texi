@@ -20,31 +20,36 @@
 @node Build Prerequisites
 @section Build Prerequisites
 
-The top-level @code{check-toolchain} target checks the tools that are required
-for a full OS build:
+The top-level @code{check-toolchain} target checks the combined toolset required
+to build ISO and GPT images and run them under QEMU.  The @code{iso},
+@code{disk}, and @code{run} targets use narrower @code{check-iso-tools},
+@code{check-disk-tools}, and @code{check-run-tools} preflights, so an unrelated
+missing tool does not block a requested artifact.
+
+The checked tools include:
 
 @itemize @bullet
 @item @code{gcc},
 @item @code{ld},
 @item @code{nasm},
 @item @code{strip} or a compatible replacement when stripping is enabled,
+@item @code{zig} and @code{readelf} for static musl userspace builds and binary
+validation,
+@item @code{cpio}, @code{mkfs.ext3}, and @code{tic} for filesystem images,
 @item @code{grub-mkrescue},
-@item @code{grub-install},
-@item @code{mkfs.ext3}, and
-@item @code{parted}, @code{losetup}, and mount permissions for the GPT disk
-builder, and
+@item @code{xorriso} and @code{mformat} for ISO generation,
+@item @code{grub-mkimage} and @code{parted} for the rootless GPT disk builder,
+and
 @item @code{qemu-system-x86_64}.
 @end itemize
 
 In practice, userspace builds also depend heavily on:
 
 @itemize @bullet
-@item @code{zig},
 @item typical Autoconf host tools,
-@item @code{readelf} for validation, and
-@item utilities used by GRUB and ext3 image generation, including
-@code{xorriso}, @code{mtools}, @code{tic}, and a host CA bundle for
-@code{wget}.
+@item utilities used by GRUB and ext3 image generation beyond the directly
+checked entry points, and
+@item a host CA bundle for @code{wget}.
 @end itemize
 
 The documentation target depends on the Texinfo tools:
@@ -75,6 +80,10 @@ this boot disk.
 
 @item run
 Build the disk image and run it under QEMU.
+
+@item check
+Build and run host-side regression tests as static musl executables.  These
+tests exercise kernel components that can be isolated without booting VibeOS.
 
 @item all-debug, iso-debug, disk-debug, run-debug
 Repeat the normal target graph with binary stripping disabled.
