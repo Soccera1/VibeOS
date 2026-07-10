@@ -171,7 +171,25 @@ stage_gnutls() {
     exit 1
   fi
 
-  zig ranlib "$STAGE_DIR/usr/lib/libgnutls.a"
+  local archive="$STAGE_DIR/usr/lib/libgnutls.a"
+  local member
+  while IFS= read -r member; do
+    case "$member" in
+      *.a)
+        # Libtool embeds absolute static dependencies as archive members.
+        # They are not relocatable objects and make some linkers reject
+        # libgnutls.a; consumers already link Nettle and GMP explicitly.
+        zig ar d "$archive" "$member"
+        ;;
+    esac
+  done < <(zig ar t "$archive")
+
+  if zig ar t "$archive" | grep -q '\.a$'; then
+    echo "GnuTLS static library still contains nested archives" >&2
+    exit 1
+  fi
+
+  zig ranlib "$archive"
   mv "$STAGE_DIR" "$OUT_DIR"
 }
 
