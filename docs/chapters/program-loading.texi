@@ -37,7 +37,10 @@ The syscall path is what later user programs use.
 @node ELF Image Mapping Rules
 @section ELF Image Mapping Rules
 
-Both loaders understand ELF64 headers and a small set of program headers.
+Both launch paths use the shared loader in @file{kernel/src/elf_loader.c}.
+It accepts little-endian x86-64 ELF images and rejects malformed header tables,
+overflowing file or virtual-address ranges, invalid segment alignment, entry
+points outside executable segments, and unusable program-header mappings.
 
 Accepted executable forms are:
 
@@ -54,7 +57,9 @@ Recognized program-header types are:
 @end itemize
 
 The loader maps each loadable segment as zero-filled memory and then copies the
-file-backed bytes into place.  The loader also calculates:
+file-backed bytes into place.  Page-overlapping segments are preserved and the
+shared boundary page receives the union of their permissions.  The loader also
+calculates:
 
 @itemize @bullet
 @item entry point,
@@ -78,9 +83,17 @@ When a program contains @code{PT_INTERP}, VibeOS attempts to:
 program's program-header information.
 @end enumerate
 
-This is good enough for experimentation, but it is still not the preferred
-deployment model.  The repository-wide packaging scripts continue to target
-static @code{ET_EXEC} binaries because that is the path expected to work.
+Interpreter images must be @code{ET_DYN}, may not request another interpreter,
+and are placed beyond the main image without overlapping the userspace stack.
+Malformed binaries fail with @code{ENOEXEC}; allocation failures remain
+distinguishable as @code{ENOMEM}.
+
+The root image stages glibc's @file{/lib64/ld-linux-x86-64.so.2}; the baseline
+x86-64 libc, libm, compatibility DSOs, and NSS modules are staged under
+@file{/usr/lib64}.  Dynamic glibc executables and static musl executables are
+both first-class deployment forms.  The glibc integration test covers PIE
+startup, constructors, allocation, auxiliary-vector access, direct DSO
+linkage, @code{dlopen}, and @code{dlsym}.
 
 @node Shebang Processing
 @section Shebang Processing

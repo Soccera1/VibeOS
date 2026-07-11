@@ -113,6 +113,9 @@ ACPI and machine power-control interface.
 Process table types, wait-state metadata, signal handler metadata, and process
 management interfaces.
 
+@item kernel/include/elf_loader.h
+Validated x86-64 ELF image loader interface and mapped-image metadata.
+
 @item kernel/include/serial.h
 Serial console interface.
 
@@ -219,8 +222,11 @@ Small IPv4 stack with ARP, DHCP, ICMP, UDP, and client-side TCP support.
 @item kernel/src/process.c
 Process table allocator, lookup, and pending-signal bookkeeping.
 
+@item kernel/src/elf_loader.c
+Shared, bounds-checked ELF mapper used by bootstrap and @code{execve}.
+
 @item kernel/src/userland.c
-Bootstrap ELF loader and initial shell launcher.
+Bootstrap initial shell launcher.
 
 @item kernel/src/syscall.c
 The main syscall subsystem: descriptor model, path resolution, pipes, waiting,
@@ -244,6 +250,10 @@ Static userspace regression test runner staged into @file{/usr/bin}.
 @item tests/kernel-test-helper.c
 Helper executable used by the regression tests for exec and descriptor
 inheritance checks.
+
+@item tests/glibc-dynamic-helper.c
+Dynamic glibc integration executable covering constructors, allocation,
+auxiliary vectors, libm, @code{dlopen}, and @code{dlsym}.
 @end table
 
 @node Tool Script Files
@@ -255,6 +265,9 @@ Build the in-tree @code{help} program.
 
 @item tools/build_busybox.sh
 Build or reuse BusyBox for the VibeOS root image.
+
+@item tools/build_glibc_runtime.sh
+Build and stage the baseline x86-64 glibc runtime.
 
 @item tools/build_coreutils.sh
 Build and stage GNU coreutils.

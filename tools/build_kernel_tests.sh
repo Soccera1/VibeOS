@@ -59,6 +59,7 @@ COMMON_FLAGS=(
   -Wall
   -Wextra
   -Werror
+  -DENABLE_GLIBC_DYNAMIC_TEST="${GLIBC_DYNAMIC_TEST:-1}"
 )
 
 zig cc "${COMMON_FLAGS[@]}" \
@@ -69,11 +70,28 @@ zig cc "${COMMON_FLAGS[@]}" \
   -o "$OUT_ROOT/libexec/kernel-tests/kernel-test-helper" \
   "$TESTS_DIR/kernel-test-helper.c"
 
+if [[ "${GLIBC_DYNAMIC_TEST:-1}" == "1" ]]; then
+  GLIBC_CC="${GLIBC_CC:-gcc}"
+  "$GLIBC_CC" \
+    -O2 -fPIE -pie -Wall -Wextra -Werror \
+    -Wl,-z,relro,-z,now,--no-as-needed \
+    -o "$OUT_ROOT/libexec/kernel-tests/glibc-dynamic-helper" \
+    "$TESTS_DIR/glibc-dynamic-helper.c" -lm -ldl
+fi
+
 ln -sfn ../../libexec/kernel-tests/kernel-test-helper "$OUT_ROOT/share/kernel-tests/helper-link"
 
 chmod +x "$OUT_ROOT/bin/kernel-tests" "$OUT_ROOT/libexec/kernel-tests/kernel-test-helper"
 validate_binary "$OUT_ROOT/bin/kernel-tests"
 validate_binary "$OUT_ROOT/libexec/kernel-tests/kernel-test-helper"
+if [[ "${GLIBC_DYNAMIC_TEST:-1}" == "1" ]]; then
+  chmod +x "$OUT_ROOT/libexec/kernel-tests/glibc-dynamic-helper"
+  if ! readelf -l "$OUT_ROOT/libexec/kernel-tests/glibc-dynamic-helper" | \
+      grep -q 'Requesting program interpreter: /lib64/ld-linux-x86-64.so.2'; then
+    echo "glibc dynamic helper has the wrong program interpreter" >&2
+    exit 1
+  fi
+fi
 maybe_strip_tree_binaries "$OUT_ROOT"
 
 echo "Built kernel tests under: $OUT_ROOT"

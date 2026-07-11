@@ -132,8 +132,19 @@ CA bundle into the VibeOS @file{/usr/etc/ssl/certs} tree when available.
 
 @item tools/build_kernel_tests.sh
 Builds the in-tree kernel regression tests and helper binary as static non-PIE
-musl executables, validates them with @code{readelf}, and stages the test tree
-under @file{/usr}.
+musl executables, builds the dynamic integration helper as a glibc PIE,
+validates both forms with @code{readelf}, and stages the test tree under
+@file{/usr}.
+
+@item tools/build_glibc_runtime.sh
+Builds the vendored glibc source tree for baseline x86-64, installs it into an
+isolated staging root, and selects the loader, libc, libm, compatibility DSOs,
+and available NSS modules for the VibeOS root and @file{/usr} images.
+
+@item tools/check_glibc_dynamic.py
+Boots disposable copies of the VibeOS disk images under QEMU, runs only the
+glibc dynamic-linking integration group, requests an orderly guest poweroff,
+and cleans up the copied images and VM process on every exit path.
 @end table
 
 @node Image and Media Builders

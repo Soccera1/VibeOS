@@ -71,23 +71,24 @@ Known gaps include:
 client-side TCP streams, and raw ICMP rather than a complete Linux network
 implementation,
 @item no real thread implementation,
-@item no writable shared-library runtime staging, and
+@item no supported runtime replacement of the read-only staged glibc DSOs, and
 @item synthetic handling of @file{/proc/self/exe}.
 @end itemize
 
-The presence of @code{PT_INTERP} support in the loader should not be mistaken
-for mature dynamic-linker support across the whole runtime.
+Dynamic linking is first-class within the implemented syscall ABI.  This does
+not imply that unsupported facilities such as real POSIX threads become
+available merely because a program is linked against glibc.
 
 @node Toolchain and Userspace Limits
 @appendixsec Toolchain and Userspace Limits
 
-The packaging scripts intentionally target static musl binaries because that is
-the path the current loader and runtime are designed around.
+Packaging chooses between static musl and dynamic glibc according to the
+intended executable form.
 
 Consequences include:
 
 @itemize @bullet
-@item glibc-oriented dynamic builds are not first-class targets,
+@item dynamically linked binaries require glibc rather than musl,
 @item packages may be configured with optional features disabled to fit the
 current kernel, and
 @item targeted compatibility shims may still be used where a full dependency

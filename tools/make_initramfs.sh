@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/strip_helpers.sh"
 
 if [[ $# -lt 2 ]]; then
-  echo "usage: $0 <output.cpio> <busybox-bin> [help-bin] [coreutils-dir] [coreutils-programs]" >&2
+  echo "usage: $0 <output.cpio> <busybox-bin> [help-bin] [coreutils-dir] [coreutils-programs] [root-tree]" >&2
   exit 1
 fi
 
@@ -16,6 +16,7 @@ BUSYBOX_BIN="$2"
 HELP_BIN="${3:-}"
 COREUTILS_DIR="${4:-}"
 COREUTILS_PROGS="${5:-}"
+ROOT_TREE="${6:-}"
 
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
@@ -67,6 +68,10 @@ if [[ -d rootfs ]]; then
     ! -path './usr/*' \
     -print0 | cpio --null -pdm "$ROOT" >/dev/null 2>&1 || true
   popd >/dev/null
+fi
+
+if [[ -n "$ROOT_TREE" && -d "$ROOT_TREE" ]]; then
+  cp -a "$ROOT_TREE"/. "$ROOT"/
 fi
 
 if [[ -x "$BUSYBOX_BIN" ]]; then
