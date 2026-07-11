@@ -2003,6 +2003,15 @@ parse_command_name(mparm_T *parmp)
     set_progpath((char_u *)parmp->argv[0]);
 #endif
 
+    // Keep the /usr/bin/vi symlink in strict Vi-compatible mode.  Vim would
+    // otherwise source defaults.vim when no vimrc exists, which resets the
+    // 'compatible' option.  This is equivalent to starting Vim with "-C".
+    if (STRICMP(initstr, "vi") == 0)
+    {
+	change_compatible(TRUE);
+	has_dash_c_arg = TRUE;
+    }
+
     if (TOLOWER_ASC(initstr[0]) == 'r')
     {
 	restricted = TRUE;
