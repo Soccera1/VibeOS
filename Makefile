@@ -27,6 +27,7 @@ LD := ld
 NASM := nasm
 STRIP ?= strip
 HOST_CC ?= cc
+GLIBC_CC ?= gcc
 PKG_CONFIG ?= pkg-config
 USER_CC := gcc
 BUSYBOX_SRC := external/busybox-src
@@ -64,6 +65,7 @@ CONFIG_USER_MAN_PAGES ?= y
 CONFIG_USER_MAN_DB ?= y
 CONFIG_USER_WGET ?= y
 CONFIG_USER_KERNEL_TESTS ?= y
+CONFIG_USER_GLIBC_DYNAMIC ?= y
 
 ifeq ($(CONFIG_KERNEL_WERROR),y)
 CFLAGS += -Werror
@@ -97,8 +99,10 @@ USER_NETTLE := $(BUILD_DIR)/userspace/nettle
 USER_GNUTLS := $(BUILD_DIR)/userspace/gnutls
 USER_WGET := $(BUILD_DIR)/userspace/wget
 USER_TESTS := $(BUILD_DIR)/userspace/kernel-tests-root
+GLIBC_RUNTIME := $(BUILD_DIR)/userspace/glibc-runtime
 KMALLOC_HOST_TEST := $(BUILD_DIR)/tests/kmalloc-host-test
 CONSOLE_REFLOW_HOST_TEST := $(BUILD_DIR)/tests/console-reflow-host-test
+ELF_LOADER_HOST_TEST := $(BUILD_DIR)/tests/elf-loader-host-test
 HOST_TEST_ZIG_GLOBAL_CACHE := $(abspath $(BUILD_DIR)/zig-global-cache)
 HOST_TEST_ZIG_LOCAL_CACHE := $(abspath $(BUILD_DIR)/zig-local-cache)
 BASH_SRC := external/bash-src
@@ -106,6 +110,8 @@ NCURSES_SRC := external/ncurses-src
 NCURSES_BUILD := $(NCURSES_SRC)/build-musl
 GNUTLS_SRC := external/gnutls-src
 GMP_TARBALL := /var/cache/distfiles/gmp-6.3.0.tar.xz
+GLIBC_SRC := external/glibc-src
+GLIBC_BUILD_ROOT := $(BUILD_DIR)/glibc-baseline
 NETTLE_TARBALL := /var/cache/distfiles/nettle-3.10.2.tar.gz
 SL_SRC := external/sl-src
 FILE_SRC := external/file-src
@@ -122,7 +128,7 @@ MAN_DB_SRC := external/man-db-src
 CA_CERT_BUNDLE ?= /etc/ssl/certs/ca-certificates.crt
 USER_SL := $(BUILD_DIR)/userspace/sl
 HELP_SRC := userspace/help.c
-KERNEL_TESTS_SRC := tests/kernel-tests.c tests/kernel-test-helper.c
+KERNEL_TESTS_SRC := tests/kernel-tests.c tests/kernel-test-helper.c tests/glibc-dynamic-helper.c
 LESS_SRC_FILES := $(shell find $(LESS_SRC) -path "$(LESS_SRC)/build-musl" -prune -o -type f -print | sort)
 VIM_SRC_FILES := $(shell find $(VIM_SRC) \
 	-name build-musl-zigcc-wrapper.sh -prune -o \
@@ -142,7 +148,7 @@ WGET_SRC_FILES := $(shell find $(WGET_SRC) -path "$(WGET_SRC)/build-musl" -prune
 export STRIP_BINARIES := $(if $(filter y,$(CONFIG_STRIP_BINARIES)),1,0)
 export STRIP
 
-.PHONY: all clean run iso disk docs check check-kmalloc check-console-reflow check-toolchain check-build-tools check-image-tools \
+.PHONY: all clean run iso disk docs check check-kmalloc check-console-reflow check-elf-loader check-glibc-runtime check-glibc-system check-toolchain check-build-tools check-image-tools \
 	check-iso-tools check-disk-tools check-run-tools all-debug iso-debug disk-debug run-debug \
 	config oldconfig menuconfig defconfig olddefconfig savedefconfig
 
@@ -189,13 +195,25 @@ check-run-tools:
 
 check-toolchain: check-iso-tools check-disk-tools check-run-tools
 
-check: check-kmalloc check-console-reflow
+check: check-kmalloc check-console-reflow check-elf-loader check-glibc-runtime
 
 check-kmalloc: $(KMALLOC_HOST_TEST)
 	$<
 
 check-console-reflow: $(CONSOLE_REFLOW_HOST_TEST)
 	$<
+
+check-elf-loader: $(ELF_LOADER_HOST_TEST)
+	$<
+
+check-glibc-runtime: $(GLIBC_RUNTIME) $(USER_TESTS)
+	GLIBC_DYNAMIC_TEST=present GLIBC_DYNAMIC_ALLOW_ZERO_BASE=1 \
+		$(GLIBC_RUNTIME)/root/lib64/ld-linux-x86-64.so.2 \
+		--library-path $(GLIBC_RUNTIME)/usr/lib64 \
+		$(USER_TESTS)/libexec/kernel-tests/glibc-dynamic-helper argument
+
+check-glibc-system: disk
+	./tools/check_glibc_dynamic.py $(DISK_IMAGE) $(USR_EXT3) $(HOME_EXT3)
 
 $(BUILD_DIR):
 	@mkdir -p $(BUILD_DIR)
@@ -257,6 +275,13 @@ $(CONSOLE_REFLOW_HOST_TEST): tests/console-reflow-host-test.c kernel/src/console
 	ZIG_LOCAL_CACHE_DIR="$(HOST_TEST_ZIG_LOCAL_CACHE)" \
 	zig cc -target x86_64-linux-musl -static -no-pie -std=gnu11 -O2 -ffunction-sections -fdata-sections \
 		-Wall -Wextra -Werror -Ikernel/include -Wl,--gc-sections -o $@ $<
+
+$(ELF_LOADER_HOST_TEST): tests/elf-loader-host-test.c kernel/src/elf_loader.c kernel/include/elf_loader.h | $(BUILD_DIR)
+	@mkdir -p $(dir $@)
+	ZIG_GLOBAL_CACHE_DIR="$(HOST_TEST_ZIG_GLOBAL_CACHE)" \
+	ZIG_LOCAL_CACHE_DIR="$(HOST_TEST_ZIG_LOCAL_CACHE)" \
+	zig cc -target x86_64-linux-musl -static -no-pie -std=gnu11 -O2 -Wall -Wextra -Werror \
+		-Ikernel/include -o $@ tests/elf-loader-host-test.c kernel/src/elf_loader.c
 
 $(KERNEL_BIN): $(KERNEL_OBJS) kernel/linker.ld | $(BUILD_DIR)
 	$(LD) $(LDFLAGS) -o $@ $(KERNEL_OBJS)
@@ -326,7 +351,11 @@ $(USER_WGET): $(USER_GNUTLS) $(USER_NETTLE) $(USER_GMP) $(WGET_SRC_FILES) tools/
 	./tools/build_wget.sh $@ "$(WGET_SRC)" "$(USER_GNUTLS)" "$(USER_NETTLE)" "$(USER_GMP)" "$(CA_CERT_BUNDLE)"
 
 $(USER_TESTS): $(KERNEL_TESTS_SRC) tools/build_kernel_tests.sh $(CONFIG_MK) | $(BUILD_DIR)
-	./tools/build_kernel_tests.sh $@ tests
+	GLIBC_CC="$(GLIBC_CC)" GLIBC_DYNAMIC_TEST="$(if $(filter y,$(CONFIG_USER_GLIBC_DYNAMIC)),1,0)" \
+		./tools/build_kernel_tests.sh $@ tests
+
+$(GLIBC_RUNTIME): tools/build_glibc_runtime.sh $(GLIBC_SRC)/configure $(CONFIG_MK) | $(BUILD_DIR)
+	./tools/build_glibc_runtime.sh $@ "$(GLIBC_SRC)" "$(GLIBC_BUILD_ROOT)"
 
 INITRAMFS_DEPS := $(USER_BUSYBOX)
 INITRAMFS_ARGS :=
@@ -340,9 +369,13 @@ INITRAMFS_DEPS += $(USER_COREUTILS) $(USER_COREUTILS_PROGS)
 INITRAMFS_COREUTILS_DIR_ARG := $(USER_COREUTILS)
 INITRAMFS_COREUTILS_PROGS_ARG := $(USER_COREUTILS_PROGS)
 endif
+ifeq ($(CONFIG_USER_GLIBC_DYNAMIC),y)
+INITRAMFS_DEPS += $(GLIBC_RUNTIME)
+INITRAMFS_GLIBC_ROOT_ARG := $(GLIBC_RUNTIME)/root
+endif
 
 $(INITRAMFS): tools/make_initramfs.sh $(CONFIG_MK) $(INITRAMFS_DEPS)
-	./tools/make_initramfs.sh $@ "$(INITRAMFS_BUSYBOX_ARG)" "$(INITRAMFS_HELP_ARG)" "$(INITRAMFS_COREUTILS_DIR_ARG)" "$(INITRAMFS_COREUTILS_PROGS_ARG)"
+	./tools/make_initramfs.sh $@ "$(INITRAMFS_BUSYBOX_ARG)" "$(INITRAMFS_HELP_ARG)" "$(INITRAMFS_COREUTILS_DIR_ARG)" "$(INITRAMFS_COREUTILS_PROGS_ARG)" "$(INITRAMFS_GLIBC_ROOT_ARG)"
 
 USR_DEPS :=
 USR_TREE_ARGS :=
@@ -391,6 +424,10 @@ endif
 ifeq ($(CONFIG_USER_KERNEL_TESTS),y)
 USR_DEPS += $(USER_TESTS)
 USR_TREE_ARGS += $(USER_TESTS)
+endif
+ifeq ($(CONFIG_USER_GLIBC_DYNAMIC),y)
+USR_DEPS += $(GLIBC_RUNTIME)
+USR_TREE_ARGS += $(GLIBC_RUNTIME)/usr
 endif
 ifeq ($(CONFIG_USER_VIM),y)
 USR_DEPS += $(USER_VIM)

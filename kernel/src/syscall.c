@@ -6,6 +6,7 @@
 
 #include "common.h"
 #include "console.h"
+#include "elf_loader.h"
 #include "fs.h"
 #include "input.h"
 #include "io.h"
@@ -329,12 +330,6 @@
 #define EXEC_MAX_SYMLINKS 8
 #define EXEC_MAX_SHEBANGS 8
 
-#define ELF_MAGIC 0x464C457Fu
-#define ET_EXEC 2u
-#define ET_DYN 3u
-#define PT_LOAD 1u
-#define PT_INTERP 3u
-#define EXEC_ET_DYN_BASE 0x01000000ull
 #define EXEC_INTERP_BASE 0x03000000ull
 #define EXEC_INTERP_GAP 0x00100000ull
 
@@ -572,46 +567,6 @@ struct linux_sockaddr_in {
     uint8_t sin_zero[8];
 };
 
-struct elf64_ehdr {
-    uint8_t e_ident[16];
-    uint16_t e_type;
-    uint16_t e_machine;
-    uint32_t e_version;
-    uint64_t e_entry;
-    uint64_t e_phoff;
-    uint64_t e_shoff;
-    uint32_t e_flags;
-    uint16_t e_ehsize;
-    uint16_t e_phentsize;
-    uint16_t e_phnum;
-    uint16_t e_shentsize;
-    uint16_t e_shnum;
-    uint16_t e_shstrndx;
-} __attribute__((packed));
-
-struct elf64_phdr {
-    uint32_t p_type;
-    uint32_t p_flags;
-    uint64_t p_offset;
-    uint64_t p_vaddr;
-    uint64_t p_paddr;
-    uint64_t p_filesz;
-    uint64_t p_memsz;
-    uint64_t p_align;
-} __attribute__((packed));
-
-struct exec_image_info {
-    uint64_t entry;
-    uint64_t phdr;
-    uint64_t phent;
-    uint64_t phnum;
-    uint64_t image_start;
-    uint64_t image_end;
-    uint64_t load_bias;
-    bool has_interp;
-    char interp_path[FS_MAX_PATH];
-};
-
 enum fd_kind {
     FD_FREE = 0,
     FD_TTY,
@@ -787,7 +742,6 @@ static int tty_signal_for_char(int c);
 static int tty_normalize_char(int c);
 static void queue_signal_for_process(struct process* proc, int sig);
 static void terminate_process(struct process* proc, int exit_code, int wait_status);
-static int map_exec_segment(struct vm_space* space, uint64_t vaddr, size_t memsz, const void* src, size_t filesz, uint32_t prot);
 static void close_cloexec_fds(void);
 static int sys_close(int fd);
 static int sys_sendto(int fd, const void* buf, size_t count, int flags, const void* addr, uint32_t addrlen, struct syscall_frame* frame);
@@ -1631,20 +1585,6 @@ static int linux_prot_to_vm(uint64_t prot, uint32_t* out) {
 
     *out = vm_prot;
     return 0;
-}
-
-static uint32_t elf_segment_prot(uint32_t flags) {
-    uint32_t prot = VM_PROT_NONE;
-    if ((flags & 0x4u) != 0u) {
-        prot |= VM_PROT_READ;
-    }
-    if ((flags & 0x2u) != 0u) {
-        prot |= VM_PROT_READ | VM_PROT_WRITE;
-    }
-    if ((flags & 0x1u) != 0u) {
-        prot |= VM_PROT_EXEC;
-    }
-    return prot;
 }
 
 static bool has_other_runnable_process(const struct process* current) {
@@ -3008,18 +2948,42 @@ void syscall_random_bytes(void* buf, uint64_t len) {
     memset(block, 0, sizeof(block));
 }
 
-static void fill_stat(struct linux_stat* st, uint32_t mode, size_t size, uint32_t uid, uint32_t gid) {
+static uint64_t stat_inode_for_entry(const struct fs_entry* entry) {
+    if (entry->inode != 0) {
+        return entry->inode;
+    }
+
+    uint64_t hash = 1469598103934665603ull;
+    for (const char* p = entry->path; *p != '\0'; ++p) {
+        hash ^= (uint8_t)*p;
+        hash *= 1099511628211ull;
+    }
+    return hash != 0 ? hash : 1;
+}
+
+static uint64_t stat_device_for_entry(const struct fs_entry* entry) {
+    if (entry->backend == FS_BACKEND_EXT2) {
+        if (strncmp(entry->path, "/usr", 4) == 0 && (entry->path[4] == '\0' || entry->path[4] == '/')) {
+            return 2;
+        }
+        if (strncmp(entry->path, "/home", 5) == 0 && (entry->path[5] == '\0' || entry->path[5] == '/')) {
+            return 3;
+        }
+    }
+    return (uint64_t)entry->backend + 1u;
+}
+
+static void fill_stat(struct linux_stat* st, const struct fs_entry* entry) {
     memset(st, 0, sizeof(*st));
-    st->st_mode = mode;
-    st->st_uid = uid;
-    st->st_gid = gid;
-    st->st_size = (int64_t)size;
+    st->st_mode = entry->mode;
+    st->st_uid = entry->uid;
+    st->st_gid = entry->gid;
+    st->st_size = (int64_t)entry->size;
     st->st_nlink = 1;
     st->st_blksize = 4096;
-    st->st_blocks = (int64_t)((size + 511u) / 512u);
-    st->st_ino = 1;
-    st->st_dev = 1;
-    st->st_rdev = 1;
+    st->st_blocks = (int64_t)((entry->size + 511u) / 512u);
+    st->st_ino = stat_inode_for_entry(entry);
+    st->st_dev = stat_device_for_entry(entry);
 }
 
 static int sys_openat(int dirfd, const char* path_user, uint32_t flags, uint32_t mode_arg) {
@@ -6938,7 +6902,7 @@ static int sys_fstat(int fd, struct linux_stat* st) {
         return r;
     }
 
-    fill_stat(st, mode, size, entry.uid, entry.gid);
+    fill_stat(st, &entry);
     return 0;
 }
 
@@ -6962,7 +6926,7 @@ static int sys_newfstatat(int dirfd, const char* path_user, struct linux_stat* s
         if (r != 0) {
             return r;
         }
-        fill_stat(st, mode, size, entry.uid, entry.gid);
+        fill_stat(st, &entry);
         return 0;
     }
 
@@ -6983,7 +6947,7 @@ static int sys_newfstatat(int dirfd, const char* path_user, struct linux_stat* s
         return r;
     }
 
-    fill_stat(st, mode, size, entry.uid, entry.gid);
+    fill_stat(st, &entry);
     return 0;
 }
 
@@ -7035,7 +6999,9 @@ fill:
     stx->stx_size = size;
     stx->stx_blksize = 4096;
     stx->stx_blocks = (size + 511u) / 512u;
-    stx->stx_ino = 1;
+    stx->stx_ino = stat_inode_for_entry(&entry);
+    stx->stx_dev_major = 0;
+    stx->stx_dev_minor = (uint32_t)stat_device_for_entry(&entry);
     return 0;
 }
 
@@ -7054,7 +7020,7 @@ static int sys_stat_compat(const char* path_user, struct linux_stat* st, bool fo
         return r;
     }
 
-    fill_stat(st, mode, size, entry.uid, entry.gid);
+    fill_stat(st, &entry);
     return 0;
 }
 
@@ -8229,10 +8195,6 @@ static int rewrite_exec_argv_for_shebang(const char* interpreter_path, const cha
     return 0;
 }
 
-static uint64_t page_align_down(uint64_t value) {
-    return value & VM_PAGE_MASK;
-}
-
 static uint64_t page_align_up(uint64_t value) {
     return (value + VM_PAGE_SIZE - 1ull) & VM_PAGE_MASK;
 }
@@ -8243,144 +8205,6 @@ static uint64_t choose_interp_base(uint64_t main_image_end) {
         base = EXEC_INTERP_BASE;
     }
     return base;
-}
-
-static int map_exec_segment(struct vm_space* space, uint64_t vaddr, size_t memsz, const void* src, size_t filesz, uint32_t prot) {
-    if (space == NULL) {
-        return err(EINVAL);
-    }
-    if (vm_space_map_zero(space, vaddr, memsz, prot) != 0) {
-        return err(ENOMEM);
-    }
-    if (filesz != 0 && vm_space_write(space, vaddr, src, filesz) != 0) {
-        return err(ENOMEM);
-    }
-    return 0;
-}
-
-static int load_exec_image(struct vm_space* space, const uint8_t* image, size_t image_size, uint64_t et_dyn_base,
-                           struct exec_image_info* out) {
-    if (space == NULL || out == NULL || image_size < sizeof(struct elf64_ehdr)) {
-        return err(EINVAL);
-    }
-
-    memset(out, 0, sizeof(*out));
-
-    const struct elf64_ehdr* eh = (const struct elf64_ehdr*)image;
-    if (*(const uint32_t*)&eh->e_ident[0] != ELF_MAGIC || eh->e_phentsize != sizeof(struct elf64_phdr)) {
-        return err(EINVAL);
-    }
-    if (eh->e_type != ET_EXEC && eh->e_type != ET_DYN) {
-        return err(EINVAL);
-    }
-    if (eh->e_phoff + (uint64_t)eh->e_phnum * sizeof(struct elf64_phdr) > image_size) {
-        return err(EINVAL);
-    }
-
-    const struct elf64_phdr* ph = (const struct elf64_phdr*)(image + eh->e_phoff);
-    uint64_t phdr_table_size = (uint64_t)eh->e_phnum * eh->e_phentsize;
-    uint64_t phdr_vaddr = 0;
-    uint64_t image_start = UINT64_MAX;
-    uint64_t image_end = 0;
-    uint64_t min_load_vaddr = UINT64_MAX;
-    uint64_t max_load_vaddr = 0;
-
-    for (uint16_t i = 0; i < eh->e_phnum; ++i) {
-        if (ph[i].p_type == PT_INTERP) {
-            if (out->has_interp || ph[i].p_filesz == 0 || ph[i].p_filesz > FS_MAX_PATH ||
-                ph[i].p_offset + ph[i].p_filesz > image_size) {
-                return err(EINVAL);
-            }
-
-            const char* src = (const char*)(image + ph[i].p_offset);
-            bool terminated = false;
-            for (size_t j = 0; j < (size_t)ph[i].p_filesz; ++j) {
-                out->interp_path[j] = src[j];
-                if (src[j] == '\0') {
-                    terminated = true;
-                    break;
-                }
-            }
-            if (!terminated) {
-                return err(EINVAL);
-            }
-            out->has_interp = true;
-            continue;
-        }
-
-        if (ph[i].p_type != PT_LOAD) {
-            continue;
-        }
-        if (ph[i].p_offset + ph[i].p_filesz > image_size) {
-            return err(EINVAL);
-        }
-
-        uint64_t seg_start = page_align_down(ph[i].p_vaddr);
-        uint64_t seg_end = page_align_up(ph[i].p_vaddr + ph[i].p_memsz);
-        if (seg_start < min_load_vaddr) {
-            min_load_vaddr = seg_start;
-        }
-        if (seg_end > max_load_vaddr) {
-            max_load_vaddr = seg_end;
-        }
-    }
-
-    if (min_load_vaddr == UINT64_MAX || max_load_vaddr <= min_load_vaddr) {
-        return err(EINVAL);
-    }
-
-    uint64_t load_bias = 0;
-    if (eh->e_type == ET_DYN) {
-        uint64_t load_base = (et_dyn_base != 0) ? page_align_down(et_dyn_base) : EXEC_ET_DYN_BASE;
-        if (load_base < min_load_vaddr) {
-            return err(EINVAL);
-        }
-        load_bias = load_base - min_load_vaddr;
-    }
-
-    for (uint16_t i = 0; i < eh->e_phnum; ++i) {
-        if (ph[i].p_type != PT_LOAD) {
-            continue;
-        }
-        if (ph[i].p_offset + ph[i].p_filesz > image_size) {
-            return err(EINVAL);
-        }
-        uint64_t seg_vaddr = ph[i].p_vaddr + load_bias;
-        if (seg_vaddr + ph[i].p_memsz >= VM_USER_ELF_LIMIT) {
-            return err(ENOMEM);
-        }
-
-        const uint8_t* src = image + ph[i].p_offset;
-        int mr = map_exec_segment(space, seg_vaddr, (size_t)ph[i].p_memsz, src, (size_t)ph[i].p_filesz, elf_segment_prot(ph[i].p_flags));
-        if (mr != 0) {
-            return mr;
-        }
-
-        if (eh->e_phoff >= ph[i].p_offset && eh->e_phoff + phdr_table_size <= ph[i].p_offset + ph[i].p_filesz) {
-            phdr_vaddr = seg_vaddr + (eh->e_phoff - ph[i].p_offset);
-        }
-
-        if (seg_vaddr < image_start) {
-            image_start = seg_vaddr;
-        }
-        uint64_t seg_end = seg_vaddr + ph[i].p_memsz;
-        if (seg_end > image_end) {
-            image_end = seg_end;
-        }
-    }
-
-    if (image_start == UINT64_MAX || image_end <= image_start) {
-        return err(EINVAL);
-    }
-
-    out->entry = eh->e_entry + load_bias;
-    out->phdr = phdr_vaddr;
-    out->phent = eh->e_phentsize;
-    out->phnum = eh->e_phnum;
-    out->image_start = page_align_down(image_start);
-    out->image_end = page_align_up(image_end);
-    out->load_bias = load_bias;
-    return 0;
 }
 
 static int build_exec_stack(const char* execfn, char argv[EXEC_MAX_ARGS][EXEC_STR_MAX], size_t argc,
@@ -8414,7 +8238,10 @@ static int build_exec_stack(const char* execfn, char argv[EXEC_MAX_ARGS][EXEC_ST
         g_exec_argv_ptrs[i] = sp;
     }
 
-    sp &= ~0x0Full;
+    const uint64_t auxv_bytes = 21u * 2u * sizeof(uint64_t);
+    const uint64_t vectors_bytes = (uint64_t)(envc + argc + 3u) * sizeof(uint64_t);
+    const uint64_t table_bytes = auxv_bytes + vectors_bytes;
+    sp = ((sp - table_bytes) & ~0x0Full) + table_bytes;
     sp = exec_stack_push_auxv(sp, 0, 0, space);
     sp = exec_stack_push_auxv(sp, 31, execfn_ptr, space);
     sp = exec_stack_push_auxv(sp, 51, 2048, space);
@@ -8550,15 +8377,15 @@ static int sys_execve(struct syscall_frame* frame, const char* path_user, uint64
         return err(ENOMEM);
     }
 
-    struct exec_image_info program_image;
-    int lr = load_exec_image(&next_vm, image, image_size, 0, &program_image);
-    if (lr != 0) {
+    struct elf_image_info program_image;
+    int lr = elf_load_image(&next_vm, image, image_size, 0, &program_image);
+    if (lr != ELF_LOAD_OK) {
         vm_space_destroy(&next_vm);
         kfree(image);
-        return lr;
+        return err(lr == ELF_LOAD_NOMEM ? ENOMEM : ENOEXEC);
     }
 
-    struct exec_image_info interp_image;
+    struct elf_image_info interp_image;
     memset(&interp_image, 0, sizeof(interp_image));
 
     if (program_image.has_interp) {
@@ -8580,12 +8407,12 @@ static int sys_execve(struct syscall_frame* frame, const char* path_user, uint64
             return fr;
         }
 
-        int ilr = load_exec_image(&next_vm, interp, interp_size, choose_interp_base(program_image.image_end), &interp_image);
+        int ilr = elf_load_image(&next_vm, interp, interp_size, choose_interp_base(program_image.image_end), &interp_image);
         kfree(interp);
-        if (ilr != 0) {
+        if (ilr != ELF_LOAD_OK || interp_image.type != ELF_ET_DYN || interp_image.has_interp) {
             vm_space_destroy(&next_vm);
             kfree(image);
-            return ilr;
+            return err(ilr == ELF_LOAD_NOMEM ? ENOMEM : ENOEXEC);
         }
     }
     kfree(image);

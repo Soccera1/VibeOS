@@ -66,4 +66,8 @@ config USER_KERNEL_TESTS
 	bool "Kernel test suite in /usr"
 	default y
 
+config USER_GLIBC_DYNAMIC
+	bool "glibc dynamic runtime and integration test"
+	default y
+
 endmenu

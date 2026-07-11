@@ -33,8 +33,9 @@ The checked tools include:
 @item @code{ld},
 @item @code{nasm},
 @item @code{strip} or a compatible replacement when stripping is enabled,
-@item @code{zig} and @code{readelf} for static musl userspace builds and binary
-validation,
+@item @code{zig} for static musl userspace builds,
+@item GCC, GNU make, and @code{readelf} for the baseline glibc runtime and
+dynamic executable validation,
 @item @code{cpio}, @code{mkfs.ext3}, and @code{tic} for filesystem images,
 @item @code{grub-mkrescue},
 @item @code{xorriso} and @code{mformat} for ISO generation,

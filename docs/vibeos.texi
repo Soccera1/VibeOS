@@ -52,11 +52,11 @@ The repository has two standing policy constraints that shape almost every part
 of the system:
 
 @itemize @bullet
-@item The dynamic loader path exists, but it is still considered buggy in
-practice.  Static linking is preferred unless it is impossible.
-@item Musl is preferred over glibc when possible, and the build wrappers use
-@code{zig cc} or @code{zig c++} with @code{x86_64-linux-musl} targets for most
-userspace packages.
+@item Static and dynamically linked executables are both first-class targets.
+@item Static programs use musl; dynamically linked programs use the staged
+baseline x86-64 glibc runtime.  Existing package wrappers continue to use
+@code{zig cc} or @code{zig c++} with @code{x86_64-linux-musl} where a static
+artifact is intended.
 @end itemize
 
 This manual is written in GNU Texinfo style and is split into many source files

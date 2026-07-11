@@ -24,9 +24,9 @@ When changing or adding code, assume the following unless there is a clear
 reason to do otherwise:
 
 @itemize @bullet
-@item static linking is preferred,
-@item musl is preferred,
-@item non-PIE amd64 executables are the safest runtime target,
+@item use musl for static executables,
+@item use glibc for dynamically linked executables,
+@item validate static non-PIE and dynamic PIE forms explicitly,
 @item the root filesystem and @file{/usr} remain read-only, and
 @item scheduler behavior remains cooperative and syscall-driven.
 @end itemize

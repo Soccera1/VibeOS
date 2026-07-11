@@ -65,25 +65,22 @@ less, wget, and related utilities.
 The execution model is one of the most important things to understand before
 reading the rest of the source.
 
-VibeOS does contain an interpreter-aware ELF path.  Both the early bootstrap
-loader in @file{kernel/src/userland.c} and the full @code{execve} path in
-@file{kernel/src/syscall.c} know how to parse @code{PT_INTERP}.  They can load
-an interpreter image and pass Linux-like auxiliary vector state.
+VibeOS uses the shared ELF mapper in @file{kernel/src/elf_loader.c} for both the
+early bootstrap path and @code{execve}.  It loads @code{PT_INTERP} images,
+constructs Linux-compatible auxiliary vectors and aligned entry stacks, and
+supports glibc's runtime mapping requirements.
 
-Even so, the repository policy still treats that path as unreliable.  The build
-wrappers consistently prefer:
+The repository has two supported build profiles:
 
 @itemize @bullet
-@item @code{x86_64-linux-musl},
-@item static linking,
-@item @code{ET_EXEC} instead of PIE,
-@item no requested program interpreter, and
-@item direct validation with @code{readelf} before a binary is staged.
+@item static, non-PIE @code{x86_64-linux-musl} executables, and
+@item PIE or @code{ET_EXEC} glibc executables using
+@file{/lib64/ld-linux-x86-64.so.2} and the DSOs under @file{/usr/lib64}.
 @end itemize
 
-That policy is not decorative.  It is how the runtime is expected to be used.
-If you are bringing in a new user program, assume that the correct default is a
-static musl binary unless you can prove otherwise.
+Both profiles are first-class.  Use musl when producing a static artifact and
+glibc when producing a dynamically linked artifact; validate the resulting ELF
+form and interpreter with @code{readelf} before staging it.
 
 @node Scope of the Manual
 @section Scope of the Manual

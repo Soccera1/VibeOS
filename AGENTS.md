@@ -1,3 +1,3 @@
-A dynamic loader is present, however it is buggy, so statically link unless impossible!
+Static and dynamic executables are both first-class targets. Static binaries are preferred however, if no obstacles are present.
 
-Musl is to be used, rather than glibc, when possible.
+Use musl for static binaries and glibc for dynamically linked binaries.

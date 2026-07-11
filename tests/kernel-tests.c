@@ -37,6 +37,9 @@
 #endif
 
 static const char* k_helper_path = "/usr/libexec/kernel-tests/kernel-test-helper";
+#if ENABLE_GLIBC_DYNAMIC_TEST
+static const char* k_glibc_helper_path = "/usr/libexec/kernel-tests/glibc-dynamic-helper";
+#endif
 static const char* k_helper_link = "/usr/share/kernel-tests/helper-link";
 static const char* k_listener_path = "/var/kernel-test.sock";
 
@@ -136,6 +139,9 @@ static void test_identity_and_paths(void) {
     char linkbuf[256];
     struct stat st;
     struct stat lst;
+#if ENABLE_GLIBC_DYNAMIC_TEST
+    struct stat dynamic_st;
+#endif
     struct statx stx;
     char account_buf[512];
     DIR* dir = NULL;
@@ -235,6 +241,11 @@ static void test_identity_and_paths(void) {
     REQUIRE(stat(k_helper_path, &st) == 0, "stat(%s) failed: %s", k_helper_path, strerror(errno));
     REQUIRE(S_ISREG(st.st_mode), "%s was not a regular file", k_helper_path);
     REQUIRE(st.st_size > 0, "%s had zero size", k_helper_path);
+#if ENABLE_GLIBC_DYNAMIC_TEST
+    REQUIRE(stat(k_glibc_helper_path, &dynamic_st) == 0, "stat(%s) failed: %s", k_glibc_helper_path, strerror(errno));
+    REQUIRE(st.st_dev == dynamic_st.st_dev, "files in /usr reported different devices");
+    REQUIRE(st.st_ino != dynamic_st.st_ino, "distinct /usr files reported the same inode");
+#endif
 
     REQUIRE(lstat(k_helper_link, &lst) == 0, "lstat(%s) failed: %s", k_helper_link, strerror(errno));
     REQUIRE(S_ISLNK(lst.st_mode), "%s was not a symlink", k_helper_link);
@@ -848,6 +859,52 @@ static void test_process_wait_and_exec(void) {
     }
 }
 
+#if ENABLE_GLIBC_DYNAMIC_TEST
+static void test_glibc_dynamic_linking(void) {
+    int out[2] = { -1, -1 };
+    int status = 0;
+    char output[512];
+    pid_t child;
+
+    REQUIRE(pipe(out) == 0, "pipe(glibc dynamic) failed: %s", strerror(errno));
+    child = fork();
+    REQUIRE(child >= 0, "fork(glibc dynamic) failed: %s", strerror(errno));
+    if (child == 0) {
+        char* const argv[] = {
+            (char*)k_glibc_helper_path,
+            (char*)"argument",
+            NULL,
+        };
+        char* const envp[] = {
+            (char*)"GLIBC_DYNAMIC_TEST=present",
+            (char*)"PATH=/usr/bin:/bin",
+            NULL,
+        };
+
+        close(out[0]);
+        if (dup2(out[1], STDOUT_FILENO) < 0 || dup2(out[1], STDERR_FILENO) < 0) {
+            _exit(94);
+        }
+        close(out[1]);
+        execve(k_glibc_helper_path, argv, envp);
+        _exit(95);
+    }
+
+    close(out[1]);
+    memset(output, 0, sizeof(output));
+    REQUIRE(read_all_into_buffer(out[0], output, sizeof(output)) >= 0,
+            "read(glibc dynamic output) failed: %s", strerror(errno));
+    close(out[0]);
+    REQUIRE(waitpid_retry(child, &status, 0) == child, "waitpid(glibc dynamic) failed: %s", strerror(errno));
+    REQUIRE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+            "glibc dynamic helper status=%d output=%s", status, output);
+    REQUIRE(strstr(output, "glibc-dynamic-ok") != NULL,
+            "glibc dynamic success marker missing: %s", output);
+    REQUIRE(strstr(output, "allocation-ok") != NULL && strstr(output, "constructor=1") != NULL,
+            "glibc runtime checks missing: %s", output);
+}
+#endif
+
 static void test_process_groups_and_signals(void) {
     int gate[2] = { -1, -1 };
     int report[2] = { -1, -1 };
@@ -1163,15 +1220,22 @@ static const struct test_case g_tests[] = {
     { "memory_and_misc", test_memory_and_misc },
     { "compat_syscalls", test_compat_syscalls },
     { "process_wait_and_exec", test_process_wait_and_exec },
+#if ENABLE_GLIBC_DYNAMIC_TEST
+    { "glibc_dynamic_linking", test_glibc_dynamic_linking },
+#endif
     { "process_groups_and_signals", test_process_groups_and_signals },
 };
 
-int main(void) {
+int main(int argc, char** argv) {
     size_t i = 0;
+    const char* filter = argc > 1 ? argv[1] : NULL;
 
     printf("kernel-tests: running %zu test groups\n", sizeof(g_tests) / sizeof(g_tests[0]));
 
     for (i = 0; i < sizeof(g_tests) / sizeof(g_tests[0]); ++i) {
+        if (filter != NULL && strcmp(filter, g_tests[i].name) != 0) {
+            continue;
+        }
         int failures_before = g_failures;
         g_current_test = g_tests[i].name;
         printf("[RUN ] %s\n", g_current_test);
@@ -1182,6 +1246,11 @@ int main(void) {
         } else {
             printf("[FAIL] %s\n", g_current_test);
         }
+    }
+
+    if (filter != NULL && g_checks == 0) {
+        fprintf(stderr, "kernel-tests: unknown or empty test group: %s\n", filter);
+        return 2;
     }
 
     printf("kernel-tests: %d failures across %d checks\n", g_failures, g_checks);
