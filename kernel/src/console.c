@@ -97,6 +97,120 @@ static size_t soft_cursor_row;
 static size_t soft_cursor_col;
 static bool tab_stops[TAB_STOP_CAPACITY];
 static uint8_t last_printed_char = ' ';
+static uint32_t utf8_codepoint;
+static uint32_t utf8_min_codepoint;
+static uint8_t utf8_bytes_remaining;
+
+enum utf8_decode_result {
+    UTF8_DECODE_INVALID = -1,
+    UTF8_DECODE_INCOMPLETE = 0,
+    UTF8_DECODE_COMPLETE = 1,
+};
+
+static enum utf8_decode_result decode_utf8_byte(uint8_t byte, uint32_t* codepoint) {
+    if (utf8_bytes_remaining == 0u) {
+        if (byte < 0x80u) {
+            *codepoint = byte;
+            return UTF8_DECODE_COMPLETE;
+        }
+        if (byte >= 0xc2u && byte <= 0xdfu) {
+            utf8_codepoint = byte & 0x1fu;
+            utf8_min_codepoint = 0x80u;
+            utf8_bytes_remaining = 1u;
+            return UTF8_DECODE_INCOMPLETE;
+        }
+        if (byte >= 0xe0u && byte <= 0xefu) {
+            utf8_codepoint = byte & 0x0fu;
+            utf8_min_codepoint = 0x800u;
+            utf8_bytes_remaining = 2u;
+            return UTF8_DECODE_INCOMPLETE;
+        }
+        if (byte >= 0xf0u && byte <= 0xf4u) {
+            utf8_codepoint = byte & 0x07u;
+            utf8_min_codepoint = 0x10000u;
+            utf8_bytes_remaining = 3u;
+            return UTF8_DECODE_INCOMPLETE;
+        }
+        return UTF8_DECODE_INVALID;
+    }
+
+    if ((byte & 0xc0u) != 0x80u) {
+        utf8_bytes_remaining = 0u;
+        return decode_utf8_byte(byte, codepoint);
+    }
+
+    utf8_codepoint = (utf8_codepoint << 6) | (byte & 0x3fu);
+    --utf8_bytes_remaining;
+    if (utf8_bytes_remaining != 0u) {
+        return UTF8_DECODE_INCOMPLETE;
+    }
+
+    *codepoint = utf8_codepoint;
+    if (*codepoint < utf8_min_codepoint || *codepoint > 0x10ffffu ||
+        (*codepoint >= 0xd800u && *codepoint <= 0xdfffu)) {
+        return UTF8_DECODE_INVALID;
+    }
+    return UTF8_DECODE_COMPLETE;
+}
+
+static uint8_t unicode_to_console_glyph(uint32_t codepoint) {
+    if (codepoint <= 0x7fu) {
+        return (uint8_t)codepoint;
+    }
+
+    switch (codepoint) {
+        case 0x00a0: return 255u; /* no-break space */
+        case 0x00a2: return 155u;
+        case 0x00a3: return 156u;
+        case 0x00a5: return 157u;
+        case 0x00b0: return 248u;
+        case 0x00b1: return 241u;
+        case 0x00b5: return 230u;
+        case 0x00b7: return 250u;
+        case 0x0192: return 159u;
+        case 0x0393: return 226u;
+        case 0x03a3: return 228u;
+        case 0x03a6: return 232u;
+        case 0x03a9: return 234u;
+        case 0x03b1: return 224u;
+        case 0x03b4: return 235u;
+        case 0x03b5: return 238u;
+        case 0x03c0: return 227u;
+        case 0x03c3: return 229u;
+        case 0x03c4: return 231u;
+        case 0x03c6: return 237u;
+        case 0x2010: /* hyphen */
+        case 0x2011: /* non-breaking hyphen */
+        case 0x2012: /* figure dash */
+        case 0x2013: /* en dash */
+        case 0x2014: /* em dash */
+        case 0x2212: /* minus sign */
+            return '-';
+        case 0x2018:
+        case 0x2019:
+        case 0x201a:
+        case 0x201b:
+            return '\'';
+        case 0x201c:
+        case 0x201d:
+        case 0x201e:
+        case 0x201f:
+            return '"';
+        case 0x2022: return 7u;
+        case 0x2026: return '.';
+        case 0x207f: return 252u;
+        case 0x20a7: return 158u;
+        case 0x2219: return 249u;
+        case 0x221a: return 251u;
+        case 0x221e: return 236u;
+        case 0x2229: return 239u;
+        case 0x2248: return 247u;
+        case 0x2261: return 240u;
+        case 0x2264: return 243u;
+        case 0x2265: return 242u;
+        default: return '?';
+    }
+}
 
 static uint8_t current_cell_flags(void) {
     uint8_t flags = 0;
@@ -1227,6 +1341,9 @@ static uint8_t translate_graphics_char(uint8_t c) {
 static void reset_console_state(void) {
     ansi_state = 0;
     ansi_len = 0;
+    utf8_codepoint = 0u;
+    utf8_min_codepoint = 0u;
+    utf8_bytes_remaining = 0u;
     scroll_top = 0;
     scroll_bottom = text_rows - 1u;
     g1_charset_graphics = false;
@@ -1740,6 +1857,8 @@ void console_flush_framebuffer(void) {
 }
 
 void console_putc(char c) {
+    bool byte_already_serialized = false;
+
     if (c == '\a') {
         return;
     }
@@ -1756,8 +1875,24 @@ void console_putc(char c) {
         return;
     }
 
+    uint8_t byte = (uint8_t)c;
+    if (byte >= 0x80u || utf8_bytes_remaining != 0u) {
+        uint32_t codepoint = 0u;
+        if (byte >= 0x80u) {
+            serial_putc(c);
+            byte_already_serialized = true;
+        }
+        enum utf8_decode_result result = decode_utf8_byte(byte, &codepoint);
+        if (result == UTF8_DECODE_INCOMPLETE) {
+            return;
+        }
+        c = (result == UTF8_DECODE_COMPLETE) ? (char)unicode_to_console_glyph(codepoint) : '?';
+    }
+
     if (handle_ansi_char(c)) {
-        serial_putc(c);
+        if (!byte_already_serialized) {
+            serial_putc(c);
+        }
         return;
     }
 
@@ -1796,7 +1931,9 @@ void console_putc(char c) {
         return;
     }
 
-    serial_putc(c);
+    if (!byte_already_serialized) {
+        serial_putc(c);
+    }
     last_printed_char = (uint8_t)c;
     text_cells[cell_index(cursor_row, cursor_col)] = ((uint16_t)color << 8) | translate_graphics_char((uint8_t)c);
     text_cell_flags[cell_index(cursor_row, cursor_col)] = current_cell_flags();
