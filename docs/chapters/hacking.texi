@@ -31,6 +31,13 @@ reason to do otherwise:
 @item scheduler behavior remains cooperative and syscall-driven.
 @end itemize
 
+The static preference and the libc choice are separate decisions.  Static
+linking is preferred for self-contained deployment.  Glibc would be the ideal
+libc for both forms, but it is not a reliable fully static target because parts
+of its runtime retain dynamic dependencies.  Musl is therefore an engineering
+compromise for static binaries, while dynamically linked binaries should use
+glibc.
+
 If you violate one of these assumptions, document why and test the new path
 explicitly.
 
