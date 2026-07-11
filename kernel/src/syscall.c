@@ -8967,6 +8967,21 @@ static int sys_sync(void) {
     return (fs_sync() == 0) ? 0 : err(EIO);
 }
 
+static int sys_fsync(int fd, bool data_only) {
+    if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
+        return err(EBADF);
+    }
+
+    if (g_fds[fd].kind != FD_FILE && (!data_only && g_fds[fd].kind != FD_DIR)) {
+        return err(EINVAL);
+    }
+
+    /* The ext2/ext3 backend currently exposes a mount-wide flush operation.
+       Ramdisk-backed files need no persistence work, so flushing all mounted
+       disk filesystems also provides the required semantics for their fds. */
+    return sys_sync();
+}
+
 static int sys_reboot(int magic1, int magic2, uint64_t cmd) {
     if (magic1 != (int)0xfee1dead || magic2 != 672274793) {
         return err(EINVAL);
@@ -9555,6 +9570,10 @@ static uint64_t syscall_dispatch_body(struct syscall_frame* frame) {
             return (uint64_t)sys_uname((struct linux_utsname*)(uintptr_t)a0);
         case 72:
             return (uint64_t)sys_fcntl((int)a0, (int)a1, a2);
+        case 74:
+            return (uint64_t)sys_fsync((int)a0, false);
+        case 75:
+            return (uint64_t)sys_fsync((int)a0, true);
         case 76:
             return (uint64_t)sys_truncate_path((const char*)(uintptr_t)a0, (int64_t)a1);
         case 77:

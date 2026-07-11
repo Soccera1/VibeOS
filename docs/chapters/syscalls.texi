@@ -164,6 +164,10 @@ socket descriptors.
 recognized socket descriptors when the caller supplies enough space.
 @item 72 @tab @code{fcntl} @tab Limited support for duplication and flag
 queries or updates.
+@item 74 @tab @code{fsync} @tab Validates a regular-file or directory
+descriptor and flushes writable ext2/ext3 mounts.
+@item 75 @tab @code{fdatasync} @tab Validates a regular-file descriptor and
+flushes writable ext2/ext3 mounts.
 @item 270 @tab @code{pselect6} @tab Same scan model as @code{select}.
 @item 288 @tab @code{accept4} @tab Accept path with nonblocking and
 close-on-exec flags.
