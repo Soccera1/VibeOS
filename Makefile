@@ -114,6 +114,7 @@ LESS_SRC := external/less-src
 VIM_SRC := external/vim-src
 WGET_SRC := external/wget-src
 MAN_PAGES_SRC := external/man-pages-src
+MAN_PAGES_OVERLAY := tools/man-pages-vibeos
 LIBPIPELINE_SRC := external/libpipeline-src
 GDBM_SRC := external/gdbm-src
 GROFF_SRC := external/groff-src
@@ -297,8 +298,8 @@ $(USER_LESS): $(NCURSES_BUILD)/lib/libncursesw.a $(LESS_SRC_FILES) tools/build_l
 $(USER_VIM): $(NCURSES_BUILD)/lib/libncursesw.a $(VIM_SRC_FILES) tools/build_vim.sh $(CONFIG_MK) | $(BUILD_DIR)
 	./tools/build_vim.sh $@ "$(VIM_SRC)" "$(NCURSES_BUILD)"
 
-$(USER_MAN_PAGES): $(CONFIG_MK) | $(BUILD_DIR)
-	./tools/build_man_pages.sh $@ "$(MAN_PAGES_SRC)"
+$(USER_MAN_PAGES): tools/build_man_pages.sh $(shell find $(MAN_PAGES_OVERLAY) -type f | sort) $(CONFIG_MK) | $(BUILD_DIR)
+	./tools/build_man_pages.sh $@ "$(MAN_PAGES_SRC)" "$(MAN_PAGES_OVERLAY)"
 
 $(USER_LIBPIPELINE): $(CONFIG_MK) | $(BUILD_DIR)
 	./tools/build_libpipeline.sh $@ "$(LIBPIPELINE_SRC)"

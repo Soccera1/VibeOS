@@ -1,0 +1,50 @@
+.\" SPDX-License-Identifier: GPL-3.0-or-later
+.TH intro 2 2026-07-10 "VibeOS System Calls"
+.SH NAME
+intro \- introduction to VibeOS system calls
+.SH DESCRIPTION
+Section 2 documents the system-call interface exposed by VibeOS.
+VibeOS uses the Linux x86-64 syscall numbers and calling convention so that
+statically linked musl programs can run without a VibeOS-specific C library.
+It is not Linux, and compatibility is intentionally incomplete.
+.PP
+Applications normally call the musl C library wrappers rather than entering
+the kernel directly.  A raw call places the syscall number in
+.BR rax ,
+arguments in
+.BR rdi ,
+.BR rsi ,
+.BR rdx ,
+.BR r10 ,
+.BR r8 ,
+and
+.BR r9 ,
+and executes the
+.B syscall
+instruction.  The legacy
+.B int $0x80
+entry path is also present.
+.PP
+The kernel returns a nonnegative result on success or a negated errno value on
+failure.  C library wrappers translate a negative result to \-1 and set
+.IR errno .
+.SH COMPATIBILITY
+Only calls listed by
+.BR syscalls (2)
+are recognized.  Even for those calls, optional Linux flags, ioctl commands,
+address families, filesystems, and process semantics may not exist.  Programs
+should handle
+.BR ENOSYS ,
+.BR EINVAL ,
+and
+.BR ENOTSUP
+where a Linux program might assume an extension is available.
+.PP
+The other pages in section 2 are retained from the Linux man-pages project as
+API references and carry a VibeOS compatibility notice.  Their Linux-specific
+details are not a promise of VibeOS behavior.
+.SH SEE ALSO
+.BR syscall (2),
+.BR syscalls (2),
+.BR errno (3),
+.BR vibeos (7)

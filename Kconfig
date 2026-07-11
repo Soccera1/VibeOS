@@ -51,7 +51,7 @@ config USER_SL
 	default y
 
 config USER_MAN_PAGES
-	bool "Linux man-pages"
+	bool "VibeOS man-pages (adapted from Linux)"
 	default y
 
 config USER_MAN_DB

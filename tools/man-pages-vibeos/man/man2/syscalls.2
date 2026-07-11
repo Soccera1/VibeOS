@@ -1,0 +1,97 @@
+.\" SPDX-License-Identifier: GPL-3.0-or-later
+.TH syscalls 2 2026-07-10 "VibeOS System Calls"
+.SH NAME
+syscalls \- system calls recognized by VibeOS
+.SH DESCRIPTION
+VibeOS implements an ABI-compatible subset of the Linux x86-64 syscall ABI.
+Numbers not listed below return
+.BR ENOSYS .
+The presence of a call does not imply complete Linux semantics.
+.SS Files, paths, and descriptors
+.TP
+.B 0-8
+read, write, open, close, stat, fstat, lstat, poll, lseek
+.TP
+.B 16-23
+ioctl, pread64, pwrite64, readv, writev, access, pipe, select
+.TP
+.B 32-33, 40, 72, 76-77
+dup, dup2, sendfile, fcntl, truncate, ftruncate
+.TP
+.B 79-95
+getcwd, chdir, rename, mkdir, rmdir, creat, link, unlink, symlink, readlink,
+chmod, fchmod, chown, fchown, lchown, umask
+.TP
+.B 132, 162, 217, 235
+utime, sync, getdents64, utimes
+.TP
+.B 257-270
+openat, mkdirat, mknodat, fchownat, futimesat, newfstatat, unlinkat, renameat,
+linkat, symlinkat, readlinkat, fchmodat, faccessat, pselect6
+.TP
+.B 280, 292-293
+utimensat, dup3, pipe2
+.TP
+.B 316, 332, 439
+renameat2 (zero flags only), statx (partial), faccessat2
+.SS Processes, signals, identity, and time
+.TP
+.B 13-15
+rt_sigaction, rt_sigprocmask, rt_sigreturn
+.TP
+.B 35-39
+nanosleep, getitimer, alarm, setitimer, getpid
+.TP
+.B 56-63
+clone, fork, vfork, execve, exit, wait4, kill, uname
+.TP
+.B 97, 102-123
+getrlimit, getuid, getgid, setuid, setgid, geteuid, getegid, setpgid, getppid,
+getpgrp, setsid, setreuid, setregid, getgroups, setgroups, setresuid, getresuid,
+setresgid, getresgid, getpgid, setfsuid, setfsgid
+.TP
+.B 127, 131, 157-158, 169-170
+rt_sigpending, sigaltstack, prctl, arch_prctl, reboot, sethostname
+.TP
+.B 186, 202, 218
+gettid (same value as getpid), futex (basic wait and wake operations),
+set_tid_address
+.TP
+.B 228-229, 231
+clock_gettime, clock_getres, exit_group
+.TP
+.B 273, 302, 318
+set_robust_list (metadata only), prlimit64 (limited), getrandom
+(non-cryptographic generator)
+.SS Memory
+.TP
+.B 9-12
+mmap (anonymous and limited file-backed mappings), mprotect (coarse
+present/write protection), munmap, brk
+.TP
+.B 28
+madvise (compatibility no-op)
+.SS Sockets
+.TP
+.B 41-55
+socket, connect, accept, sendto, recvfrom, sendmsg, recvmsg, shutdown, bind,
+listen, getsockname, getpeername, socketpair, setsockopt, getsockopt
+.TP
+.B 288
+accept4
+.PP
+Socket support is limited to pathname AF_UNIX stream sockets and a small
+AF_INET stack providing ARP, DHCP, ICMP, UDP, and client-side TCP.  Socket
+options are mostly compatibility behavior rather than Linux-equivalent tuning.
+.PP
+Filesystem mutation works only on writable ext2/ext3 or RAM-backed mounts.
+The root initramfs and shipped /usr filesystem are read-only.  VibeOS has no
+real /proc or /sys filesystem, no separate thread IDs, and no full Linux clone,
+futex, signal, virtual-memory, or networking contract.
+.PP
+Syscall 334 (rseq) is deliberately rejected with
+.BR ENOSYS .
+.SH SEE ALSO
+.BR intro (2),
+.BR syscall (2),
+.BR vibeos (7)

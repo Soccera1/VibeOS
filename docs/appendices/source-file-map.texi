@@ -290,7 +290,10 @@ Build and stage gdbm with 64-bit libraries under @file{/usr/lib64}.
 Build and stage groff.
 
 @item tools/build_man_pages.sh
-Stage Linux man-pages.
+Stage and adapt Linux man-pages for the VibeOS compatibility surface.
+
+@item tools/man-pages-vibeos/
+Section-2 allowlist and VibeOS-native manual-page overlays.
 
 @item tools/build_man_db.sh
 Build and stage man-db.
