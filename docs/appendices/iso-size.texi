@@ -99,9 +99,9 @@ The compiled magic database used by the @code{file} command.
 @item GNU @code{coreutils}: 9.46 MiB
 The full set of standalone command-line tools staged into @file{/usr/bin}.
 
-@item Linux @code{man-pages}: 7.46 MiB
-The local manual page corpus.  The current staged tree contains 3,092 manual
-page files.
+@item VibeOS @code{man-pages}: 5.96 MiB
+The curated local manual page corpus.  The current staged tree contains 2,738
+manual page files after unsupported Linux system-call pages are omitted.
 
 @item @code{bash}: 3.21 MiB
 The interactive shell.
@@ -118,13 +118,13 @@ The @code{man} runtime and helper programs.
 0.24 MiB, and @code{file} about 0.23 MiB.
 @end table
 
-The copied userspace payload totals roughly @code{75 MiB} before filesystem
+The copied userspace payload totals roughly @code{74 MiB} before filesystem
 image overhead.  The ext3 image itself is @code{83.01 MiB}, so about
-@code{8 MiB} is not file contents but ext3 bookkeeping and block rounding.
+@code{9 MiB} is not file contents but ext3 bookkeeping and block rounding.
 
 The documentation stack is the single largest category.  Taken together,
 @code{groff}, @code{man-pages}, and @code{man-db} consume about
-@code{42.90 MiB}.  That is deliberate: the current system is trying to be
+@code{41.96 MiB}.  That is deliberate: the current system is trying to be
 self-contained, not merely bootable.
 
 @node How Large the Actual OS Is

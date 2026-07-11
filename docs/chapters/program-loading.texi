@@ -150,7 +150,7 @@ Root contains the essential boot path:
 @item Bash,
 @item non-essential coreutils commands,
 @item groff and man-db frontends,
-@item Linux man-pages,
+@item VibeOS-curated man-pages,
 @item @code{file},
 @item @code{nano},
 @item @code{less},

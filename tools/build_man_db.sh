@@ -123,7 +123,9 @@ MANPATH_MAP	/usr/bin	/usr/share/man
 MANPATH_MAP	/usr/sbin	/usr/share/man
 MANDB_MAP	/usr/share/man	/tmp/man
 SECTION		1 n l 8 3 0 2 3type 5 4 9 6 7
-DEFINE		pager		env TERMINFO=/usr/terminfo TERM=vibeos less -c -h0 -y0
+# The console supports normal forward and reverse scrolling.  Keep short
+# movements incremental; zero scroll limits force a full-screen repaint.
+DEFINE		pager		env TERMINFO=/usr/terminfo TERM=vibeos less -h10 -y10
 DEFINE		cat		cat
 DEFINE		nroff		groff -mandoc -mtty-char
 DEFINE		troff		groff

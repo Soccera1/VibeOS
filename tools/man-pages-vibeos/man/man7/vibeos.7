@@ -1,0 +1,47 @@
+.\" SPDX-License-Identifier: GPL-3.0-or-later
+.TH vibeos 7 2026-07-10 "VibeOS Manual"
+.SH NAME
+vibeos \- VibeOS compatibility and manual-page conventions
+.SH DESCRIPTION
+VibeOS is a small x86-64 operating system with a Linux-compatible userspace
+ABI subset.  It is designed to run statically linked musl executables.  An ELF
+interpreter path exists, but dynamic loading remains incomplete and should not
+be relied upon.
+.SH MANUAL PAGE SCOPE
+The system ships selected material from the Linux man-pages project because
+musl and VibeOS expose many familiar POSIX and Linux interfaces.
+Section 2 is curated to interfaces recognized by the VibeOS kernel and its
+overview pages are VibeOS-specific.  Retained upstream section 2 pages include
+a compatibility warning.
+.PP
+Sections 3 and later primarily document portable C library interfaces, data
+formats, protocols, and Linux concepts.  They remain useful references, but
+mentions of glibc, Linux kernel versions, /proc, /sys, namespaces, cgroups, and
+other Linux-only facilities do not describe VibeOS.  The C library shipped for
+VibeOS is musl.
+.SH SYSTEM LIMITATIONS
+.IP \[bu] 3
+The root initramfs and /usr image are read-only.  Writable ext2/ext3 mounts and
+RAM-backed /home and /tmp support the implemented mutation operations.
+.IP \[bu]
+/proc and /sys are placeholder directories, not kernel-backed filesystems.
+.IP \[bu]
+Processes use Linux x86-64 syscall numbering, but threads, signals, futexes,
+memory mapping, credentials, and resource limits implement only the subset
+needed by current userland.
+.IP \[bu]
+Networking provides a small AF_INET implementation and pathname AF_UNIX stream
+sockets, not the full Linux network stack.
+.IP \[bu]
+Timekeeping is RTC/TSC based.  getrandom(2) uses a simple internal generator
+and must not be treated as cryptographically secure.
+.SH PORTING
+Prefer static, non-PIE binaries linked with musl.  Probe optional interfaces at
+runtime and handle ENOSYS or restricted flag sets.  Consult
+.BR syscalls (2)
+before depending on a Linux-specific kernel API.
+.SH SEE ALSO
+.BR intro (2),
+.BR syscalls (2),
+.BR intro (3),
+.BR standards (7)
