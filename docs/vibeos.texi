@@ -59,6 +59,13 @@ baseline x86-64 glibc runtime.  Existing package wrappers continue to use
 artifact is intended.
 @end itemize
 
+Static linking is preferred because VibeOS favors self-contained deployment,
+not because musl is the preferred C library.  The ideal would be a properly
+self-contained static glibc executable, but glibc retains dynamic runtime
+requirements for facilities such as NSS and cannot satisfy that model
+reliably.  Musl is consequently a compromise used for static artifacts;
+dynamic artifacts use the preferred glibc runtime.
+
 This manual is written in GNU Texinfo style and is split into many source files
 so that the overall system reference can grow without collapsing into a single
 monolithic document.

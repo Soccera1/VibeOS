@@ -82,6 +82,14 @@ Both profiles are first-class.  Use musl when producing a static artifact and
 glibc when producing a dynamically linked artifact; validate the resulting ELF
 form and interpreter with @code{readelf} before staging it.
 
+This split is pragmatic rather than an endorsement of musl as the preferred
+libc.  VibeOS prefers self-contained static deployment, and the ideal static
+artifact would also use glibc.  In practice glibc cannot be linked into a fully
+self-contained executable while preserving runtime facilities such as NSS and
+its associated dynamic loading behavior.  Musl is used only to make the static
+deployment model workable; when dynamic linking is available, glibc is the
+preferred libc.
+
 @node Scope of the Manual
 @section Scope of the Manual
 

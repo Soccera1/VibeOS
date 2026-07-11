@@ -19,6 +19,12 @@ formats, protocols, and Linux concepts.  They remain useful references, but
 mentions of Linux kernel versions, /proc, /sys, namespaces, cgroups, and other
 Linux-only facilities do not describe VibeOS.  Static programs use musl and
 dynamic programs use glibc.
+.PP
+Static linking is preferred for self-contained deployment, independently of
+the C library choice.  A fully self-contained static glibc runtime is not
+reliable because some glibc facilities retain dynamic loading requirements.
+Musl is used for static executables as a compromise; glibc remains the
+preferred C library for dynamically linked programs.
 .SH SYSTEM LIMITATIONS
 .IP \[bu] 3
 The root initramfs and /usr image are read-only.  Writable ext2/ext3 mounts and
