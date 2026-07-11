@@ -31,9 +31,11 @@ fchmodat.2
 fchown.2
 fchownat.2
 fcntl.2
+fdatasync.2
 fork.2
 fstat.2
 fstatat.2
+fsync.2
 ftruncate.2
 futex.2
 futimesat.2

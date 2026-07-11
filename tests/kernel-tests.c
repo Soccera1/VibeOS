@@ -439,9 +439,14 @@ static void test_file_io_and_mmap(void) {
     n = read(homefd, homebuf, sizeof(homebuf));
     REQUIRE(n == 10, "read(/home/kernel-tests.write) returned %zd, expected 10: %s", n, strerror(errno));
     REQUIRE(strcmp(homebuf, "home-OKite") == 0, "/home contents were not preserved");
+    REQUIRE(fsync(homefd) == 0, "fsync(/home/kernel-tests.write) failed: %s", strerror(errno));
+    REQUIRE(fdatasync(homefd) == 0, "fdatasync(/home/kernel-tests.write) failed: %s", strerror(errno));
     close(homefd);
     homefd = -1;
     REQUIRE(unlink("/home/kernel-tests.write") == 0, "unlink(/home/kernel-tests.write) failed: %s", strerror(errno));
+
+    errno = 0;
+    REQUIRE(fsync(-1) < 0 && errno == EBADF, "fsync(-1) returned errno=%d", errno);
 
     memset(elf, 0, sizeof(elf));
     REQUIRE(pread(fd, elf, sizeof(elf), 0) == (ssize_t)sizeof(elf), "pread helper ELF header failed: %s", strerror(errno));
