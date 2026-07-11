@@ -94,8 +94,35 @@ static bool test_hard_newlines_remain_separate(void) {
     return true;
 }
 
+static bool decode_sequence(const uint8_t* bytes, size_t length, uint8_t expected_glyph) {
+    uint32_t codepoint = 0u;
+    utf8_bytes_remaining = 0u;
+    for (size_t i = 0u; i < length; ++i) {
+        enum utf8_decode_result result = decode_utf8_byte(bytes[i], &codepoint);
+        if (i + 1u < length) {
+            CHECK(result == UTF8_DECODE_INCOMPLETE);
+        } else {
+            CHECK(result == UTF8_DECODE_COMPLETE);
+        }
+    }
+    CHECK(unicode_to_console_glyph(codepoint) == expected_glyph);
+    return true;
+}
+
+static bool test_utf8_is_decoded_before_glyph_lookup(void) {
+    static const uint8_t hyphen[] = {0xe2u, 0x80u, 0x90u};
+    static const uint8_t right_quote[] = {0xe2u, 0x80u, 0x99u};
+    static const uint8_t plus_minus[] = {0xc2u, 0xb1u};
+
+    CHECK(decode_sequence(hyphen, sizeof(hyphen), '-'));
+    CHECK(decode_sequence(right_quote, sizeof(right_quote), '\''));
+    CHECK(decode_sequence(plus_minus, sizeof(plus_minus), 241u));
+    return true;
+}
+
 int main(void) {
-    if (!test_soft_wrapped_line_survives_round_trip() || !test_hard_newlines_remain_separate()) {
+    if (!test_soft_wrapped_line_survives_round_trip() || !test_hard_newlines_remain_separate() ||
+        !test_utf8_is_decoded_before_glyph_lookup()) {
         return 1;
     }
     puts("console reflow host tests passed");
