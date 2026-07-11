@@ -972,6 +972,7 @@ static void test_memory_and_misc(void) {
     struct rlimit lim2;
     unsigned char rnd[32];
     void* map = MAP_FAILED;
+    void* recycled_map = MAP_FAILED;
     long brk_now = 0;
     long brk_after = 0;
     long brk_restore = 0;
@@ -1016,6 +1017,15 @@ static void test_memory_and_misc(void) {
     REQUIRE(munmap(map, 8192) == 0, "anonymous munmap failed: %s", strerror(errno));
     map = MAP_FAILED;
 
+    map = mmap(NULL, 40960, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    REQUIRE(map != MAP_FAILED, "mmap(allocation-reuse probe) failed: %s", strerror(errno));
+    REQUIRE(munmap(map, 40960) == 0, "munmap(allocation-reuse probe) failed: %s", strerror(errno));
+    recycled_map = mmap(NULL, 40960, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    REQUIRE(recycled_map == map, "mmap did not reuse freed range: old=%p new=%p", map, recycled_map);
+    REQUIRE(munmap(recycled_map, 40960) == 0, "munmap(recycled allocation) failed: %s", strerror(errno));
+    recycled_map = MAP_FAILED;
+    map = MAP_FAILED;
+
     REQUIRE(syscall(SYS_arch_prctl, ARCH_GET_FS, &fs_base) == 0, "arch_prctl(ARCH_GET_FS) failed: %s", strerror(errno));
     REQUIRE(syscall(SYS_arch_prctl, ARCH_SET_FS, fs_base) == 0, "arch_prctl(ARCH_SET_FS same value) failed: %s", strerror(errno));
     REQUIRE(syscall(SYS_arch_prctl, ARCH_GET_FS, &fs_probe) == 0, "arch_prctl(ARCH_GET_FS verify) failed: %s", strerror(errno));
@@ -1033,6 +1043,9 @@ static void test_memory_and_misc(void) {
 
     if (map != MAP_FAILED) {
         munmap(map, 8192);
+    }
+    if (recycled_map != MAP_FAILED) {
+        munmap(recycled_map, 40960);
     }
 }
 

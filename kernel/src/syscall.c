@@ -7794,6 +7794,50 @@ static int sys_futex(uint32_t* uaddr, uint32_t op, uint32_t val, const struct li
     }
 }
 
+static bool mmap_gap_in_range(const struct vm_space* space, uint64_t range_start, uint64_t range_end, uint64_t span,
+                              uint64_t* base_out) {
+    if (space == NULL || base_out == NULL || range_start >= range_end || span > range_end - range_start) {
+        return false;
+    }
+
+    uint64_t candidate = range_start;
+    while (candidate <= range_end - span) {
+        bool occupied = false;
+        for (uint64_t page = candidate; page < candidate + span; page += VM_PAGE_SIZE) {
+            if (vm_space_range_mapped(space, page, 1u)) {
+                candidate = page + VM_PAGE_SIZE;
+                occupied = true;
+                break;
+            }
+        }
+        if (!occupied) {
+            *base_out = candidate;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool find_mmap_gap(const struct vm_space* space, uint64_t span, uint64_t* base_out) {
+    uint64_t hint = (g_mmap_next + VM_PAGE_SIZE - 1u) & VM_PAGE_MASK;
+    if (hint < VM_USER_MMAP_BASE || hint >= VM_USER_MMAP_LIMIT) {
+        hint = VM_USER_MMAP_BASE;
+    }
+
+    if (mmap_gap_in_range(space, hint, VM_USER_MMAP_LIMIT, span, base_out)) {
+        return true;
+    }
+    return hint > VM_USER_MMAP_BASE && mmap_gap_in_range(space, VM_USER_MMAP_BASE, hint, span, base_out);
+}
+
+static void advance_mmap_hint(uint64_t base, uint64_t span) {
+    g_mmap_next = base + span;
+    if (g_mmap_next >= VM_USER_MMAP_LIMIT) {
+        g_mmap_next = VM_USER_MMAP_BASE;
+    }
+}
+
 static int64_t sys_mmap(uint64_t addr, size_t len, uint64_t prot, uint64_t flags, int fd, uint64_t offset) {
     uint32_t vm_prot = VM_PROT_NONE;
     if (len == 0) {
@@ -7805,9 +7849,13 @@ static int64_t sys_mmap(uint64_t addr, size_t len, uint64_t prot, uint64_t flags
         return err(ENOMEM);
     }
 
-    const uint64_t align = 0x1000ull;
+    const uint64_t align = VM_PAGE_SIZE;
+    if ((uint64_t)len > UINT64_MAX - (align - 1u)) {
+        return err(ENOMEM);
+    }
     uint64_t span = ((uint64_t)len + align - 1u) & ~(align - 1u);
     bool anonymous = (flags & MAP_ANONYMOUS) != 0u;
+    bool chose_automatically = false;
 
     if ((offset & (align - 1u)) != 0u) {
         return err(EINVAL);
@@ -7824,21 +7872,23 @@ static int64_t sys_mmap(uint64_t addr, size_t len, uint64_t prot, uint64_t flags
     uint64_t base = 0;
     if (addr != 0 && (flags & (MAP_FIXED | MAP_FIXED_NOREPLACE)) != 0u) {
         base = addr & ~(align - 1u);
-        if (base < 0x1000ull || base + span >= VM_USER_MMAP_LIMIT) {
+        if (base < 0x1000ull || base >= VM_USER_MMAP_LIMIT || span > VM_USER_MMAP_LIMIT - base) {
             return err(ENOMEM);
         }
-        if ((flags & MAP_FIXED_NOREPLACE) != 0u && vm_space_range_mapped(&current->vm, base, (size_t)span)) {
-            return err(EEXIST);
+        if ((flags & MAP_FIXED_NOREPLACE) != 0u) {
+            uint64_t free_base = 0;
+            if (!mmap_gap_in_range(&current->vm, base, base + span, span, &free_base)) {
+                return err(EEXIST);
+            }
         }
         if ((flags & MAP_FIXED) != 0u) {
             (void)vm_space_unmap(&current->vm, base, (size_t)span);
         }
     } else {
-        base = (g_mmap_next + align - 1u) & ~(align - 1u);
-        if (base + span >= VM_USER_MMAP_LIMIT) {
+        if (!find_mmap_gap(&current->vm, span, &base)) {
             return err(ENOMEM);
         }
-        g_mmap_next = base + span;
+        chose_automatically = true;
     }
 
     if (!anonymous) {
@@ -7860,7 +7910,11 @@ static int64_t sys_mmap(uint64_t addr, size_t len, uint64_t prot, uint64_t flags
             }
             phys_base = (fb.phys_addr + offset) & ~(align - 1u);
             if (vm_space_map_physical(&current->vm, base, phys_base, (size_t)span, vm_prot) != 0) {
+                (void)vm_space_unmap(&current->vm, base, (size_t)span);
                 return err(ENOMEM);
+            }
+            if (chose_automatically) {
+                advance_mmap_hint(base, span);
             }
             return (int64_t)base;
         }
@@ -7870,6 +7924,7 @@ static int64_t sys_mmap(uint64_t addr, size_t len, uint64_t prot, uint64_t flags
         }
 
         if (vm_space_map_zero(&current->vm, base, (size_t)span, vm_prot) != 0) {
+            (void)vm_space_unmap(&current->vm, base, (size_t)span);
             return err(ENOMEM);
         }
 
@@ -7897,7 +7952,12 @@ static int64_t sys_mmap(uint64_t addr, size_t len, uint64_t prot, uint64_t flags
             }
         }
     } else if (vm_space_map_zero(&current->vm, base, (size_t)span, vm_prot) != 0) {
+        (void)vm_space_unmap(&current->vm, base, (size_t)span);
         return err(ENOMEM);
+    }
+
+    if (chose_automatically) {
+        advance_mmap_hint(base, span);
     }
 
     return (int64_t)base;
@@ -7911,7 +7971,15 @@ static int sys_munmap(uint64_t addr, size_t len) {
     if (len == 0) {
         return 0;
     }
-    return vm_space_unmap(&current->vm, addr, len) == 0 ? 0 : err(EINVAL);
+    if (vm_space_unmap(&current->vm, addr, len) != 0) {
+        return err(EINVAL);
+    }
+
+    uint64_t freed = addr & VM_PAGE_MASK;
+    if (freed >= VM_USER_MMAP_BASE && freed < g_mmap_next) {
+        g_mmap_next = freed;
+    }
+    return 0;
 }
 
 static int64_t sys_brk(uint64_t brk) {
