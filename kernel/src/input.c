@@ -3,6 +3,7 @@
 #include <stddef.h>
 
 #include "keyboard.h"
+#include "input_event.h"
 #include "serial.h"
 #include "virtio_gpu.h"
 
@@ -89,6 +90,10 @@ int input_poll_char(void) {
         return normalize_input_char(c);
     }
 
+    input_event_poll();
+    if (input_event_is_grabbed(INPUT_EVENT_KEYBOARD)) {
+        return -1;
+    }
     c = keyboard_poll_char();
     if (c >= 0) {
         return normalize_input_char(c);
@@ -109,7 +114,9 @@ int input_read_char_blocking(void) {
 }
 
 int input_char_ready(void) {
-    return response_count != 0 || serial_input_ready() || keyboard_input_ready();
+    input_event_poll();
+    return response_count != 0 || serial_input_ready() ||
+           (!input_event_is_grabbed(INPUT_EVENT_KEYBOARD) && keyboard_input_ready());
 }
 
 int input_poll_signal(void) {

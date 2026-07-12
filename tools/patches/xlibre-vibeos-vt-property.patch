@@ -1,0 +1,38 @@
+diff --git a/hw/kdrive/fbdev/fbinit.c b/hw/kdrive/fbdev/fbinit.c
+--- a/hw/kdrive/fbdev/fbinit.c
++++ b/hw/kdrive/fbdev/fbinit.c
+@@ -23,8 +23,26 @@
+ #include <kdrive-config.h>
+ #include "fbdev.h"
++#include "dix/dix_priv.h"
+ #include "miext/extinit_priv.h"
+ #include "os/cmdline.h"
+ #include "os/ddx_priv.h"
++#include "property.h"
++#include <X11/Xatom.h>
++
++static void
++vibeosAddVTProperty(CallbackListPtr *pcbl, void *data, void *screen)
++{
++    ScreenPtr pScreen = screen;
++    Atom vt_atom = dixAddAtom("XFree86_VT");
++    int vt = 1;
++
++    (void)pcbl;
++    (void)data;
++    if (dixChangeWindowProperty(serverClient, pScreen->root, vt_atom,
++                                XA_INTEGER, 32, PropModeReplace, 1,
++                                &vt, FALSE) != Success)
++        ErrorF("Failed to register XFree86_VT property\n");
++}
+ 
+ void
+ InitCard(char *name)
+@@ -57,6 +75,7 @@ void
+ InitOutput(int argc, char **argv)
+ {
+     ephyrExtensionInit();
++    AddCallback(&RootWindowFinalizeCallback, vibeosAddVTProperty, NULL);
+     KdInitOutput(argc, argv);
+ }
+ 

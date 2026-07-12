@@ -84,6 +84,7 @@ static size_t g_fb_cell_height = 25u;
 static const struct console_font_variant* g_fb_font = &g_console_font_variants[0];
 static uint32_t g_fb_palette[16];
 static console_framebuffer_flush_fn g_fb_flush_callback;
+static bool g_graphics_mode;
 static bool g_fb_bulk_present;
 static size_t g_fb_bulk_depth;
 static bool g_fb_bulk_dirty;
@@ -1856,8 +1857,26 @@ void console_flush_framebuffer(void) {
     framebuffer_flush_rect(0, 0, g_fb_info.width, g_fb_info.height);
 }
 
+void console_set_graphics_mode(bool enabled) {
+    if (g_graphics_mode == enabled) return;
+    g_graphics_mode = enabled;
+    if (!enabled && framebuffer_active()) {
+        present_all();
+        update_hw_cursor();
+    }
+}
+
+bool console_graphics_mode(void) {
+    return g_graphics_mode;
+}
+
 void console_putc(char c) {
     bool byte_already_serialized = false;
+
+    if (g_graphics_mode) {
+        serial_putc(c);
+        return;
+    }
 
     if (c == '\a') {
         return;

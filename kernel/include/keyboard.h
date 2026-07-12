@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 enum keyboard_combo_signal {
     KEYBOARD_COMBO_SIGNAL_NONE = 0,
@@ -15,3 +16,4 @@ int keyboard_poll_signal(void);
 int keyboard_peek_signal(void);
 void keyboard_set_application_cursor_keys(bool enabled);
 bool keyboard_application_cursor_keys(void);
+void keyboard_handle_scancode(uint8_t scancode, bool extended);

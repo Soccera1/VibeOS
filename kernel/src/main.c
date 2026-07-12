@@ -8,6 +8,7 @@
 #include "idt.h"
 #include "initramfs.h"
 #include "io.h"
+#include "input_event.h"
 #include "kmalloc.h"
 #include "multiboot2.h"
 #include "power.h"
@@ -109,6 +110,7 @@ void kernel_main(uint64_t mb2_info) {
     ata_init();
     virtio_scsi_init();
     virtio_net_init();
+    input_event_init();
 
     const struct mb2_tag_module* initramfs_module = mb2_find_module(mb2_info, 0);
     if (initramfs_module == NULL) {

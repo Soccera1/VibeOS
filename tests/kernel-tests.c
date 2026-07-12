@@ -1022,6 +1022,43 @@ static void test_process_groups_and_signals(void) {
     }
 }
 
+static void test_pty_controlling_terminal(void) {
+    int master = -1;
+    int unlock = 0;
+    unsigned int pty_number = 0;
+    pid_t child = -1;
+    int status = 0;
+    char slave_path[64];
+
+    master = open("/dev/ptmx", O_RDWR | O_NOCTTY);
+    REQUIRE(master >= 0, "open(/dev/ptmx) failed: %s", strerror(errno));
+    REQUIRE(ioctl(master, TIOCSPTLCK, &unlock) == 0, "unlock PTY failed: %s", strerror(errno));
+    REQUIRE(ioctl(master, TIOCGPTN, &pty_number) == 0, "get PTY number failed: %s", strerror(errno));
+    snprintf(slave_path, sizeof(slave_path), "/dev/pts/%u", pty_number);
+
+    child = fork();
+    REQUIRE(child >= 0, "fork(PTY child) failed: %s", strerror(errno));
+    if (child == 0) {
+        int slave;
+        pid_t foreground = -1;
+
+        if (setsid() < 0)
+            _exit(91);
+        slave = open(slave_path, O_RDWR);
+        if (slave < 0)
+            _exit(92);
+        if (ioctl(slave, TIOCGPGRP, &foreground) < 0)
+            _exit(93);
+        close(slave);
+        _exit(foreground == getpgrp() ? 0 : 94);
+    }
+
+    REQUIRE(waitpid_retry(child, &status, 0) == child, "waitpid(PTY child) failed: %s", strerror(errno));
+    REQUIRE(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+            "PTY child exited with status 0x%x", status);
+    close(master);
+}
+
 static void test_memory_and_misc(void) {
     struct timespec ts0;
     struct timespec ts1;
@@ -1224,6 +1261,7 @@ static const struct test_case g_tests[] = {
     { "glibc_dynamic_linking", test_glibc_dynamic_linking },
 #endif
     { "process_groups_and_signals", test_process_groups_and_signals },
+    { "pty_controlling_terminal", test_pty_controlling_terminal },
 };
 
 int main(int argc, char** argv) {

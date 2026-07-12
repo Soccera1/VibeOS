@@ -1,0 +1,45 @@
+diff --git a/xkb/ddxLoad.c b/xkb/ddxLoad.c
+--- a/xkb/ddxLoad.c
++++ b/xkb/ddxLoad.c
+@@ -142,6 +142,41 @@ RunXkbComp(xkbcomp_buffer_callback callback, void *userdata)
+ 
+     OutputDirectory(xkm_output_dir, sizeof(xkm_output_dir));
+ 
++    /* VibeOS ships a fixed pc105/us map compiled as part of the image.  Keep
++     * server startup single-process and copy it to the normal transient name
++     * so the existing LoadXKM cleanup path remains unchanged. */
++    {
++        const char *precompiled = "/usr/share/X11/xkb/vibeos.xkm";
++        char output[PATH_MAX];
++        FILE *input = fopen(precompiled, "rb");
++        if (input != NULL &&
++            snprintf(output, sizeof(output), "%s%s.xkm", xkm_output_dir,
++                     keymap) < (int) sizeof(output)) {
++            FILE *compiled = fopen(output, "wb");
++            if (compiled != NULL) {
++                char bytes[4096];
++                size_t count;
++                Bool copied = TRUE;
++                while ((count = fread(bytes, 1, sizeof(bytes), input)) != 0) {
++                    if (fwrite(bytes, 1, count, compiled) != count) {
++                        copied = FALSE;
++                        break;
++                    }
++                }
++                if (ferror(input) || fclose(compiled) != 0)
++                    copied = FALSE;
++                fclose(input);
++                if (copied)
++                    return strdup(keymap);
++                unlink(output);
++            }
++            else
++                fclose(input);
++        }
++        else if (input != NULL)
++            fclose(input);
++    }
++
+ #ifdef WIN32
+     strcpy(tmpname, Win32TempDir());
+     strcat(tmpname, "\\xkb_XXXXXX");

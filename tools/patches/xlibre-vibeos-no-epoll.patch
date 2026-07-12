@@ -1,0 +1,12 @@
+--- a/include/meson.build
++++ b/include/meson.build
+@@ -139,7 +139,9 @@ conf_data.set('HAVE_GETRANDOM', cc.has_f
+ conf_data.set('HAVE_BACKTRACE', cc.has_function('backtrace') ? '1' : false)
+ conf_data.set('HAVE_CBRT', cc.has_function('cbrt') ? '1' : false)
+-conf_data.set('HAVE_EPOLL_CREATE1', cc.has_function('epoll_create1',dependencies:epoll_dep, prefix:'#include<sys/epoll.h>') ? '1' : false)
++# VibeOS intentionally uses Xserver's poll backend. Its glibc exports epoll_create1,
++# but the kernel ABI does not implement epoll yet.
++conf_data.set('HAVE_EPOLL_CREATE1', false)
+ conf_data.set('HAVE_GETUID', cc.has_function('getuid') ? '1' : false)
+ conf_data.set('HAVE_GETEUID', cc.has_function('geteuid') ? '1' : false)
+ conf_data.set('HAVE_ISASTREAM', cc.has_function('isastream') ? '1' : false)

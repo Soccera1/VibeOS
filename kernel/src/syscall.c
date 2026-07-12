@@ -9,6 +9,7 @@
 #include "elf_loader.h"
 #include "fs.h"
 #include "input.h"
+#include "input_event.h"
 #include "io.h"
 #include "kmalloc.h"
 #include "net.h"
@@ -45,6 +46,7 @@
 #define O_ACCMODE 3u
 #define O_CREAT 0x40u
 #define O_EXCL 0x80u
+#define O_NOCTTY 0x100u
 #define O_TRUNC 0x200u
 #define O_APPEND 0x400u
 #define O_NONBLOCK 0x800u
@@ -86,6 +88,8 @@
 #define SOCK_TYPE_MASK 0x0Fu
 #define SOCK_NONBLOCK O_NONBLOCK
 #define SOCK_CLOEXEC O_CLOEXEC
+#define SOL_SOCKET 1
+#define SO_PEERCRED 17
 
 #define IPPROTO_IP 0
 #define IPPROTO_ICMP 1
@@ -102,9 +106,13 @@
 #define TIOCGPGRP 0x540Fu
 #define TIOCSPGRP 0x5410u
 #define TIOCGWINSZ 0x5413u
+#define TIOCSWINSZ 0x5414u
 #define FIONREAD 0x541Bu
 #define TIOCSETD 0x5423u
 #define TIOCGETD 0x5424u
+#define TIOCSCTTY 0x540Eu
+#define TIOCGPTN 0x80045430u
+#define TIOCSPTLCK 0x40045431u
 #define FBIOGET_VSCREENINFO 0x4600u
 #define FBIOPUT_VSCREENINFO 0x4601u
 #define FBIOGET_FSCREENINFO 0x4602u
@@ -112,6 +120,24 @@
 #define FBIOPUTCMAP 0x4605u
 #define FBIOPAN_DISPLAY 0x4606u
 #define FBIOBLANK 0x4611u
+
+#define KDSETMODE 0x4B3Au
+#define KDGETMODE 0x4B3Bu
+#define KD_TEXT 0
+#define KD_GRAPHICS 1
+#define KDGKBMODE 0x4B44u
+#define KDSKBMODE 0x4B45u
+#define K_XLATE 1
+#define K_MEDIUMRAW 2
+#define VT_OPENQRY 0x5600u
+#define VT_GETMODE 0x5601u
+#define VT_SETMODE 0x5602u
+#define VT_GETSTATE 0x5603u
+#define VT_RELDISP 0x5605u
+#define VT_ACTIVATE 0x5606u
+#define VT_WAITACTIVE 0x5607u
+#define VT_DISALLOCATE 0x5608u
+#define VT_AUTO 0
 
 #define FB_TYPE_PACKED_PIXELS 0u
 #define FB_VISUAL_TRUECOLOR 2u
@@ -151,6 +177,7 @@
 #define MAP_FIXED_NOREPLACE 0x100000u
 
 #define ENOSYS 38
+#define ENAMETOOLONG 36
 #define EIO 5
 #define ENXIO 6
 #define ENOENT 2
@@ -158,6 +185,7 @@
 #define ECHILD 10
 #define EAGAIN 11
 #define EACCES 13
+#define EBUSY 16
 #define EBADF 9
 #define EFAULT 14
 #define ENOEXEC 8
@@ -314,6 +342,8 @@
 
 #define MAX_PIPES 64
 #define PIPE_CAPACITY 65536
+#define MAX_PTYS 16
+#define PTY_BUFFER_CAPACITY 65536
 #define MAX_UNIX_SOCKETS 128
 #define MAX_UNIX_CONNECTIONS 128
 #define UNIX_SOCKET_BUFFER_CAPACITY 65536
@@ -489,12 +519,6 @@ struct linux_rt_sigframe_vibe {
     uint64_t sig_mask;
 };
 
-struct linux_pollfd {
-    int fd;
-    int16_t events;
-    int16_t revents;
-};
-
 struct linux_stat {
     uint64_t st_dev;
     uint64_t st_ino;
@@ -574,6 +598,9 @@ enum fd_kind {
     FD_DIR,
     FD_NULL,
     FD_FB,
+    FD_INPUT,
+    FD_PTY_MASTER,
+    FD_PTY_SLAVE,
     FD_PIPE_R,
     FD_PIPE_W,
     FD_UNIX,
@@ -587,6 +614,7 @@ struct fd_state {
     size_t offset;
     int pipe_id;
     int socket_id;
+    uint64_t input_open_id;
     struct fs_entry entry;
     char path[FS_MAX_PATH];
 };
@@ -596,6 +624,23 @@ struct pipe_state {
     size_t read_off;
     size_t size;
     uint8_t data[PIPE_CAPACITY];
+};
+
+struct pty_buffer {
+    size_t read_off;
+    size_t size;
+    uint8_t data[PTY_BUFFER_CAPACITY];
+};
+
+struct pty_state {
+    bool used;
+    bool unlocked;
+    int session_id;
+    struct pty_buffer to_master;
+    struct pty_buffer to_slave;
+    struct linux_termios termios;
+    struct linux_winsize winsize;
+    int foreground_pgrp;
 };
 
 enum unix_socket_state_kind {
@@ -648,6 +693,7 @@ struct inet_socket_state {
 };
 
 static struct fd_state g_fds[MAX_FDS];
+static uint64_t g_next_input_open_id = 1u;
 static char g_cwd[128] = "/";
 static uint64_t g_brk_current = VM_USER_BRK_BASE;
 static uint64_t g_mmap_next = VM_USER_MMAP_BASE;
@@ -674,6 +720,7 @@ static uint32_t g_sgid = 0;
 static uint32_t g_fsgid = 0;
 static int g_pending_keyboard_signal;
 static struct pipe_state g_pipes[MAX_PIPES];
+static struct pty_state g_ptys[MAX_PTYS];
 static struct unix_socket_state g_unix_sockets[MAX_UNIX_SOCKETS];
 static struct unix_connection_state g_unix_connections[MAX_UNIX_CONNECTIONS];
 static struct inet_socket_state g_inet_sockets[MAX_INET_SOCKETS];
@@ -692,6 +739,22 @@ static uint16_t g_fb_cmap_red[256];
 static uint16_t g_fb_cmap_green[256];
 static uint16_t g_fb_cmap_blue[256];
 static uint16_t g_fb_cmap_transp[256];
+static uint8_t g_vt_mode;
+static int g_keyboard_mode = K_XLATE;
+
+struct linux_vt_mode {
+    uint8_t mode;
+    uint8_t waitv;
+    int16_t relsig;
+    int16_t acqsig;
+    int16_t frsig;
+};
+
+struct linux_vt_stat {
+    uint16_t active;
+    uint16_t signal;
+    uint16_t state;
+};
 
 struct zombie_info {
     bool valid;
@@ -728,10 +791,13 @@ static int try_complete_wait4(struct process* proc);
 static int try_complete_tty_read(struct process* proc);
 static int try_complete_pipe_read(struct process* proc);
 static int try_complete_pipe_write(struct process* proc);
+static int try_complete_pty_read(struct process* proc);
+static int try_complete_pty_write(struct process* proc);
 static int try_complete_unix_accept(struct process* proc);
 static int try_complete_unix_recv(struct process* proc);
 static int try_complete_unix_send(struct process* proc);
 static int try_complete_select(struct process* proc);
+static int try_complete_poll(struct process* proc);
 static int try_complete_nanosleep(struct process* proc);
 static int try_complete_futex(struct process* proc);
 static bool process_block_ready(const struct process* proc);
@@ -1652,11 +1718,12 @@ static void dirname_of(const char* path, char* out, size_t out_len) {
         return;
     }
 
-    if (slash >= out_len) {
-        slash = out_len - 1;
+    size_t parent_len = slash - 1u;
+    if (parent_len >= out_len) {
+        parent_len = out_len - 1u;
     }
-    memcpy(out, path, slash);
-    out[slash] = '\0';
+    memcpy(out, path, parent_len);
+    out[parent_len] = '\0';
 }
 
 static int resolve_symlinks(const char* abs_in, char* abs_out, size_t out_len, bool follow_final) {
@@ -1823,6 +1890,82 @@ static int alloc_pipe_slot(void) {
         }
     }
     return err(ENOMEM);
+}
+
+static int alloc_pty_slot(void) {
+    for (int i = 0; i < MAX_PTYS; ++i) {
+        if (!g_ptys[i].used) {
+            struct pty_state* pty = &g_ptys[i];
+            memset(pty, 0, sizeof(*pty));
+            pty->used = true;
+            pty->termios = g_tty_termios;
+            pty->winsize.ws_row = 25;
+            pty->winsize.ws_col = 80;
+            pty->foreground_pgrp = g_current_pgid;
+            return i;
+        }
+    }
+    return err(ENOMEM);
+}
+
+static struct pty_buffer* pty_read_buffer(enum fd_kind kind, int pty_id) {
+    if (pty_id < 0 || pty_id >= MAX_PTYS || !g_ptys[pty_id].used) return NULL;
+    return kind == FD_PTY_MASTER ? &g_ptys[pty_id].to_master : &g_ptys[pty_id].to_slave;
+}
+
+static struct pty_buffer* pty_write_buffer(enum fd_kind kind, int pty_id) {
+    if (pty_id < 0 || pty_id >= MAX_PTYS || !g_ptys[pty_id].used) return NULL;
+    return kind == FD_PTY_MASTER ? &g_ptys[pty_id].to_slave : &g_ptys[pty_id].to_master;
+}
+
+static size_t pty_buffer_read(struct pty_buffer* buffer, void* dst, size_t count) {
+    size_t n = count < buffer->size ? count : buffer->size;
+    size_t first = n;
+    if (first > PTY_BUFFER_CAPACITY - buffer->read_off) first = PTY_BUFFER_CAPACITY - buffer->read_off;
+    memcpy(dst, &buffer->data[buffer->read_off], first);
+    if (n > first) memcpy((uint8_t*)dst + first, buffer->data, n - first);
+    buffer->read_off = (buffer->read_off + n) % PTY_BUFFER_CAPACITY;
+    buffer->size -= n;
+    return n;
+}
+
+static size_t pty_buffer_write(struct pty_buffer* buffer, const void* src, size_t count) {
+    size_t available = PTY_BUFFER_CAPACITY - buffer->size;
+    size_t n = count < available ? count : available;
+    size_t offset = (buffer->read_off + buffer->size) % PTY_BUFFER_CAPACITY;
+    size_t first = n;
+    if (first > PTY_BUFFER_CAPACITY - offset) first = PTY_BUFFER_CAPACITY - offset;
+    memcpy(&buffer->data[offset], src, first);
+    if (n > first) memcpy(buffer->data, (const uint8_t*)src + first, n - first);
+    buffer->size += n;
+    return n;
+}
+
+static bool pty_endpoint_in_fd_table(const struct fd_state* fds, int pty_id, enum fd_kind kind) {
+    for (int fd = 0; fd < MAX_FDS; ++fd)
+        if (fds[fd].kind == kind && fds[fd].pipe_id == pty_id) return true;
+    return false;
+}
+
+static bool pty_endpoint_in_process_fd_table(const struct process_fd* fds, int pty_id, enum fd_kind kind) {
+    for (int fd = 0; fd < PROCESS_MAX_FDS; ++fd)
+        if (fds[fd].kind == (int)kind && fds[fd].pipe_id == pty_id) return true;
+    return false;
+}
+
+static bool pty_endpoint_referenced(int pty_id, enum fd_kind kind) {
+    if (pty_endpoint_in_fd_table(g_fds, pty_id, kind)) return true;
+    for (int i = 0; i < MAX_PROCESSES; ++i) {
+        struct process* proc = process_at(i);
+        if (proc == current_process() || !process_holds_pipe_refs(proc)) continue;
+        if (pty_endpoint_in_process_fd_table(proc->fds, pty_id, kind)) return true;
+    }
+    return false;
+}
+
+static bool pty_is_referenced(int pty_id) {
+    return pty_endpoint_referenced(pty_id, FD_PTY_MASTER) ||
+           pty_endpoint_referenced(pty_id, FD_PTY_SLAVE);
 }
 
 static bool unix_socket_is_referenced_in_fd_table(const struct fd_state* fds, int socket_id) {
@@ -2162,6 +2305,41 @@ static void inet_socket_cleanup_if_unreferenced(int socket_id) {
     memset(&g_inet_sockets[socket_id], 0, sizeof(g_inet_sockets[socket_id]));
 }
 
+static bool input_open_id_in_fd_table(const struct fd_state* fds, uint64_t open_id) {
+    for (int fd = 0; fd < MAX_FDS; ++fd) {
+        if (fds[fd].kind == FD_INPUT && fds[fd].input_open_id == open_id) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool input_open_id_in_process_fd_table(const struct process_fd* fds, uint64_t open_id) {
+    for (int fd = 0; fd < PROCESS_MAX_FDS; ++fd) {
+        if (fds[fd].kind == FD_INPUT && fds[fd].input_open_id == open_id) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool input_open_id_is_referenced(uint64_t open_id, const struct process* excluded,
+                                        bool include_current_fds) {
+    if (include_current_fds && input_open_id_in_fd_table(g_fds, open_id)) {
+        return true;
+    }
+    for (int i = 0; i < MAX_PROCESSES; ++i) {
+        struct process* proc = process_at(i);
+        if (proc == excluded || proc == current_process() || !process_holds_pipe_refs(proc)) {
+            continue;
+        }
+        if (input_open_id_in_process_fd_table(proc->fds, open_id)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void release_process_fds(struct process* proc) {
     if (proc == NULL) {
         return;
@@ -2173,7 +2351,24 @@ static void release_process_fds(struct process* proc) {
     size_t socket_count = 0;
     int inet_socket_ids[PROCESS_MAX_FDS];
     size_t inet_socket_count = 0;
+    uint64_t input_open_ids[PROCESS_MAX_FDS];
+    int input_devices[PROCESS_MAX_FDS];
+    size_t input_open_count = 0;
     for (int fd = 0; fd < PROCESS_MAX_FDS; ++fd) {
+        if (proc->fds[fd].kind == FD_INPUT && proc->fds[fd].input_open_id != 0u) {
+            uint64_t open_id = proc->fds[fd].input_open_id;
+            bool seen = false;
+            for (size_t i = 0; i < input_open_count; ++i) {
+                if (input_open_ids[i] == open_id) {
+                    seen = true;
+                    break;
+                }
+            }
+            if (!seen && input_open_count < ARRAY_LEN(input_open_ids)) {
+                input_open_ids[input_open_count] = open_id;
+                input_devices[input_open_count++] = proc->fds[fd].pipe_id;
+            }
+        }
         if ((proc->fds[fd].kind == FD_PIPE_R || proc->fds[fd].kind == FD_PIPE_W) && proc->fds[fd].pipe_id >= 0) {
             int pipe_id = proc->fds[fd].pipe_id;
             bool seen = false;
@@ -2230,6 +2425,11 @@ static void release_process_fds(struct process* proc) {
     for (size_t i = 0; i < inet_socket_count; ++i) {
         inet_socket_cleanup_if_unreferenced(inet_socket_ids[i]);
     }
+    for (size_t i = 0; i < input_open_count; ++i) {
+        if (!input_open_id_is_referenced(input_open_ids[i], proc, proc != current_process())) {
+            input_event_ungrab((enum input_event_device)input_devices[i], input_open_ids[i]);
+        }
+    }
 }
 
 static void close_cloexec_fds(void) {
@@ -2256,11 +2456,36 @@ static bool is_special_dir(const char* path) {
     return (strcmp(path, "/") == 0) || (strcmp(path, "/dev") == 0) || (strcmp(path, "/proc") == 0) ||
            (strcmp(path, "/sys") == 0) || (strcmp(path, "/tmp") == 0) || (strcmp(path, "/bin") == 0) ||
            (strcmp(path, "/usr") == 0) || (strcmp(path, "/usr/bin") == 0) || (strcmp(path, "/etc") == 0) ||
-           (strcmp(path, "/var") == 0) || (strcmp(path, "/home") == 0);
+           (strcmp(path, "/var") == 0) || (strcmp(path, "/home") == 0) || (strcmp(path, "/dev/input") == 0) ||
+           (strcmp(path, "/dev/pts") == 0);
 }
 
 static bool is_tty_path(const char* path) {
-    return (strcmp(path, "/dev/tty") == 0) || (strcmp(path, "/dev/console") == 0);
+    return (strcmp(path, "/dev/tty") == 0) || (strcmp(path, "/dev/console") == 0) ||
+           (strcmp(path, "/dev/tty0") == 0) || (strcmp(path, "/dev/tty1") == 0);
+}
+
+static int pty_slave_for_path(const char* path) {
+    const char prefix[] = "/dev/pts/";
+    if (strncmp(path, prefix, sizeof(prefix) - 1u) != 0) return -1;
+    const char* number = path + sizeof(prefix) - 1u;
+    if (*number < '0' || *number > '9') return -1;
+    unsigned value = 0;
+    while (*number >= '0' && *number <= '9') {
+        value = value * 10u + (unsigned)(*number++ - '0');
+        if (value >= MAX_PTYS) return -1;
+    }
+    return *number == '\0' ? (int)value : -1;
+}
+
+static bool is_ptmx_path(const char* path) {
+    return strcmp(path, "/dev/ptmx") == 0;
+}
+
+static int input_device_for_path(const char* path) {
+    if (strcmp(path, "/dev/input/event0") == 0) return INPUT_EVENT_POINTER;
+    if (strcmp(path, "/dev/input/event1") == 0) return INPUT_EVENT_KEYBOARD;
+    return -1;
 }
 
 static bool is_fb_path(const char* path) {
@@ -2624,7 +2849,20 @@ static int resolve_unix_socket_address(const void* addr, uint32_t addrlen, char*
     raw[raw_len] = '\0';
 
     if (raw[0] == '\0') {
-        return err(EADDRNOTAVAIL);
+        if (raw_len <= 1u || out_len < 2u) {
+            return err(EDESTADDRREQ);
+        }
+        size_t name_len = raw_len - 1u;
+        while (name_len > 0u && raw[name_len] == '\0') {
+            --name_len;
+        }
+        if (name_len + 2u > out_len) {
+            return err(ENAMETOOLONG);
+        }
+        out[0] = '@';
+        memcpy(out + 1, raw + 1, name_len);
+        out[name_len + 1u] = '\0';
+        return 0;
     }
 
     return make_absolute_path(AT_FDCWD, raw, out, out_len);
@@ -2669,6 +2907,18 @@ static bool path_has_child(const char* dir) {
 static int path_mode_size(const char* path, uint32_t* mode_out, size_t* size_out, struct fs_entry* entry_out) {
     struct fs_entry e;
 
+    int pty_id = pty_slave_for_path(path);
+    if (is_ptmx_path(path) || (pty_id >= 0 && g_ptys[pty_id].used && g_ptys[pty_id].unlocked)) {
+        if (mode_out != NULL) *mode_out = S_IFCHR | 0666u;
+        if (size_out != NULL) *size_out = 0;
+        if (entry_out != NULL) {
+            memset(entry_out, 0, sizeof(*entry_out));
+            strncpy(entry_out->path, path, sizeof(entry_out->path));
+            entry_out->mode = S_IFCHR | 0666u;
+        }
+        return 0;
+    }
+
     if (is_tty_path(path)) {
         if (mode_out != NULL) {
             *mode_out = S_IFCHR | 0666u;
@@ -2682,6 +2932,17 @@ static int path_mode_size(const char* path, uint32_t* mode_out, size_t* size_out
             entry_out->mode = S_IFCHR | 0666u;
             entry_out->uid = 0;
             entry_out->gid = 0;
+        }
+        return 0;
+    }
+
+    if (input_device_for_path(path) >= 0) {
+        if (mode_out != NULL) *mode_out = S_IFCHR | 0660u;
+        if (size_out != NULL) *size_out = 0;
+        if (entry_out != NULL) {
+            memset(entry_out, 0, sizeof(*entry_out));
+            strncpy(entry_out->path, path, sizeof(entry_out->path));
+            entry_out->mode = S_IFCHR | 0660u;
         }
         return 0;
     }
@@ -2840,7 +3101,7 @@ static size_t collect_children(const char* dir, char names[MAX_CHILDREN][64], ui
     count += collect_bound_unix_socket_children(dir, names, types, count);
 
     if (strcmp(dir, "/dev") == 0) {
-        const char* dev_nodes[] = {"tty", "console", "null", "fb0"};
+        const char* dev_nodes[] = {"tty", "tty0", "tty1", "console", "null", "fb0", "input", "ptmx", "pts"};
         for (size_t i = 0; i < ARRAY_LEN(dev_nodes) && count < MAX_CHILDREN; ++i) {
             if (strcmp(dev_nodes[i], "fb0") == 0) {
                 struct console_framebuffer_info fb;
@@ -2852,6 +3113,35 @@ static size_t collect_children(const char* dir, char names[MAX_CHILDREN][64], ui
                 continue;
             }
             strncpy(names[count], dev_nodes[i], 64);
+            names[count][63] = '\0';
+            types[count] = (strcmp(dev_nodes[i], "input") == 0 || strcmp(dev_nodes[i], "pts") == 0) ? DT_DIR : DT_CHR;
+            ++count;
+        }
+    }
+    if (strcmp(dir, "/dev/input") == 0) {
+        const char* input_nodes[] = {"event0", "event1"};
+        for (size_t i = 0; i < ARRAY_LEN(input_nodes) && count < MAX_CHILDREN; ++i) {
+            strncpy(names[count], input_nodes[i], 64);
+            names[count][63] = '\0';
+            types[count] = DT_CHR;
+            ++count;
+        }
+    }
+    if (strcmp(dir, "/dev/pts") == 0) {
+        for (int i = 0; i < MAX_PTYS && count < MAX_CHILDREN; ++i) {
+            if (!g_ptys[i].used || !g_ptys[i].unlocked) continue;
+            char name[16];
+            unsigned value = (unsigned)i;
+            size_t digits = 0;
+            do {
+                name[digits++] = (char)('0' + value % 10u);
+                value /= 10u;
+            } while (value != 0u);
+            for (size_t a = 0, b = digits - 1u; a < b; ++a, --b) {
+                char tmp = name[a]; name[a] = name[b]; name[b] = tmp;
+            }
+            name[digits] = '\0';
+            strncpy(names[count], name, 64);
             names[count][63] = '\0';
             types[count] = DT_CHR;
             ++count;
@@ -3004,6 +3294,44 @@ static int sys_openat(int dirfd, const char* path_user, uint32_t flags, uint32_t
         return r;
     }
 
+    if (is_ptmx_path(path)) {
+        int pty_id = alloc_pty_slot();
+        if (pty_id < 0) return pty_id;
+        int fd = alloc_fd();
+        if (fd < 0) {
+            memset(&g_ptys[pty_id], 0, sizeof(g_ptys[pty_id]));
+            return fd;
+        }
+        g_fds[fd].kind = FD_PTY_MASTER;
+        g_fds[fd].flags = flags;
+        g_fds[fd].fd_flags = (flags & O_CLOEXEC) != 0u ? FD_CLOEXEC : 0u;
+        g_fds[fd].pipe_id = pty_id;
+        g_fds[fd].socket_id = -1;
+        strncpy(g_fds[fd].path, path, sizeof(g_fds[fd].path));
+        sync_current_process_runtime();
+        return fd;
+    }
+
+    int pty_id = pty_slave_for_path(path);
+    if (pty_id >= 0) {
+        if (!g_ptys[pty_id].used || !g_ptys[pty_id].unlocked) return err(ENOENT);
+        int fd = alloc_fd();
+        if (fd < 0) return fd;
+        g_fds[fd].kind = FD_PTY_SLAVE;
+        g_fds[fd].flags = flags;
+        g_fds[fd].fd_flags = (flags & O_CLOEXEC) != 0u ? FD_CLOEXEC : 0u;
+        g_fds[fd].pipe_id = pty_id;
+        g_fds[fd].socket_id = -1;
+        strncpy(g_fds[fd].path, path, sizeof(g_fds[fd].path));
+        struct pty_state* pty = &g_ptys[pty_id];
+        if ((flags & O_NOCTTY) == 0u && pty->session_id == 0 && g_current_pid == g_current_sid) {
+            pty->session_id = g_current_sid;
+            pty->foreground_pgrp = g_current_pgid;
+        }
+        sync_current_process_runtime();
+        return fd;
+    }
+
     if (is_tty_path(path)) {
         int fd = alloc_fd();
         if (fd < 0) {
@@ -3031,6 +3359,23 @@ static int sys_openat(int dirfd, const char* path_user, uint32_t flags, uint32_t
         g_fds[fd].offset = 0;
         g_fds[fd].pipe_id = -1;
         g_fds[fd].socket_id = -1;
+        strncpy(g_fds[fd].path, path, sizeof(g_fds[fd].path));
+        sync_current_process_runtime();
+        return fd;
+    }
+
+    int input_device = input_device_for_path(path);
+    if (input_device >= 0) {
+        int fd = alloc_fd();
+        if (fd < 0) return fd;
+        g_fds[fd].kind = FD_INPUT;
+        g_fds[fd].flags = flags;
+        g_fds[fd].fd_flags = (flags & O_CLOEXEC) != 0u ? FD_CLOEXEC : 0u;
+        g_fds[fd].offset = 0;
+        g_fds[fd].pipe_id = input_device;
+        g_fds[fd].socket_id = -1;
+        g_fds[fd].input_open_id = g_next_input_open_id++;
+        if (g_next_input_open_id == 0u) g_next_input_open_id = 1u;
         strncpy(g_fds[fd].path, path, sizeof(g_fds[fd].path));
         sync_current_process_runtime();
         return fd;
@@ -3162,6 +3507,7 @@ static int sys_close(int fd) {
     enum fd_kind kind = g_fds[fd].kind;
     int pipe_id = g_fds[fd].pipe_id;
     int socket_id = g_fds[fd].socket_id;
+    uint64_t input_open_id = g_fds[fd].input_open_id;
     memset(&g_fds[fd], 0, sizeof(g_fds[fd]));
     g_fds[fd].pipe_id = -1;
     g_fds[fd].socket_id = -1;
@@ -3170,11 +3516,18 @@ static int sys_close(int fd) {
         !pipe_is_referenced(pipe_id)) {
         memset(&g_pipes[pipe_id], 0, sizeof(g_pipes[pipe_id]));
     }
+    if ((kind == FD_PTY_MASTER || kind == FD_PTY_SLAVE) && pipe_id >= 0 && pipe_id < MAX_PTYS &&
+        g_ptys[pipe_id].used && !pty_is_referenced(pipe_id)) {
+        memset(&g_ptys[pipe_id], 0, sizeof(g_ptys[pipe_id]));
+    }
     if (kind == FD_UNIX) {
         unix_socket_cleanup_if_unreferenced(socket_id);
     }
     if (kind == FD_INET) {
         inet_socket_cleanup_if_unreferenced(socket_id);
+    }
+    if (kind == FD_INPUT && !input_open_id_is_referenced(input_open_id, current_process(), true)) {
+        input_event_ungrab((enum input_event_device)pipe_id, input_open_id);
     }
     sync_current_process_runtime();
     return 0;
@@ -3294,6 +3647,9 @@ static int unix_stream_recv_fd(int fd, void* buf, size_t count, struct syscall_f
         if (fd_is_nonblocking(fd)) {
             return err(EAGAIN);
         }
+        if (frame == NULL) {
+            return err(EAGAIN);
+        }
         if (frame != NULL && has_other_runnable_process(current_process())) {
             struct process* proc = current_process();
             int sr = save_live_process(proc, frame);
@@ -3343,6 +3699,9 @@ static int unix_stream_send_fd(int fd, const void* buf, size_t count, struct sys
             return err(EPIPE);
         }
         if (fd_is_nonblocking(fd)) {
+            return err(EAGAIN);
+        }
+        if (frame == NULL) {
             return err(EAGAIN);
         }
         if (frame != NULL && has_other_runnable_process(current_process())) {
@@ -3447,6 +3806,39 @@ static int sys_read(int fd, void* buf, size_t count, struct syscall_frame* frame
 
     if (g_fds[fd].kind == FD_NULL) {
         return 0;
+    }
+
+    if (g_fds[fd].kind == FD_INPUT) {
+        size_t capacity = count / sizeof(struct linux_input_event);
+        if (capacity == 0u) return err(EINVAL);
+        size_t n = input_event_read((enum input_event_device)g_fds[fd].pipe_id,
+                                    (struct linux_input_event*)buf, capacity);
+        return n == 0u ? err(EAGAIN) : (int)(n * sizeof(struct linux_input_event));
+    }
+
+    if (g_fds[fd].kind == FD_PTY_MASTER || g_fds[fd].kind == FD_PTY_SLAVE) {
+        enum fd_kind kind = g_fds[fd].kind;
+        int pty_id = g_fds[fd].pipe_id;
+        struct pty_buffer* input = pty_read_buffer(kind, pty_id);
+        if (input == NULL) return err(EIO);
+        if (input->size == 0u) {
+            enum fd_kind peer = kind == FD_PTY_MASTER ? FD_PTY_SLAVE : FD_PTY_MASTER;
+            if (!pty_endpoint_referenced(pty_id, peer)) return 0;
+            if (fd_is_nonblocking(fd) || frame == NULL) return err(EAGAIN);
+            if (has_other_runnable_process(current_process())) {
+                struct process* proc = current_process();
+                int sr = save_live_process(proc, frame);
+                if (sr != 0) return sr;
+                proc->state = PROCESS_BLOCKED;
+                proc->wait.reason = PROCESS_WAIT_PTY_READ;
+                proc->wait.fd = fd;
+                proc->wait.ptr0 = (uint64_t)(uintptr_t)buf;
+                proc->wait.ptr1 = count;
+                return (int)schedule_away(frame);
+            }
+            return err(EAGAIN);
+        }
+        return (int)pty_buffer_read(input, buf, count);
     }
 
     if (g_fds[fd].kind == FD_FB) {
@@ -3558,6 +3950,36 @@ static int sys_write(int fd, const void* buf, size_t count, struct syscall_frame
 
     if (g_fds[fd].kind == FD_NULL) {
         return (int)count;
+    }
+
+    if (g_fds[fd].kind == FD_INPUT) {
+        /* XKB writes EV_LED updates back to evdev keyboard devices. */
+        return (int)count;
+    }
+
+    if (g_fds[fd].kind == FD_PTY_MASTER || g_fds[fd].kind == FD_PTY_SLAVE) {
+        enum fd_kind kind = g_fds[fd].kind;
+        int pty_id = g_fds[fd].pipe_id;
+        enum fd_kind peer = kind == FD_PTY_MASTER ? FD_PTY_SLAVE : FD_PTY_MASTER;
+        if (!pty_endpoint_referenced(pty_id, peer)) return err(EIO);
+        struct pty_buffer* output = pty_write_buffer(kind, pty_id);
+        if (output == NULL) return err(EIO);
+        if (output->size == PTY_BUFFER_CAPACITY) {
+            if (fd_is_nonblocking(fd) || frame == NULL) return err(EAGAIN);
+            if (has_other_runnable_process(current_process())) {
+                struct process* proc = current_process();
+                int sr = save_live_process(proc, frame);
+                if (sr != 0) return sr;
+                proc->state = PROCESS_BLOCKED;
+                proc->wait.reason = PROCESS_WAIT_PTY_WRITE;
+                proc->wait.fd = fd;
+                proc->wait.ptr0 = (uint64_t)(uintptr_t)buf;
+                proc->wait.ptr1 = count;
+                return (int)schedule_away(frame);
+            }
+            return err(EAGAIN);
+        }
+        return (int)pty_buffer_write(output, buf, count);
     }
 
     if (g_fds[fd].kind == FD_PIPE_W) {
@@ -3950,6 +4372,110 @@ static int sys_ioctl(int fd, uint64_t req, void* argp) {
         return err(EBADF);
     }
 
+    /* Linux ioctl command encodings are 32-bit.  musl declares the request
+     * argument as int, so commands with the direction bit set arrive sign-
+     * extended through the syscall ABI. */
+    req = (uint32_t)req;
+
+    if (g_fds[fd].kind == FD_INPUT) {
+        enum input_event_device device = (enum input_event_device)g_fds[fd].pipe_id;
+        unsigned type = (unsigned)((req >> 8) & 0xffu);
+        unsigned nr = (unsigned)(req & 0xffu);
+        size_t size = (size_t)((req >> 16) & 0x3fffu);
+        if (type != 'E') return err(ENOTTY);
+        if (nr == 0x90u) {
+            uint64_t owner = g_fds[fd].input_open_id;
+            if ((uintptr_t)argp != 0u) {
+                if (!input_event_grab(device, owner)) return err(EBUSY);
+            } else {
+                input_event_ungrab(device, owner);
+            }
+            return 0;
+        }
+        if (nr >= 0x20u && nr <= 0x3fu) {
+            if (argp == NULL) return err(EFAULT);
+            uint8_t* bits = kmalloc(size == 0u ? 1u : size);
+            if (bits == NULL) return err(ENOMEM);
+            memset(bits, 0, size);
+            unsigned event_type = nr - 0x20u;
+#define SET_INPUT_BIT(bit) do { if ((size_t)((bit) / 8u) < size) bits[(bit) / 8u] |= (uint8_t)(1u << ((bit) % 8u)); } while (0)
+            if (event_type == 0u) {
+                SET_INPUT_BIT(0u);
+                SET_INPUT_BIT(1u);
+                if (device == INPUT_EVENT_POINTER) SET_INPUT_BIT(2u);
+            } else if (event_type == 1u) {
+                if (device == INPUT_EVENT_POINTER) {
+                    SET_INPUT_BIT(0x110u);
+                    SET_INPUT_BIT(0x111u);
+                    SET_INPUT_BIT(0x112u);
+                } else {
+                    for (unsigned key = 1u; key <= 127u; ++key) SET_INPUT_BIT(key);
+                }
+            } else if (event_type == 2u && device == INPUT_EVENT_POINTER) {
+                SET_INPUT_BIT(0u);
+                SET_INPUT_BIT(1u);
+            }
+#undef SET_INPUT_BIT
+            int r = copy_to_user(argp, bits, size);
+            kfree(bits);
+            return r;
+        }
+        return err(ENOTTY);
+    }
+
+    if (g_fds[fd].kind == FD_PTY_MASTER || g_fds[fd].kind == FD_PTY_SLAVE) {
+        int pty_id = g_fds[fd].pipe_id;
+        if (pty_id < 0 || pty_id >= MAX_PTYS || !g_ptys[pty_id].used) return err(EIO);
+        struct pty_state* pty = &g_ptys[pty_id];
+        if (req == TIOCGPTN && g_fds[fd].kind == FD_PTY_MASTER)
+            return argp == NULL ? err(EFAULT) : copy_to_user(argp, &pty_id, sizeof(pty_id));
+        if (req == TIOCSPTLCK && g_fds[fd].kind == FD_PTY_MASTER) {
+            int locked = 0;
+            int r = argp == NULL ? err(EFAULT) : copy_from_user(&locked, argp, sizeof(locked));
+            if (r == 0) pty->unlocked = locked == 0;
+            return r;
+        }
+        if (req == TCGETS)
+            return argp == NULL ? err(EFAULT) : copy_to_user(argp, &pty->termios, sizeof(pty->termios));
+        if (req == TCSETS || req == TCSETSW || req == TCSETSF)
+            return argp == NULL ? err(EFAULT) : copy_from_user(&pty->termios, argp, sizeof(pty->termios));
+        if (req == TIOCGWINSZ)
+            return argp == NULL ? err(EFAULT) : copy_to_user(argp, &pty->winsize, sizeof(pty->winsize));
+        if (req == TIOCSWINSZ)
+            return argp == NULL ? err(EFAULT) : copy_from_user(&pty->winsize, argp, sizeof(pty->winsize));
+        if (req == TIOCGPGRP)
+            return argp == NULL ? err(EFAULT) : copy_to_user(argp, &pty->foreground_pgrp, sizeof(pty->foreground_pgrp));
+        if (req == TIOCSPGRP) {
+            int pgid = 0;
+            int r = argp == NULL ? err(EFAULT) : copy_from_user(&pgid, argp, sizeof(pgid));
+            if (r == 0) pty->foreground_pgrp = pgid;
+            return r;
+        }
+        if (req == TIOCSCTTY) {
+            /*
+             * Acquiring a controlling terminal also makes the caller's
+             * process group the terminal's foreground process group.  xterm
+             * allocates the PTY before its child creates a new session, so
+             * retaining the allocator's group here makes bash believe it was
+             * started in the background.
+             */
+            pty->session_id = g_current_sid;
+            pty->foreground_pgrp = g_current_pgid;
+            return 0;
+        }
+        if (req == TIOCGETD) {
+            int ldisc = N_TTY;
+            return argp == NULL ? err(EFAULT) : copy_to_user(argp, &ldisc, sizeof(ldisc));
+        }
+        if (req == TIOCSETD) return 0;
+        if (req == FIONREAD) {
+            struct pty_buffer* input = pty_read_buffer(g_fds[fd].kind, pty_id);
+            int pending = input == NULL ? 0 : (int)input->size;
+            return argp == NULL ? err(EFAULT) : copy_to_user(argp, &pending, sizeof(pending));
+        }
+        return err(ENOTTY);
+    }
+
     if (g_fds[fd].kind == FD_FB) {
         struct console_framebuffer_info fb;
         if (!get_fb_info(&fb)) {
@@ -4111,6 +4637,43 @@ static int sys_ioctl(int fd, uint64_t req, void* argp) {
 
     if (g_fds[fd].kind != FD_TTY) {
         return err(ENOTTY);
+    }
+
+    if (req == VT_OPENQRY) {
+        int vt = 1;
+        return argp == NULL ? err(EFAULT) : copy_to_user(argp, &vt, sizeof(vt));
+    }
+    if (req == VT_GETMODE) {
+        struct linux_vt_mode mode = {.mode = g_vt_mode};
+        return argp == NULL ? err(EFAULT) : copy_to_user(argp, &mode, sizeof(mode));
+    }
+    if (req == VT_SETMODE) {
+        struct linux_vt_mode mode;
+        int r = argp == NULL ? err(EFAULT) : copy_from_user(&mode, argp, sizeof(mode));
+        if (r == 0) g_vt_mode = mode.mode;
+        return r;
+    }
+    if (req == VT_GETSTATE) {
+        struct linux_vt_stat state = {.active = 1, .state = 2};
+        return argp == NULL ? err(EFAULT) : copy_to_user(argp, &state, sizeof(state));
+    }
+    if (req == VT_ACTIVATE || req == VT_WAITACTIVE || req == VT_RELDISP || req == VT_DISALLOCATE) return 0;
+    if (req == KDSETMODE) {
+        int mode = (int)(uintptr_t)argp;
+        if (mode != KD_TEXT && mode != KD_GRAPHICS) return err(EINVAL);
+        console_set_graphics_mode(mode == KD_GRAPHICS);
+        return 0;
+    }
+    if (req == KDGETMODE) {
+        int mode = console_graphics_mode() ? KD_GRAPHICS : KD_TEXT;
+        return argp == NULL ? err(EFAULT) : copy_to_user(argp, &mode, sizeof(mode));
+    }
+    if (req == KDGKBMODE) return argp == NULL ? err(EFAULT) : copy_to_user(argp, &g_keyboard_mode, sizeof(g_keyboard_mode));
+    if (req == KDSKBMODE) {
+        int mode = (int)(uintptr_t)argp;
+        if (mode != K_XLATE && mode != K_MEDIUMRAW) return err(EINVAL);
+        g_keyboard_mode = mode;
+        return 0;
     }
 
     if (req == TCGETS) {
@@ -4671,17 +5234,20 @@ static int sys_bind(int fd, const void* addr, uint32_t addrlen) {
         return rr;
     }
 
-    char parent[FS_MAX_PATH];
-    dirname_of(path, parent, sizeof(parent));
-    uint32_t parent_mode = 0;
-    int pr = path_mode_size(parent, &parent_mode, NULL, NULL);
-    if (pr != 0) {
-        return pr;
+    bool abstract = path[0] == '@';
+    if (!abstract) {
+        char parent[FS_MAX_PATH];
+        dirname_of(path, parent, sizeof(parent));
+        uint32_t parent_mode = 0;
+        int pr = path_mode_size(parent, &parent_mode, NULL, NULL);
+        if (pr != 0) {
+            return pr;
+        }
+        if ((parent_mode & S_IFMT) != S_IFDIR) {
+            return err(ENOTDIR);
+        }
     }
-    if ((parent_mode & S_IFMT) != S_IFDIR) {
-        return err(ENOTDIR);
-    }
-    if (find_bound_unix_socket_by_path(path) >= 0 || path_mode_size(path, NULL, NULL, NULL) == 0) {
+    if (find_bound_unix_socket_by_path(path) >= 0 || (!abstract && path_mode_size(path, NULL, NULL, NULL) == 0)) {
         return err(EADDRINUSE);
     }
 
@@ -5064,6 +5630,12 @@ static int sys_sendto(int fd, const void* buf, size_t count, int flags, const vo
     if (addr != NULL && addrlen != 0u) {
         return err(EISCONN);
     }
+    if ((flags & MSG_DONTWAIT) != 0) {
+        int socket_id = g_fds[fd].socket_id;
+        if (!unix_socket_write_ready(socket_id)) {
+            return err(EAGAIN);
+        }
+    }
     return unix_stream_send_fd(fd, buf, count, frame);
 }
 
@@ -5172,6 +5744,12 @@ static int sys_recvfrom(int fd, void* buf, size_t count, int flags, void* addr, 
         return err(EFAULT);
     }
 
+    if ((flags & MSG_DONTWAIT) != 0) {
+        int socket_id = g_fds[fd].socket_id;
+        if (!unix_socket_read_ready(socket_id)) {
+            return err(EAGAIN);
+        }
+    }
     int r = unix_stream_recv_fd(fd, buf, count, frame);
     if (r < 0 || addr == NULL) {
         return r;
@@ -5237,7 +5815,8 @@ static int sys_sendmsg(int fd, const struct linux_msghdr* msg, int flags, struct
             kfree(iov);
             return err(EFAULT);
         }
-        int n = sys_sendto(fd, base, len, flags, msg_local.msg_name, msg_local.msg_namelen, frame);
+        int io_flags = total > 0 ? flags | MSG_DONTWAIT : flags;
+        int n = sys_sendto(fd, base, len, io_flags, msg_local.msg_name, msg_local.msg_namelen, frame);
         if (n < 0) {
             kfree(iov);
             return total > 0 ? total : n;
@@ -5322,7 +5901,8 @@ static int sys_recvmsg(int fd, struct linux_msghdr* msg, int flags, struct sysca
             kfree(iov);
             return err(EFAULT);
         }
-        int n = sys_recvfrom(fd, base, len, flags, msg_local.msg_name, msg_local.msg_name != NULL ? &addrlen : NULL, frame);
+        int io_flags = total > 0 ? flags | MSG_DONTWAIT : flags;
+        int n = sys_recvfrom(fd, base, len, io_flags, msg_local.msg_name, msg_local.msg_name != NULL ? &addrlen : NULL, frame);
         if (n < 0) {
             kfree(iov);
             return total > 0 ? total : n;
@@ -5358,8 +5938,6 @@ static int sys_setsockopt(int fd, int level, int optname, const void* optval, ui
 }
 
 static int sys_getsockopt(int fd, int level, int optname, void* optval, uint32_t* optlen) {
-    (void)level;
-    (void)optname;
     if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
         return err(EBADF);
     }
@@ -5368,6 +5946,17 @@ static int sys_getsockopt(int fd, int level, int optname, void* optval, uint32_t
     }
     if (optval == NULL || optlen == NULL) {
         return err(EFAULT);
+    }
+    if (level == SOL_SOCKET && optname == SO_PEERCRED && g_fds[fd].kind == FD_UNIX) {
+        struct {
+            int32_t pid;
+            uint32_t uid;
+            uint32_t gid;
+        } credentials = {.pid = g_current_pid, .uid = g_uid, .gid = g_gid};
+        uint32_t n = *optlen < sizeof(credentials) ? *optlen : (uint32_t)sizeof(credentials);
+        memcpy(optval, &credentials, n);
+        *optlen = sizeof(credentials);
+        return 0;
     }
     if (*optlen >= sizeof(int)) {
         *(int*)optval = 0;
@@ -5391,8 +5980,14 @@ static int sys_chdir(const char* path_user) {
         return err(EINVAL);
     }
 
+    char absolute[128];
+    int r = make_absolute_path(AT_FDCWD, path_input, absolute, sizeof(absolute));
+    if (r != 0) {
+        return r;
+    }
+
     char path[128];
-    int r = make_absolute_path(AT_FDCWD, path_input, path, sizeof(path));
+    r = resolve_symlinks(absolute, path, sizeof(path), true);
     if (r != 0) {
         return r;
     }
@@ -5412,16 +6007,20 @@ static int sys_chdir(const char* path_user) {
     return 0;
 }
 
-static uint16_t poll_revents_for_fd(const struct linux_pollfd* pfd) {
+static uint16_t poll_revents_for_process_fd(const struct linux_pollfd* pfd, const struct process* process) {
     int fd = pfd->fd;
     uint16_t events = (uint16_t)pfd->events;
     uint16_t revents = 0;
 
-    if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
+    if (fd < 0 || fd >= MAX_FDS) {
         return POLLNVAL;
     }
+    int kind = (process == NULL) ? (int)g_fds[fd].kind : process->fds[fd].kind;
+    int pipe_id = (process == NULL) ? g_fds[fd].pipe_id : process->fds[fd].pipe_id;
+    int socket_id = (process == NULL) ? g_fds[fd].socket_id : process->fds[fd].socket_id;
+    if (kind == FD_FREE) return POLLNVAL;
 
-    switch (g_fds[fd].kind) {
+    switch (kind) {
         case FD_TTY:
             if ((events & (POLLIN | POLLPRI)) != 0u && tty_input_ready()) {
                 revents |= POLLIN;
@@ -5446,9 +6045,30 @@ static uint16_t poll_revents_for_fd(const struct linux_pollfd* pfd) {
             }
             break;
 
+        case FD_INPUT:
+            if ((events & (POLLIN | POLLPRI)) != 0u &&
+                input_event_ready((enum input_event_device)pipe_id)) revents |= POLLIN;
+            if ((events & POLLOUT) != 0u) revents |= POLLOUT;
+            break;
+
+        case FD_PTY_MASTER:
+        case FD_PTY_SLAVE:
+        {
+            struct pty_buffer* input = pty_read_buffer((enum fd_kind)kind, pipe_id);
+            struct pty_buffer* output = pty_write_buffer((enum fd_kind)kind, pipe_id);
+            if (input == NULL || output == NULL) {
+                revents |= POLLNVAL;
+                break;
+            }
+            if ((events & (POLLIN | POLLPRI)) != 0u && input->size != 0u) revents |= POLLIN;
+            enum fd_kind peer = kind == FD_PTY_MASTER ? FD_PTY_SLAVE : FD_PTY_MASTER;
+            if (input->size == 0u && !pty_endpoint_referenced(pipe_id, peer)) revents |= POLLHUP;
+            if ((events & POLLOUT) != 0u && output->size < PTY_BUFFER_CAPACITY) revents |= POLLOUT;
+            break;
+        }
+
         case FD_PIPE_R:
         {
-            int pipe_id = g_fds[fd].pipe_id;
             if (pipe_id >= 0 && pipe_id < MAX_PIPES && g_pipes[pipe_id].used) {
                 if ((events & POLLIN) != 0u && g_pipes[pipe_id].size > 0) {
                     revents |= POLLIN;
@@ -5464,7 +6084,6 @@ static uint16_t poll_revents_for_fd(const struct linux_pollfd* pfd) {
 
         case FD_PIPE_W:
         {
-            int pipe_id = g_fds[fd].pipe_id;
             if (pipe_id >= 0 && pipe_id < MAX_PIPES && g_pipes[pipe_id].used) {
                 if (!pipe_has_reader(pipe_id)) {
                     revents |= POLLERR;
@@ -5479,7 +6098,6 @@ static uint16_t poll_revents_for_fd(const struct linux_pollfd* pfd) {
 
         case FD_UNIX:
         {
-            int socket_id = g_fds[fd].socket_id;
             if (socket_id < 0 || socket_id >= MAX_UNIX_SOCKETS || !g_unix_sockets[socket_id].used) {
                 revents |= POLLNVAL;
                 break;
@@ -5519,7 +6137,6 @@ static uint16_t poll_revents_for_fd(const struct linux_pollfd* pfd) {
         case FD_INET:
         {
             net_poll();
-            int socket_id = g_fds[fd].socket_id;
             if (socket_id < 0 || socket_id >= MAX_INET_SOCKETS || !g_inet_sockets[socket_id].used) {
                 revents |= POLLNVAL;
                 break;
@@ -5571,6 +6188,10 @@ static uint16_t poll_revents_for_fd(const struct linux_pollfd* pfd) {
     return revents;
 }
 
+static uint16_t poll_revents_for_fd(const struct linux_pollfd* pfd) {
+    return poll_revents_for_process_fd(pfd, NULL);
+}
+
 static bool fdset_has_fd(const uint8_t* set, int fd) {
     return (set[fd >> 3] & (uint8_t)(1u << (fd & 7))) != 0u;
 }
@@ -5580,7 +6201,7 @@ static void fdset_add_fd(uint8_t* set, int fd) {
 }
 
 static int select_scan(int nfds, const uint8_t* read_in, const uint8_t* write_in, const uint8_t* except_in, uint8_t* read_out,
-                       uint8_t* write_out, uint8_t* except_out) {
+                       uint8_t* write_out, uint8_t* except_out, const struct process* process) {
     int ready = 0;
 
     for (int fd = 0; fd < nfds; ++fd) {
@@ -5591,9 +6212,11 @@ static int select_scan(int nfds, const uint8_t* read_in, const uint8_t* write_in
         if (!want_read && !want_write && !want_except) {
             continue;
         }
-        if (fd < 0 || fd >= MAX_FDS || g_fds[fd].kind == FD_FREE) {
+        if (fd < 0 || fd >= MAX_FDS) {
             return err(EBADF);
         }
+        int kind = process == NULL ? (int)g_fds[fd].kind : process->fds[fd].kind;
+        if (kind == FD_FREE) return err(EBADF);
 
         struct linux_pollfd pfd;
         pfd.fd = fd;
@@ -5606,7 +6229,7 @@ static int select_scan(int nfds, const uint8_t* read_in, const uint8_t* write_in
             pfd.events |= POLLOUT;
         }
 
-        uint16_t revents = poll_revents_for_fd(&pfd);
+        uint16_t revents = poll_revents_for_process_fd(&pfd, process);
         bool fd_ready = false;
 
         if (want_read && (revents & (POLLIN | POLLHUP | POLLERR)) != 0u) {
@@ -5748,6 +6371,22 @@ static bool process_block_ready(const struct process* proc) {
             return pipe_id >= 0 && pipe_id < MAX_PIPES &&
                    ((!g_pipes[pipe_id].used) || !pipe_has_reader(pipe_id) || g_pipes[pipe_id].size < PIPE_CAPACITY);
         }
+        case PROCESS_WAIT_PTY_READ:
+        case PROCESS_WAIT_PTY_WRITE:
+        {
+            int fd = proc->wait.fd;
+            if (fd < 0 || fd >= PROCESS_MAX_FDS) return true;
+            int pty_id = proc->fds[fd].pipe_id;
+            int kind = proc->fds[fd].kind;
+            if (pty_id < 0 || pty_id >= MAX_PTYS || !g_ptys[pty_id].used) return true;
+            struct pty_buffer* buffer = proc->wait.reason == PROCESS_WAIT_PTY_READ
+                ? pty_read_buffer((enum fd_kind)kind, pty_id)
+                : pty_write_buffer((enum fd_kind)kind, pty_id);
+            enum fd_kind peer = kind == FD_PTY_MASTER ? FD_PTY_SLAVE : FD_PTY_MASTER;
+            return buffer == NULL || !pty_endpoint_referenced(pty_id, peer) ||
+                   (proc->wait.reason == PROCESS_WAIT_PTY_READ
+                    ? buffer->size != 0u : buffer->size < PTY_BUFFER_CAPACITY);
+        }
         case PROCESS_WAIT_UNIX_ACCEPT:
             return unix_socket_accept_ready(proc->wait.aux0);
         case PROCESS_WAIT_UNIX_RECV:
@@ -5770,7 +6409,15 @@ static bool process_block_ready(const struct process* proc) {
             memset(except_out, 0, sizeof(except_out));
             return select_scan(proc->wait.nfds, proc->wait.ptr0 != 0 ? proc->wait.readfds : NULL,
                                proc->wait.ptr1 != 0 ? proc->wait.writefds : NULL,
-                               proc->wait.ptr2 != 0 ? proc->wait.exceptfds : NULL, read_out, write_out, except_out) > 0;
+                               proc->wait.ptr2 != 0 ? proc->wait.exceptfds : NULL, read_out, write_out, except_out, proc) > 0;
+        }
+        case PROCESS_WAIT_POLL:
+        {
+            const struct linux_pollfd* pollfds = (const struct linux_pollfd*)(const void*)proc->wait.pollfds;
+            for (int i = 0; i < proc->wait.nfds; ++i) {
+                if (poll_revents_for_process_fd(&pollfds[i], proc) != 0u) return true;
+            }
+            return proc->wait.has_timeout && read_tsc() >= proc->wait.deadline_ns;
         }
         case PROCESS_WAIT_NANOSLEEP:
             return read_tsc() >= proc->wait.deadline_ns;
@@ -6012,6 +6659,30 @@ static int try_complete_pipe_write(struct process* proc) {
     return 0;
 }
 
+static int try_complete_pty_read(struct process* proc) {
+    if (process_has_pending_signal(proc)) {
+        unblock_process(proc, err(EINTR));
+        return 0;
+    }
+    int r = sys_read(proc->wait.fd, (void*)(uintptr_t)proc->wait.ptr0,
+                     (size_t)proc->wait.ptr1, NULL);
+    if (r == err(EAGAIN)) return r;
+    unblock_process(proc, r);
+    return 0;
+}
+
+static int try_complete_pty_write(struct process* proc) {
+    if (process_has_pending_signal(proc)) {
+        unblock_process(proc, err(EINTR));
+        return 0;
+    }
+    int r = sys_write(proc->wait.fd, (const void*)(uintptr_t)proc->wait.ptr0,
+                      (size_t)proc->wait.ptr1, NULL);
+    if (r == err(EAGAIN)) return r;
+    unblock_process(proc, r);
+    return 0;
+}
+
 static int try_complete_unix_accept(struct process* proc) {
     if (process_has_pending_signal(proc)) {
         unblock_process(proc, err(EINTR));
@@ -6107,7 +6778,7 @@ static int try_complete_select(struct process* proc) {
     }
 
     int ready = select_scan(nfds, proc->wait.ptr0 != 0 ? proc->wait.readfds : NULL, proc->wait.ptr1 != 0 ? proc->wait.writefds : NULL,
-                            proc->wait.ptr2 != 0 ? proc->wait.exceptfds : NULL, read_out, write_out, except_out);
+                            proc->wait.ptr2 != 0 ? proc->wait.exceptfds : NULL, read_out, write_out, except_out, proc);
     if (ready <= 0) {
         return ready == 0 ? err(EAGAIN) : ready;
     }
@@ -6136,6 +6807,45 @@ static int try_complete_select(struct process* proc) {
 
     unblock_process(proc, ready);
     return 0;
+}
+
+static int try_complete_poll(struct process* proc) {
+    if (process_has_pending_signal(proc)) {
+        unblock_process(proc, err(EINTR));
+        return 0;
+    }
+
+    size_t bytes = (size_t)proc->wait.nfds * sizeof(struct linux_pollfd);
+    struct linux_pollfd* pollfds = NULL;
+    if (bytes != 0u) {
+        pollfds = kmalloc(bytes);
+        if (pollfds == NULL) {
+            unblock_process(proc, err(ENOMEM));
+            return err(ENOMEM);
+        }
+        int cr = copy_from_user(pollfds, (const void*)(uintptr_t)proc->wait.ptr0, bytes);
+        if (cr != 0) {
+            kfree(pollfds);
+            unblock_process(proc, cr);
+            return cr;
+        }
+    }
+    int ready = 0;
+    for (int i = 0; i < proc->wait.nfds; ++i) {
+        uint16_t revents = poll_revents_for_process_fd(&pollfds[i], proc);
+        pollfds[i].revents = (int16_t)revents;
+        if (revents != 0u) ++ready;
+    }
+    if (ready == 0 && (!proc->wait.has_timeout || read_tsc() < proc->wait.deadline_ns)) {
+        if (bytes != 0u) memcpy(proc->wait.pollfds, pollfds, bytes);
+        kfree(pollfds);
+        return err(EAGAIN);
+    }
+
+    int cr = copy_to_user((void*)(uintptr_t)proc->wait.ptr0, pollfds, bytes);
+    kfree(pollfds);
+    unblock_process(proc, cr == 0 ? ready : cr);
+    return cr;
 }
 
 static int try_complete_nanosleep(struct process* proc) {
@@ -6173,6 +6883,10 @@ static int complete_blocked_process(struct process* proc) {
             return try_complete_pipe_read(proc);
         case PROCESS_WAIT_PIPE_WRITE:
             return try_complete_pipe_write(proc);
+        case PROCESS_WAIT_PTY_READ:
+            return try_complete_pty_read(proc);
+        case PROCESS_WAIT_PTY_WRITE:
+            return try_complete_pty_write(proc);
         case PROCESS_WAIT_UNIX_ACCEPT:
             return try_complete_unix_accept(proc);
         case PROCESS_WAIT_UNIX_RECV:
@@ -6183,6 +6897,8 @@ static int complete_blocked_process(struct process* proc) {
             return try_complete_wait4(proc);
         case PROCESS_WAIT_SELECT:
             return try_complete_select(proc);
+        case PROCESS_WAIT_POLL:
+            return try_complete_poll(proc);
         case PROCESS_WAIT_NANOSLEEP:
             return try_complete_nanosleep(proc);
         case PROCESS_WAIT_FUTEX:
@@ -6286,7 +7002,7 @@ static int sys_select_common(int nfds, void* readfds, void* writefds, void* exce
         memset(except_out, 0, sizeof(except_out));
 
         int ready = select_scan(nfds, readfds != NULL ? read_in : NULL, writefds != NULL ? write_in : NULL,
-                                exceptfds != NULL ? except_in : NULL, read_out, write_out, except_out);
+                                exceptfds != NULL ? except_in : NULL, read_out, write_out, except_out, NULL);
         if (ready < 0) {
             return ready;
         }
@@ -6435,6 +7151,24 @@ static int sys_poll(struct linux_pollfd* fds, size_t nfds, int timeout_ms, struc
             return 0;
         }
 
+        if (frame != NULL && has_schedulable_process_except(current_process())) {
+            struct process* proc = current_process();
+            int sr = save_live_process(proc, frame);
+            if (sr != 0) {
+                kfree(local_fds);
+                return sr;
+            }
+            proc->state = PROCESS_BLOCKED;
+            proc->wait.reason = PROCESS_WAIT_POLL;
+            proc->wait.nfds = (int)nfds;
+            proc->wait.ptr0 = (uint64_t)(uintptr_t)fds;
+            proc->wait.has_timeout = timeout_ms > 0;
+            proc->wait.deadline_ns = proc->wait.has_timeout ? start + budget : 0u;
+            if (fds_len != 0u) memcpy(proc->wait.pollfds, local_fds, fds_len);
+            kfree(local_fds);
+            return (int)schedule_away(frame);
+        }
+
         KERNEL_IDLE_POLL();
     }
 }
@@ -6579,6 +7313,8 @@ static int sys_chmodat(int dirfd, const char* path_user, uint32_t mode, uint32_t
     if (!current_owns_entry(&entry)) {
         return err(EPERM);
     }
+    int pty_id = pty_slave_for_path(path);
+    if (pty_id >= 0 && g_ptys[pty_id].used) return 0;
     return fs_chmod(path, mode);
 }
 
@@ -6595,6 +7331,8 @@ static int sys_chownat(int dirfd, const char* path_user, uint32_t uid, uint32_t 
     if (!current_is_superuser()) {
         return err(EPERM);
     }
+    int pty_id = pty_slave_for_path(path);
+    if (pty_id >= 0 && g_ptys[pty_id].used) return 0;
     return fs_chown(path, uid, gid);
 }
 
@@ -6854,7 +7592,7 @@ static int fd_mode_size_entry(int fd, uint32_t* mode_out, size_t* size_out, stru
     entry.uid = 0;
     entry.gid = 0;
 
-    if (g_fds[fd].kind == FD_TTY) {
+    if (g_fds[fd].kind == FD_TTY || g_fds[fd].kind == FD_PTY_MASTER || g_fds[fd].kind == FD_PTY_SLAVE) {
         mode = S_IFCHR | 0666u;
     } else if (g_fds[fd].kind == FD_NULL) {
         mode = S_IFCHR | 0666u;
@@ -6865,6 +7603,8 @@ static int fd_mode_size_entry(int fd, uint32_t* mode_out, size_t* size_out, stru
         }
         mode = S_IFCHR | 0666u;
         size = fb.size;
+    } else if (g_fds[fd].kind == FD_INPUT) {
+        mode = S_IFCHR | 0660u;
     } else if (g_fds[fd].kind == FD_DIR) {
         mode = g_fds[fd].entry.mode != 0u ? g_fds[fd].entry.mode : (S_IFDIR | 0755u);
         size = g_fds[fd].entry.size;
@@ -7185,7 +7925,7 @@ static int sys_select(int nfds, void* readfds, void* writefds, void* exceptfds, 
             }
         }
         int ready = select_scan(nfds, readfds != NULL ? read_in : NULL, writefds != NULL ? write_in : NULL,
-                                exceptfds != NULL ? except_in : NULL, read_out, write_out, except_out);
+                                exceptfds != NULL ? except_in : NULL, read_out, write_out, except_out, NULL);
         if (ready != 0) {
             if (ready > 0) {
                 if (readfds != NULL && bytes > 0) {
@@ -7209,7 +7949,7 @@ static int sys_select(int nfds, void* readfds, void* writefds, void* exceptfds, 
             }
             return ready;
         }
-        if (frame == NULL || !has_other_runnable_process(current_process())) {
+        if (frame == NULL) {
             return sys_select_common(nfds, readfds, writefds, exceptfds, false, 0, 0, frame);
         }
 
@@ -9578,6 +10318,12 @@ static uint64_t syscall_dispatch_body(struct syscall_frame* frame) {
             return (uint64_t)sys_clock_gettime((struct linux_timespec*)(uintptr_t)a1);
         case 229:
             return (uint64_t)sys_clock_getres((struct linux_timespec*)(uintptr_t)a1);
+        case 230:
+            if (a0 > 1u || a1 != 0u) {
+                return (uint64_t)err(EINVAL);
+            }
+            return (uint64_t)sys_nanosleep((const struct linux_timespec*)(uintptr_t)a2,
+                                           (struct linux_timespec*)(uintptr_t)a3, frame);
         case 231:
             return sys_exit_common(frame, a0);
         case 235:
