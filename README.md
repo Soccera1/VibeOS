@@ -10,6 +10,7 @@ VibeOS is an amd64 monolithic-kernel OS prototype that boots via Multiboot2 and 
 - **Process Management:** Support for `fork` (state snapshotting), `execve` (ELF64 loader), and `wait4`.
 - **VFS:** Read-only initramfs (`cpio newc`) root with an `ext2`/`ext3` `/usr` mount path, a writable `/home` ext3 mount or ramdisk fallback, a writable volatile `/tmp` ramdisk, plus support for pipes, symlinks, Unix-domain sockets, and device nodes (`/dev/tty`, `/dev/null`, `/dev/fb0`). The shipped `/usr` and `/home` images are `ext3`.
 - **I/O:** TTY support over VGA text mode, Multiboot/virtio framebuffer, keyboard, and serial (`COM1`).
+- **Graphics:** XLibre's Xfbdev and Xvfb servers, evdev keyboard/pointer input, xinit, XKB data, xterm, and a small Xlib probe client.
 - **Networking:** virtio-net with a small IPv4 stack covering ARP, DHCP, ICMP, UDP, and client-side TCP streams.
 - **Hardware:** XSAVE/AVX/SSE enablement, FSGSBASE support.
 - **Shells:**
@@ -31,6 +32,7 @@ VibeOS is an amd64 monolithic-kernel OS prototype that boots via Multiboot2 and 
 - `qemu-system-x86_64` (for `make run`)
 - `xorriso`, `mtools`, `libisoboot` (usually dependencies of `grub-mkrescue`)
 - `zig` (required for musl userspace builds via `zig cc`)
+- `meson`, `ninja`, `pkg-config`, Autotools, and the X source archives in `/var/cache/distfiles` when `USER_X11` is enabled
 
 ### Build Targets
 
@@ -103,6 +105,15 @@ qemu-system-x86_64 \
   -chardev stdio,id=serial0,signal=off \
   -serial chardev:serial0
 ```
+
+From the VibeOS shell, start the framebuffer X server with:
+
+```bash
+startx-vibeos
+```
+
+The initial X environment opens an xterm running the default shell and deliberately uses the software framebuffer path. DRM,
+Mesa, GLX, DRI, udev, and logind are not required or enabled.
 
 ## Userspace Implementation
 

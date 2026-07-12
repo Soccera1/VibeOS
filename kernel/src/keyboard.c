@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "io.h"
+#include "input_event.h"
 #include "virtio_gpu.h"
 
 static const char keymap[128] = {
@@ -27,6 +28,38 @@ static bool application_cursor_keys;
 static bool extended_scancode;
 static char pending_chars[8];
 static size_t pending_char_count;
+
+static void enqueue_pending_char(char c);
+static void enqueue_pending_string(const char* s);
+static int ctrl_modified_char(char c);
+
+void keyboard_handle_scancode(uint8_t sc, bool extended) {
+    extended_scancode = extended;
+    /* Reuse the terminal decoder after input_event has separated controller bytes. */
+    if (sc == 0xE0u) {
+        extended_scancode = true;
+        return;
+    }
+
+    bool was_extended = extended_scancode;
+    extended_scancode = false;
+    if (sc == 0x1D) { ctrl_pressed = 1; return; }
+    if (sc == 0x9D) { ctrl_pressed = 0; return; }
+    if (sc == 0x2A || sc == 0x36) { shift_pressed = 1; return; }
+    if (sc == 0xAA || sc == 0xB6) { shift_pressed = 0; return; }
+    if ((sc & 0x80u) != 0u) return;
+    if (was_extended) {
+        switch (sc) {
+            case 0x48: enqueue_pending_string(application_cursor_keys ? "\x1bOA" : "\x1b[A"); return;
+            case 0x4B: enqueue_pending_string(application_cursor_keys ? "\x1bOD" : "\x1b[D"); return;
+            case 0x4D: enqueue_pending_string(application_cursor_keys ? "\x1bOC" : "\x1b[C"); return;
+            case 0x50: enqueue_pending_string(application_cursor_keys ? "\x1bOB" : "\x1b[B"); return;
+            default: return;
+        }
+    }
+    char c = shift_pressed ? keymap_shift[sc] : keymap[sc];
+    if (c != 0) enqueue_pending_char((char)(ctrl_pressed ? ctrl_modified_char(c) : c));
+}
 
 static void enqueue_pending_char(char c) {
     if (pending_char_count < sizeof(pending_chars)) {
@@ -83,7 +116,7 @@ static int ctrl_modified_char(char c) {
     }
 }
 
-static int poll_hardware_char(void) {
+__attribute__((unused)) static int poll_hardware_char(void) {
     if ((inb(0x64) & 1u) == 0) {
         return -1;
     }
@@ -155,19 +188,9 @@ static int poll_hardware_char(void) {
 }
 
 int keyboard_poll_char(void) {
+    input_event_poll();
     int pending = dequeue_pending_char();
-    if (pending >= 0) {
-        return pending;
-    }
-
-    while ((inb(0x64) & 1u) != 0) {
-        int c = poll_hardware_char();
-        if (c >= 0) {
-            return c;
-        }
-    }
-
-    return -1;
+    return pending;
 }
 
 int keyboard_read_char_blocking(void) {
@@ -182,7 +205,8 @@ int keyboard_read_char_blocking(void) {
 }
 
 int keyboard_input_ready(void) {
-    return pending_char_count != 0 || (inb(0x64) & 1u) != 0;
+    input_event_poll();
+    return pending_char_count != 0;
 }
 
 int keyboard_poll_signal(void) {

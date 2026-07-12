@@ -31,11 +31,14 @@ enum process_wait_reason {
     PROCESS_WAIT_TTY_READ,
     PROCESS_WAIT_PIPE_READ,
     PROCESS_WAIT_PIPE_WRITE,
+    PROCESS_WAIT_PTY_READ,
+    PROCESS_WAIT_PTY_WRITE,
     PROCESS_WAIT_UNIX_ACCEPT,
     PROCESS_WAIT_UNIX_RECV,
     PROCESS_WAIT_UNIX_SEND,
     PROCESS_WAIT_WAIT4,
     PROCESS_WAIT_SELECT,
+    PROCESS_WAIT_POLL,
     PROCESS_WAIT_NANOSLEEP,
     PROCESS_WAIT_FUTEX,
 };
@@ -47,8 +50,15 @@ struct process_fd {
     uint64_t offset;
     int pipe_id;
     int socket_id;
+    uint64_t input_open_id;
     struct fs_entry entry;
     char path[FS_MAX_PATH];
+};
+
+struct linux_pollfd {
+    int fd;
+    int16_t events;
+    int16_t revents;
 };
 
 struct process_wait_state {
@@ -66,6 +76,7 @@ struct process_wait_state {
     uint8_t readfds[PROCESS_SELECT_FDSET_BYTES];
     uint8_t writefds[PROCESS_SELECT_FDSET_BYTES];
     uint8_t exceptfds[PROCESS_SELECT_FDSET_BYTES];
+    struct linux_pollfd pollfds[1024];
 };
 
 struct sigaction_data {

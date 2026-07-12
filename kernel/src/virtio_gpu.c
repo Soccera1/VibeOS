@@ -57,8 +57,10 @@
 #define VIRTIO_GPU_MAX_HEIGHT 2160u
 #define VIRTIO_GPU_DEFAULT_WIDTH 1024u
 #define VIRTIO_GPU_DEFAULT_HEIGHT 768u
-#define VIRTIO_GPU_CMD_SPIN_LIMIT 200000u
 #define VIRTIO_GPU_EVENT_DISPLAY 1u
+#define VIRTIO_GPU_TSC_CYCLES_PER_USEC 2000ull
+#define VIRTIO_GPU_CMD_TIMEOUT_USEC 500000ull
+#define VIRTIO_GPU_PRESENT_INTERVAL_USEC 33333ull
 
 struct vring_desc {
     uint64_t addr;
@@ -185,7 +187,8 @@ static uint32_t g_next_resource_id = VIRTIO_GPU_RESOURCE_ID_BASE;
 static uint32_t g_width;
 static uint32_t g_height;
 static uint8_t* g_framebuffer;
-static uint32_t g_poll_counter;
+static uint8_t* g_framebuffer_shadow;
+static uint64_t g_last_present_tsc;
 static bool g_failure_reported;
 static struct virtio_gpu_ctrl_hdr g_response __attribute__((aligned(16)));
 
@@ -394,7 +397,9 @@ static bool virtio_gpu_command(void* request, size_t request_size, void* respons
     __asm__ volatile("mfence" : : : "memory");
     virtio_notify_queue(VIRTIO_GPU_QUEUE_CONTROL);
 
-    for (uint32_t spins = 0; spins < VIRTIO_GPU_CMD_SPIN_LIMIT; ++spins) {
+    uint64_t started = read_tsc();
+    uint64_t timeout = VIRTIO_GPU_CMD_TIMEOUT_USEC * VIRTIO_GPU_TSC_CYCLES_PER_USEC;
+    while (read_tsc() - started < timeout) {
         if (g_control_queue.last_used_idx != g_control_queue.used->idx) {
             ++g_control_queue.last_used_idx;
             const struct virtio_gpu_ctrl_hdr* hdr = (const struct virtio_gpu_ctrl_hdr*)response;
@@ -528,6 +533,38 @@ static void virtio_gpu_flush_rect(uint32_t x, uint32_t y, uint32_t width, uint32
     (void)virtio_gpu_command(&flush, sizeof(flush), &g_response, sizeof(g_response), VIRTIO_GPU_RESP_OK_NODATA);
 }
 
+static void virtio_gpu_flush_damage(void) {
+    if (g_framebuffer_shadow == NULL) {
+        console_flush_framebuffer();
+        return;
+    }
+
+    const uint32_t* pixels = (const uint32_t*)(const void*)g_framebuffer;
+    uint32_t* shadow = (uint32_t*)(void*)g_framebuffer_shadow;
+    uint32_t min_x = g_width;
+    uint32_t min_y = g_height;
+    uint32_t max_x = 0u;
+    uint32_t max_y = 0u;
+    for (uint32_t y = 0u; y < g_height; ++y) {
+        size_t row = (size_t)y * g_width;
+        for (uint32_t x = 0u; x < g_width; ++x) {
+            size_t index = row + x;
+            uint32_t pixel = pixels[index];
+            if (pixel == shadow[index]) {
+                continue;
+            }
+            shadow[index] = pixel;
+            if (x < min_x) min_x = x;
+            if (y < min_y) min_y = y;
+            if (x > max_x) max_x = x;
+            if (y > max_y) max_y = y;
+        }
+    }
+    if (min_x < g_width) {
+        virtio_gpu_flush_rect(min_x, min_y, max_x - min_x + 1u, max_y - min_y + 1u);
+    }
+}
+
 static bool apply_resize(uint32_t width, uint32_t height) {
     if (width == g_width && height == g_height && g_resource_id != 0u) {
         return true;
@@ -537,6 +574,11 @@ static bool apply_resize(uint32_t width, uint32_t height) {
     uint8_t* new_framebuffer = NULL;
     size_t new_size = 0u;
     if (!create_scanout(width, height, &new_resource_id, &new_framebuffer, &new_size)) {
+        return false;
+    }
+    uint8_t* new_shadow = kmalloc(new_size);
+    if (new_shadow == NULL) {
+        destroy_scanout(new_resource_id, new_framebuffer);
         return false;
     }
 
@@ -562,8 +604,10 @@ static bool apply_resize(uint32_t width, uint32_t height) {
     uint32_t old_width = g_width;
     uint32_t old_height = g_height;
     uint8_t* old_framebuffer = g_framebuffer;
+    uint8_t* old_shadow = g_framebuffer_shadow;
     g_resource_id = new_resource_id;
     g_framebuffer = new_framebuffer;
+    g_framebuffer_shadow = new_shadow;
     g_width = width;
     g_height = height;
     if (!console_configure_framebuffer(&info, virtio_gpu_flush_rect)) {
@@ -571,10 +615,14 @@ static bool apply_resize(uint32_t width, uint32_t height) {
         g_width = old_width;
         g_height = old_height;
         g_framebuffer = old_framebuffer;
+        g_framebuffer_shadow = old_shadow;
+        kfree(new_shadow);
         destroy_scanout(new_resource_id, new_framebuffer);
         return false;
     }
 
+    memcpy(new_shadow, new_framebuffer, new_size);
+    kfree(old_shadow);
     destroy_scanout(old_resource_id, old_framebuffer);
     return true;
 }
@@ -628,6 +676,9 @@ void virtio_gpu_init(void) {
         return;
     }
 
+    uint64_t now = read_tsc();
+    g_last_present_tsc = now;
+
     console_printf("virtio-gpu: %s adaptive framebuffer %ux%u\n", g_modern ? "modern" : "legacy", (unsigned)g_width,
                    (unsigned)g_height);
 }
@@ -644,16 +695,24 @@ void virtio_gpu_poll(void) {
         virtio_gpu_config_write32(4u, VIRTIO_GPU_EVENT_DISPLAY);
     }
 
-    ++g_poll_counter;
-    if (!display_event && (isr & 0x2u) == 0u && (g_poll_counter & 0x3fu) != 0u) {
-        return;
+    uint64_t now = read_tsc();
+    bool config_event = display_event || (isr & 0x2u) != 0u;
+    if (config_event) {
+        uint32_t width = 0u;
+        uint32_t height = 0u;
+        if (!query_display_size(&width, &height)) {
+            return;
+        }
+        (void)apply_resize(width, height);
     }
-    uint32_t width = 0u;
-    uint32_t height = 0u;
-    if (!query_display_size(&width, &height)) {
-        return;
+
+    uint64_t present_interval = VIRTIO_GPU_PRESENT_INTERVAL_USEC * VIRTIO_GPU_TSC_CYCLES_PER_USEC;
+    if (console_graphics_mode() && (config_event || now - g_last_present_tsc >= present_interval)) {
+        /* fbdev updates the mmaped framebuffer directly, so there is no
+         * write(2) or pan-display ioctl through which to notice damage. */
+        g_last_present_tsc = now;
+        virtio_gpu_flush_damage();
     }
-    (void)apply_resize(width, height);
 }
 
 bool virtio_gpu_present(void) {

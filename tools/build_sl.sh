@@ -40,6 +40,9 @@ echo "Building sl from $SRC_DIR"
 
 NCURSES_LIBDIR_ABS="$(cd "$NCURSES_LIBDIR" && pwd)"
 NCURSES_INC_ABS="$(cd "$NCURSES_INC" && pwd)"
+SL_ZIG_GLOBAL_CACHE="$REPO_ROOT/build/sl-zig-global-cache"
+SL_ZIG_LOCAL_CACHE="$REPO_ROOT/build/sl-zig-local-cache"
+mkdir -p "$SL_ZIG_GLOBAL_CACHE" "$SL_ZIG_LOCAL_CACHE"
 
 CC_WRAPPER="$REPO_ROOT/build/sl-wrapper.sh"
 mkdir -p "$(dirname "$CC_WRAPPER")"
@@ -55,7 +58,8 @@ for arg in "\$@"; do
   esac
   filtered+=("\$arg")
 done
-exec zig cc -target x86_64-linux-musl "\${filtered[@]}" -L$NCURSES_LIBDIR_ABS -lncursesw -ltinfow
+exec env ZIG_GLOBAL_CACHE_DIR=$SL_ZIG_GLOBAL_CACHE ZIG_LOCAL_CACHE_DIR=$SL_ZIG_LOCAL_CACHE \
+  zig cc -target x86_64-linux-musl "\${filtered[@]}" -L$NCURSES_LIBDIR_ABS -lncursesw -ltinfow
 WRAPPER_EOF
 chmod +x "$CC_WRAPPER"
 

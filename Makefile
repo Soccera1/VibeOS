@@ -66,6 +66,7 @@ CONFIG_USER_MAN_DB ?= y
 CONFIG_USER_WGET ?= y
 CONFIG_USER_KERNEL_TESTS ?= y
 CONFIG_USER_GLIBC_DYNAMIC ?= y
+CONFIG_USER_X11 ?= y
 
 ifeq ($(CONFIG_KERNEL_WERROR),y)
 CFLAGS += -Werror
@@ -100,6 +101,7 @@ USER_GNUTLS := $(BUILD_DIR)/userspace/gnutls
 USER_WGET := $(BUILD_DIR)/userspace/wget
 USER_TESTS := $(BUILD_DIR)/userspace/kernel-tests-root
 GLIBC_RUNTIME := $(BUILD_DIR)/userspace/glibc-runtime
+USER_X11 := $(BUILD_DIR)/userspace/x11
 KMALLOC_HOST_TEST := $(BUILD_DIR)/tests/kmalloc-host-test
 CONSOLE_REFLOW_HOST_TEST := $(BUILD_DIR)/tests/console-reflow-host-test
 ELF_LOADER_HOST_TEST := $(BUILD_DIR)/tests/elf-loader-host-test
@@ -126,6 +128,7 @@ GDBM_SRC := external/gdbm-src
 GROFF_SRC := external/groff-src
 MAN_DB_SRC := external/man-db-src
 CA_CERT_BUNDLE ?= /etc/ssl/certs/ca-certificates.crt
+DISTFILES_DIR ?= /var/cache/distfiles
 USER_SL := $(BUILD_DIR)/userspace/sl
 HELP_SRC := userspace/help.c
 KERNEL_TESTS_SRC := tests/kernel-tests.c tests/kernel-test-helper.c tests/glibc-dynamic-helper.c
@@ -175,6 +178,7 @@ check-build-tools:
 	@if [[ "$(STRIP_BINARIES)" != "0" ]]; then command -v $(STRIP) >/dev/null; fi
 	@command -v zig >/dev/null
 	@command -v readelf >/dev/null
+	@if [[ "$(CONFIG_USER_X11)" == "y" ]]; then command -v meson >/dev/null; command -v ninja >/dev/null; command -v pkg-config >/dev/null; fi
 
 check-image-tools: check-build-tools
 	@command -v cpio >/dev/null
@@ -354,8 +358,14 @@ $(USER_TESTS): $(KERNEL_TESTS_SRC) tools/build_kernel_tests.sh $(CONFIG_MK) | $(
 	GLIBC_CC="$(GLIBC_CC)" GLIBC_DYNAMIC_TEST="$(if $(filter y,$(CONFIG_USER_GLIBC_DYNAMIC)),1,0)" \
 		./tools/build_kernel_tests.sh $@ tests
 
-$(GLIBC_RUNTIME): tools/build_glibc_runtime.sh $(GLIBC_SRC)/configure $(CONFIG_MK) | $(BUILD_DIR)
+$(GLIBC_RUNTIME): tools/build_glibc_runtime.sh userspace/glibc_popcount.c $(GLIBC_SRC)/configure $(CONFIG_MK) | $(BUILD_DIR)
 	./tools/build_glibc_runtime.sh $@ "$(GLIBC_SRC)" "$(GLIBC_BUILD_ROOT)"
+
+$(USER_X11): $(GLIBC_RUNTIME) tools/build_x11.sh tools/patches/xlibre-vibeos-no-epoll.patch \
+	tools/patches/xlibre-vibeos-baseline-libgcc.patch tools/patches/xlibre-vibeos-precompiled-xkb.patch \
+	tools/patches/xlibre-vibeos-vt-property.patch \
+	userspace/glibc_popcount.c userspace/xhello.c $(CONFIG_MK) | $(BUILD_DIR)
+	./tools/build_x11.sh $@ "$(DISTFILES_DIR)"
 
 INITRAMFS_DEPS := $(USER_BUSYBOX)
 INITRAMFS_ARGS :=
@@ -428,6 +438,13 @@ endif
 ifeq ($(CONFIG_USER_GLIBC_DYNAMIC),y)
 USR_DEPS += $(GLIBC_RUNTIME)
 USR_TREE_ARGS += $(GLIBC_RUNTIME)/usr
+endif
+ifeq ($(CONFIG_USER_X11),y)
+ifneq ($(CONFIG_USER_GLIBC_DYNAMIC),y)
+$(error CONFIG_USER_X11 requires CONFIG_USER_GLIBC_DYNAMIC)
+endif
+USR_DEPS += $(USER_X11)
+USR_TREE_ARGS += $(USER_X11)
 endif
 ifeq ($(CONFIG_USER_VIM),y)
 USR_DEPS += $(USER_VIM)

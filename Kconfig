@@ -70,4 +70,8 @@ config USER_GLIBC_DYNAMIC
 	bool "glibc dynamic runtime and integration test"
 	default y
 
+config USER_X11
+	bool "XLibre framebuffer X11 server and client runtime"
+	default y
+
 endmenu

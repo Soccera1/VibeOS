@@ -13,6 +13,7 @@ BUILD_ROOT="$(cd "$3" && pwd)"
 SOURCE_DIR="$(cd "$SOURCE_INPUT" && pwd)"
 OBJECT_DIR="$BUILD_ROOT/obj"
 INSTALL_DIR="$BUILD_ROOT/install"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 if [[ ! -x "$SOURCE_DIR/configure" ]]; then
   echo "glibc source tree is incomplete: $SOURCE_DIR" >&2
@@ -34,6 +35,20 @@ if [[ ! -f "$OBJECT_DIR/config.make" ]]; then
         --without-selinux
   )
 fi
+
+# Some host distributions build libgcc itself for a newer x86-64 ISA even
+# when callers use -march=x86-64.  glibc imports __popcountdi2 from that
+# archive, so provide the baseline implementation as a normal libc routine.
+cat > "$OBJECT_DIR/configparms" <<EOF
+ifeq (\$(subdir),stdlib)
+sysdep_routines += vibeos-popcountdi2
+CFLAGS-vibeos-popcountdi2.c += -mno-popcnt -fno-builtin
+\$(objpfx)vibeos-popcountdi2.o \$(objpfx)vibeos-popcountdi2.os \
+  \$(objpfx)vibeos-popcountdi2.op \$(objpfx)vibeos-popcountdi2.oS: \
+  $REPO_ROOT/userspace/glibc_popcount.c
+	\$(compile-command.c)
+endif
+EOF
 
 # Keep parallelism deliberately modest: glibc is large, while the rest of the
 # VibeOS build also uses the shared compiler cache and constrained CI runners.

@@ -180,6 +180,28 @@ Framebuffer ioctls support:
 The framebuffer file also supports open, read, write, and seek operations by
 directly accessing the mapped physical framebuffer range.
 
+The XLibre framebuffer server takes ownership of the display with the Linux
+@code{KDSETMODE} interface.  While graphics mode is active, kernel console
+output continues over serial but does not draw into the framebuffer.  Returning
+to text mode redraws the saved console contents.  The single-console VT
+compatibility interface exposes @file{/dev/tty0} and @file{/dev/tty1} and the
+subset of @code{VT_*}, @code{KD*}, and keyboard-mode operations used by
+XLibre's KDrive Linux backend.
+
+Raw input is exposed as @file{/dev/input/event0} for the PS/2 pointer and
+@file{/dev/input/event1} for the PS/2 keyboard.  Both devices produce Linux
+@code{input_event} records, support capability queries and exclusive grabs,
+and participate in @code{poll}.  Character-mode terminal input remains
+available whenever the keyboard event device is not grabbed.  An exclusive
+grab is released when its last duplicated or inherited open-file reference is
+closed, including when the owning process exits.
+
+Xterm uses the Unix98 pseudoterminal interface exposed through
+@file{/dev/ptmx} and dynamically allocated @file{/dev/pts/N} slave devices.
+PTY master and slave descriptors provide bidirectional buffering, terminal
+attributes and window sizing, foreground process-group operations, controlling
+terminal setup, readiness polling, and hangup detection.
+
 @node Power Management and Reset
 @section Power Management and Reset
 
