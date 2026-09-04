@@ -5,7 +5,6 @@ import stat
 import subprocess
 import sys
 import tempfile
-from make_xfs_image import build
 
 
 def initramfs(source, binary):
@@ -41,17 +40,18 @@ def main():
     kernel, source, usr, binary = map(lambda p: Path(p).resolve(), sys.argv[1:])
     with tempfile.TemporaryDirectory(prefix='vibeos-xfs-kernel-') as temporary:
         root = Path(temporary)
-        (root / 'root').mkdir()
         disk, cpio, iso = root / 'test.xfs', root / 'init.cpio', root / 'test.iso'
-        build(root / 'root', disk, writable=True)
+        subprocess.run(['tools/make_home_xfs.sh', str(disk)], check=True)
         cpio.write_bytes(initramfs(source, binary))
         subprocess.run(['tools/make_iso.sh', str(iso), str(kernel), str(cpio), str(usr)],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         command = ['qemu-system-x86_64', '-machine', 'q35,accel=tcg', '-cpu', 'max', '-m', '1G',
                    '-display', 'none', '-device', 'virtio-vga', '-cdrom', str(iso),
                    '-device', 'virtio-scsi-pci-transitional,id=scsi0',
+                   '-drive', f'file={usr},format=raw,if=none,id=usr,readonly=on',
+                   '-device', 'scsi-hd,drive=usr,bus=scsi0.0,scsi-id=0,lun=0',
                    '-drive', f'file={disk},format=raw,if=none,id=test',
-                   '-device', 'scsi-hd,drive=test,bus=scsi0.0,scsi-id=0,lun=0',
+                   '-device', 'scsi-hd,drive=test,bus=scsi0.0,scsi-id=1,lun=0',
                    '-serial', 'stdio', '-no-reboot']
         for marker in ('XFS_KERNEL_WRITE_PASS', 'XFS_KERNEL_REMOUNT_PASS'):
             result = subprocess.run(command, capture_output=True, text=True, timeout=90)

@@ -347,8 +347,8 @@ Stage and create the XFS @file{/usr} image.
 @item tools/make_xfs_image.py
 Populate XFS from a directory using a mkfs prototype without mounting.
 
-@item tools/make_home_ext2.sh
-Create the ext3 @file{/home} image.
+@item tools/make_home_xfs.sh
+Create the writable XFS @file{/home} image.
 
 @item tools/make_iso.sh
 Create the bootable ISO image.

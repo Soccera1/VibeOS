@@ -169,9 +169,10 @@ internal log (at least 384 MiB), and formats it without mounting.  Names and
 symlink targets containing whitespace or beginning with @samp{:} or @samp{$}
 are rejected because they cannot be represented safely in the prototype.
 
-@item tools/make_home_ext2.sh
-Constructs the writable @file{/home} ext3 image used by the default QEMU run
-path.  The image is currently 64 MiB and labeled @code{VIBEOS_HOME}.
+@item tools/make_home_xfs.sh
+Constructs the writable @file{/home} XFS image used by the default QEMU run
+path, using @file{make_xfs_image.py --writable}.  The empty image is 384 MiB
+with a 64 MiB internal log and the supported v5 feature profile.
 
 @item tools/make_iso.sh
 Creates a temporary ISO tree, copies the kernel and both module images into

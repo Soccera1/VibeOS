@@ -74,7 +74,7 @@ The ISO boot script passes two Multiboot modules after the kernel:
 
 This ordering is not incidental.  @code{kernel_main} looks up the modules by
 index and assigns fixed meanings to them.  The default GPT/QEMU run path does
-not embed @file{/usr} or @file{/home} in the boot disk; it attaches those ext3
+not embed @file{/usr} or @file{/home} in the boot disk; it attaches those XFS
 images as SCSI disks after the kernel has booted.
 
 @node Early Long-Mode Transition
@@ -111,7 +111,7 @@ Once C code begins, @code{kernel_main} performs initialization in a fixed order:
 @item heap initialization,
 @item virtio GPU, ATA, virtio SCSI, and virtio-net probing,
 @item initramfs discovery and indexing,
-@item @file{/usr} and @file{/home} ext3 mount attempts,
+@item @file{/usr} and @file{/home} filesystem mount attempts,
 @item post-user return-stack installation,
 @item VM template initialization,
 @item GDT setup,

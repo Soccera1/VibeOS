@@ -124,6 +124,6 @@ partition
 @item XFS inode size @tab 512 @tab Inode size in the default @file{/usr} image
 @item XFS image size @tab At least 384 MiB @tab Grows with the staged payload
 @item XFS internal log @tab 64 MiB @tab Journal reserved by the image builder
-@item Home image size @tab @code{64 MiB} @tab Writable ext3 image size created
-by @file{tools/make_home_ext2.sh}
+@item Home image size @tab @code{384 MiB} @tab Writable XFS image size created
+by @file{tools/make_home_xfs.sh}
 @end multitable

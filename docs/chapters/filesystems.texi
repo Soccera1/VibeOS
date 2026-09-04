@@ -34,7 +34,7 @@ set of fixed backends and a dispatcher:
 @itemize @bullet
 @item the initramfs backend for the root filesystem, and
 @item the ext2/ext3 backend for @file{/usr} and @file{/home}, and
-@item an XFS backend for prepared images, including @file{/usr}.
+@item an XFS backend for @file{/usr} and writable @file{/home}.
 @end itemize
 
 The VFS layer in @file{kernel/src/fs.c} decides which backend owns a path and
@@ -70,7 +70,7 @@ VibeOS scripts and loaded as an immutable module.
 @section ext2/ext3 Backend for /usr and /home
 
 The ext2/ext3 implementation supports @file{/usr} and @file{/home}; the
-default @file{/usr} image now uses the XFS backend.  In the shipped boot configuration @file{/usr} is
+default @file{/usr} and @file{/home} images use the XFS backend.  In the shipped boot configuration @file{/usr} is
 mounted read-only, while @file{/home} is mounted read-write when a writable SCSI
 disk image is attached.  If no writable home disk is available, the kernel falls
 back to a volatile in-memory @file{/home} ramdisk.
@@ -108,7 +108,7 @@ namespace without replacing it.
 @code{CONFIG_KERNEL_XFS} enables the backend and
 @code{CONFIG_KERNEL_XFS_WRITE} enables writes.  Generic mount APIs detect XFS
 by its superblock magic.  The default @file{/usr} image remains mounted
-read-only; the default @file{/home} image remains ext3.
+read-only; the default @file{/home} image is writable XFS.
 
 The reader supports shortform, block, leaf, and node directories; inline and
 B+tree extent maps; sparse and unwritten extents; and inline and remote
@@ -258,7 +258,7 @@ link object itself.
 @section Filesystem Mutability
 
 The shipped root initramfs and @file{/usr} mount are read-only in the current
-boot configuration.  The default QEMU run path attaches @file{build/home.ext3}
+boot configuration.  The default QEMU run path attaches @file{build/home.xfs}
 as a writable SCSI disk and mounts it at @file{/home}.  When that disk is not
 present, @file{/home} is still writable but volatile because it is backed by an
 in-memory ramdisk.  @file{/tmp} is always writable and volatile.

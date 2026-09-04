@@ -82,7 +82,7 @@ config KERNEL_USR_AUTOMOUNT
 config KERNEL_HOME_AUTOMOUNT
 	bool "Mount /home from disk at boot"
 	default y
-	depends on KERNEL_EXT2
+	depends on KERNEL_EXT2 || KERNEL_XFS
 
 config KERNEL_TMP_RAMDISK
 	bool "Writable /tmp ramdisk"
