@@ -10,6 +10,7 @@
 #include "console.h"
 #include "elf_loader.h"
 #include "fs.h"
+#include "xfs.h"
 #include "input.h"
 #include "input_event.h"
 #include "io.h"
@@ -702,6 +703,7 @@ static uint64_t g_brk_current = VM_USER_BRK_BASE;
 static uint64_t g_mmap_next = VM_USER_MMAP_BASE;
 static uint64_t g_rng_state = 0x123456789abcdef0ull;
 static char g_dirent_names[MAX_CHILDREN][64];
+static uint64_t g_dirent_inodes[MAX_CHILDREN];
 static uint8_t g_dirent_types[MAX_CHILDREN];
 static char g_exec_argv_scratch[EXEC_MAX_ARGS][EXEC_STR_MAX];
 static char g_exec_env_scratch[EXEC_MAX_ENVS][EXEC_STR_MAX];
@@ -984,10 +986,28 @@ static bool same_fs_file(const struct fs_entry* a, const struct fs_entry* b) {
     if (a == NULL || b == NULL || a->backend == FS_BACKEND_NONE || a->backend != b->backend) {
         return false;
     }
+    if (a->backend == FS_BACKEND_XFS) return xfs_same_file(a, b);
     if (a->backend == FS_BACKEND_EXT2) {
         return a->inode == b->inode;
     }
     return strcmp(a->path, b->path) == 0;
+}
+
+static bool xfs_inode_in_use(const char* mount_path, uint64_t inode) {
+    struct fs_entry key = {.backend=FS_BACKEND_XFS, .inode=inode};
+    strcpy(key.path, mount_path);
+    struct process* current = current_process();
+    if (current && current->state != PROCESS_FREE && current->state != PROCESS_ZOMBIE) {
+        for (int fd = 0; fd < MAX_FDS; ++fd)
+            if ((g_fds[fd].kind == FD_FILE || g_fds[fd].kind == FD_DIR) && xfs_same_file(&key, &g_fds[fd].entry)) return true;
+    }
+    for (int i = 0; i < MAX_PROCESSES; ++i) {
+        struct process* proc = process_at(i);
+        if (!proc || proc == current || proc->state == PROCESS_FREE || proc->state == PROCESS_ZOMBIE) continue;
+        for (int fd = 0; fd < PROCESS_MAX_FDS; ++fd)
+            if ((proc->fds[fd].kind == FD_FILE || proc->fds[fd].kind == FD_DIR) && xfs_same_file(&key, &proc->fds[fd].entry)) return true;
+    }
+    return false;
 }
 
 static void refresh_open_file_sizes(const struct fs_entry* entry) {
@@ -1413,14 +1433,17 @@ static uint64_t rtc_wall_time_ns(void) {
     return rtc_unix_seconds(full_year, month, day, hour, minute, second) * 1000000000ull;
 }
 
-static uint64_t wall_time_ns(void) {
+uint64_t syscall_wall_time_ns(void) {
+    uint64_t cycles_per_usec = timer_cycles_per_usec();
+    /* Boot-time filesystem recovery can update inodes before PIT calibration. */
+    if (!cycles_per_usec) return rtc_wall_time_ns();
     if (g_wall_time_base_tsc == 0) {
         g_wall_time_base_ns = rtc_wall_time_ns();
         g_wall_time_base_tsc = read_tsc();
     }
 
     uint64_t elapsed_cycles = read_tsc() - g_wall_time_base_tsc;
-    uint64_t elapsed_usec = elapsed_cycles / TSC_CYCLES_PER_USEC;
+    uint64_t elapsed_usec = elapsed_cycles / cycles_per_usec;
     return g_wall_time_base_ns + elapsed_usec * 1000ull;
 }
 
@@ -2824,6 +2847,10 @@ static int make_absolute_path(int dirfd, const char* path, char* out, size_t out
         if (g_fds[dirfd].kind != FD_DIR) {
             return err(ENOTDIR);
         }
+        if (g_fds[dirfd].entry.backend == FS_BACKEND_XFS) {
+            struct fs_entry named;
+            if (fs_lookup(g_fds[dirfd].path, &named) || !xfs_same_file(&named, &g_fds[dirfd].entry)) return err(ENOENT);
+        }
         strncpy(base, g_fds[dirfd].path, sizeof(base));
         base[sizeof(base) - 1] = '\0';
     }
@@ -3383,6 +3410,17 @@ static void fill_stat(struct linux_stat* st, const struct fs_entry* entry) {
     st->st_blocks = (int64_t)((entry->size + 511u) / 512u);
     st->st_ino = stat_inode_for_entry(entry);
     st->st_dev = stat_device_for_entry(entry);
+    if (entry->backend == FS_BACKEND_XFS) {
+        struct xfs_metadata meta;
+        if (!xfs_get_metadata(entry, &meta)) {
+            st->st_dev = meta.device; st->st_size = meta.size; st->st_blocks = meta.blocks;
+            st->st_mode = meta.mode; st->st_uid = meta.uid; st->st_gid = meta.gid;
+            st->st_nlink = meta.nlink; st->st_rdev = meta.rdev;
+            st->st_atime = meta.seconds[0]; st->st_atime_nsec = meta.nanoseconds[0];
+            st->st_mtime = meta.seconds[1]; st->st_mtime_nsec = meta.nanoseconds[1];
+            st->st_ctime = meta.seconds[2]; st->st_ctime_nsec = meta.nanoseconds[2];
+        }
+    }
 }
 
 static int sys_openat(int dirfd, const char* path_user, uint32_t flags, uint32_t mode_arg) {
@@ -3615,6 +3653,7 @@ static int sys_close(int fd) {
         return err(EBADF);
     }
 
+    bool xfs_file = g_fds[fd].entry.backend == FS_BACKEND_XFS;
     enum fd_kind kind = g_fds[fd].kind;
     int pipe_id = g_fds[fd].pipe_id;
     int socket_id = g_fds[fd].socket_id;
@@ -3641,7 +3680,7 @@ static int sys_close(int fd) {
         input_event_ungrab((enum input_event_device)pipe_id, input_open_id);
     }
     sync_current_process_runtime();
-    return 0;
+    return xfs_file ? xfs_sync_all() : 0;
 }
 
 static int unix_socket_enqueue_pending(struct unix_socket_state* listener, int conn_id) {
@@ -4379,9 +4418,16 @@ static int sys_getdents64(int fd, void* dirp, size_t count) {
         return err(ENOTDIR);
     }
 
-    size_t nchildren = collect_children(g_fds[fd].path, g_dirent_names, g_dirent_types);
+    bool xfs_dir = g_fds[fd].entry.backend == FS_BACKEND_XFS;
+    size_t base = xfs_dir ? g_fds[fd].offset : 0;
+    size_t nchildren;
+    if (xfs_dir) {
+        int n = xfs_readdir(&g_fds[fd].entry, base, g_dirent_names, g_dirent_types, g_dirent_inodes, MAX_CHILDREN);
+        if (n < 0) return n;
+        nchildren = (size_t)n;
+    } else nchildren = collect_children(g_fds[fd].path, g_dirent_names, g_dirent_types);
 
-    size_t idx = g_fds[fd].offset;
+    size_t idx = xfs_dir ? 0 : g_fds[fd].offset;
     size_t written = 0;
 
     while (idx < nchildren) {
@@ -4394,8 +4440,8 @@ static int sys_getdents64(int fd, void* dirp, size_t count) {
         }
 
         struct linux_dirent64* d = (struct linux_dirent64*)((uint8_t*)dirp + written);
-        d->d_ino = (uint64_t)(idx + 1u);
-        d->d_off = (int64_t)(idx + 1u);
+        d->d_ino = xfs_dir ? g_dirent_inodes[idx] : (uint64_t)(idx + 1u);
+        d->d_off = (int64_t)(base + idx + 1u);
         d->d_reclen = (uint16_t)reclen;
         d->d_type = g_dirent_types[idx];
 
@@ -4406,7 +4452,7 @@ static int sys_getdents64(int fd, void* dirp, size_t count) {
         ++idx;
     }
 
-    g_fds[fd].offset = idx;
+    g_fds[fd].offset = base + idx;
     return (int)written;
 }
 
@@ -7379,6 +7425,33 @@ static int sys_unlinkat(int dirfd, const char* path_user, uint32_t flags) {
     return ((flags & AT_REMOVEDIR) != 0u) ? fs_rmdir(path) : fs_unlink(path);
 }
 
+static void rename_cached_path(char path[FS_MAX_PATH], const char* oldpath, const char* newpath) {
+    size_t oldlen = strlen(oldpath), newlen = strlen(newpath);
+    if (strncmp(path, oldpath, oldlen) || (path[oldlen] && path[oldlen] != '/')) return;
+    size_t suffix = strlen(path+oldlen);
+    if (newlen+suffix >= FS_MAX_PATH) return;
+    memmove(path+newlen, path+oldlen, suffix+1);
+    memcpy(path, newpath, newlen);
+}
+
+static void xfs_rename_cached_paths(const char* oldpath, const char* newpath) {
+    for (int fd = 0; fd < MAX_FDS; ++fd) if (g_fds[fd].entry.backend == FS_BACKEND_XFS) {
+        rename_cached_path(g_fds[fd].entry.path, oldpath, newpath);
+        rename_cached_path(g_fds[fd].path, oldpath, newpath);
+    }
+    rename_cached_path(g_cwd, oldpath, newpath);
+    for (int i = 0; i < MAX_PROCESSES; ++i) {
+        struct process* proc = process_at(i);
+        if (!proc || proc == current_process() || proc->state == PROCESS_FREE || proc->state == PROCESS_ZOMBIE) continue;
+        rename_cached_path(proc->cwd, oldpath, newpath);
+        for (int fd = 0; fd < PROCESS_MAX_FDS; ++fd) if (proc->fds[fd].entry.backend == FS_BACKEND_XFS) {
+            rename_cached_path(proc->fds[fd].entry.path, oldpath, newpath);
+            rename_cached_path(proc->fds[fd].path, oldpath, newpath);
+        }
+    }
+    sync_current_process_runtime();
+}
+
 static int sys_renameat(int olddirfd, const char* old_user, int newdirfd, const char* new_user) {
     char oldpath[128];
     int r = resolve_user_path(olddirfd, old_user, false, oldpath, sizeof(oldpath));
@@ -7391,7 +7464,12 @@ static int sys_renameat(int olddirfd, const char* old_user, int newdirfd, const 
     if (r != 0) {
         return r;
     }
-    return fs_rename(oldpath, newpath);
+    struct fs_entry source;
+    bool xfs = !fs_lookup(oldpath, &source) && source.backend == FS_BACKEND_XFS;
+    r = fs_rename(oldpath, newpath);
+    /* rename between two hard links to the same inode is a no-op. */
+    if (!r && xfs && fs_lookup(oldpath, NULL) == -ENOENT) xfs_rename_cached_paths(oldpath, newpath);
+    return r;
 }
 
 static int sys_renameat2(int olddirfd, const char* old_user, int newdirfd, const char* new_user, uint32_t flags) {
@@ -7527,9 +7605,16 @@ static int sys_fchmod(int fd, uint32_t mode) {
     if (g_fds[fd].kind != FD_FILE && g_fds[fd].kind != FD_DIR) {
         return err(EINVAL);
     }
+    if (g_fds[fd].entry.backend == FS_BACKEND_XFS) {
+        struct xfs_metadata meta;
+        int r = xfs_get_metadata(&g_fds[fd].entry, &meta);
+        if (r) return r;
+        g_fds[fd].entry.uid = meta.uid;
+    }
     if (!current_owns_entry(&g_fds[fd].entry)) {
         return err(EPERM);
     }
+    if (g_fds[fd].entry.backend == FS_BACKEND_XFS) return xfs_change_metadata_entry(&g_fds[fd].entry, 0, mode, 0);
     return fs_chmod(g_fds[fd].entry.path, mode);
 }
 
@@ -7543,11 +7628,12 @@ static int sys_fchown(int fd, uint32_t uid, uint32_t gid) {
     if (!current_is_superuser()) {
         return err(EPERM);
     }
+    if (g_fds[fd].entry.backend == FS_BACKEND_XFS) return xfs_change_metadata_entry(&g_fds[fd].entry, 1, uid, gid);
     return fs_chown(g_fds[fd].entry.path, uid, gid);
 }
 
 static uint32_t current_time_sec32(void) {
-    return (uint32_t)(wall_time_ns() / 1000000000ull);
+    return (uint32_t)(syscall_wall_time_ns() / 1000000000ull);
 }
 
 static int clamp_time_sec(int64_t sec, uint32_t* out) {
@@ -7628,10 +7714,11 @@ static int sys_utimensat(int dirfd, const char* path_user, const struct linux_ti
         return err(EINVAL);
     }
 
+    const struct fs_entry* xfs_descriptor = NULL;
     char path[128];
-    if ((flags & AT_EMPTY_PATH) != 0u) {
-        char path_input[128];
-        int cr = copy_user_string(path_user, path_input, sizeof(path_input));
+    if (!path_user || (flags & AT_EMPTY_PATH) != 0u) {
+        char path_input[128] = {0};
+        int cr = path_user ? copy_user_string(path_user, path_input, sizeof(path_input)) : 0;
         if (cr != 0) {
             return cr;
         }
@@ -7642,6 +7729,7 @@ static int sys_utimensat(int dirfd, const char* path_user, const struct linux_ti
             if (g_fds[dirfd].kind != FD_FILE && g_fds[dirfd].kind != FD_DIR) {
                 return err(ENOTDIR);
             }
+            if (g_fds[dirfd].entry.backend == FS_BACKEND_XFS) xfs_descriptor = &g_fds[dirfd].entry;
             strncpy(path, g_fds[dirfd].entry.path, sizeof(path));
             path[sizeof(path) - 1] = '\0';
             goto have_path;
@@ -7656,6 +7744,7 @@ static int sys_utimensat(int dirfd, const char* path_user, const struct linux_ti
 have_path:
     if (times == NULL) {
         uint32_t now = current_time_sec32();
+        if (xfs_descriptor) return xfs_change_metadata_entry(xfs_descriptor, 2, now, now);
         return apply_utime_path(path, now, true, now, true);
     }
 
@@ -7693,8 +7782,11 @@ have_path:
     }
 
     if (!set_atime && !set_mtime) {
+        if (xfs_descriptor) return xfs_get_metadata(xfs_descriptor, &(struct xfs_metadata){0});
         return fs_lookup(path, &(struct fs_entry){0});
     }
+    if (xfs_descriptor) return xfs_change_metadata_entry(xfs_descriptor, 2,
+        set_atime ? atime : FS_UTIME_OMIT, set_mtime ? mtime : FS_UTIME_OMIT);
     return apply_utime_path(path, atime, set_atime, mtime, set_mtime);
 }
 
@@ -7949,7 +8041,7 @@ static bool supported_clock(int clock_id) {
 
 static int sys_clock_gettime(int clock_id, struct linux_timespec* ts) {
     if (!supported_clock(clock_id)) return err(EINVAL);
-    uint64_t now = (clock_id == 0 || clock_id == 5) ? wall_time_ns() : timer_monotonic_ns();
+    uint64_t now = (clock_id == 0 || clock_id == 5) ? syscall_wall_time_ns() : timer_monotonic_ns();
     struct linux_timespec value = { (int64_t)(now / 1000000000ull), (int64_t)(now % 1000000000ull) };
     return copy_to_user(ts, &value, sizeof(value));
 }
@@ -9615,6 +9707,7 @@ static void terminate_process(struct process* proc, int exit_code, int wait_stat
     proc->exit_code = exit_code;
     proc->exit_status = wait_status;
     proc->state = PROCESS_ZOMBIE;
+    (void)xfs_sync_all();
     add_zombie(proc->pid, proc->ppid, proc->pgid, exit_code, wait_status);
     note_child_status_change(proc, wait_status);
 }
@@ -10145,6 +10238,7 @@ static uint64_t sys_exit_common(struct syscall_frame* frame, uint64_t code) {
 
 void syscall_init(void) {
     process_init();
+    xfs_set_inode_busy_checker(xfs_inode_in_use);
     scheduler_stack_top = (uint64_t)(uintptr_t)(g_scheduler_stack + sizeof(g_scheduler_stack));
     kernel_exit_stack_top = process_kernel_stack_top(current_process());
     gdt_set_kernel_stack(kernel_exit_stack_top);

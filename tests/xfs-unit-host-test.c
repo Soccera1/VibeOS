@@ -23,7 +23,7 @@ static int read_test(void* ctx, uint64_t off, void* p, size_t n) {
     memcpy(p, disk+off, n);
     return 0;
 }
-static const struct ext2_storage_ops test_ops = {read_test, NULL};
+static const struct ext2_storage_ops test_ops = {read_test, NULL, NULL};
 static void put16(uint8_t* p, uint16_t v) { p[0] = v >> 8; p[1] = v; }
 static void put32(uint8_t* p, uint32_t v) { put16(p, v >> 16); put16(p+2, v); }
 static void put64(uint8_t* p, uint64_t v) { put32(p, v >> 32); put32(p+4, v); }

@@ -23,7 +23,7 @@ static int storage_write(void* ctx, uint64_t off, const void* buf, size_t n) {
     ++writes;
     return -1;
 }
-static const struct ext2_storage_ops ops = {storage_read, storage_write};
+static const struct ext2_storage_ops ops = {storage_read, storage_write, NULL};
 int main(int argc, char** argv) {
     CHECK(argc == 2);
     FILE* f = fopen(argv[1], "rb");

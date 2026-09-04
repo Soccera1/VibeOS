@@ -1,4 +1,4 @@
-/* Read-only XFS v4/v5 data fork reader. No journal replay or metadata writes.
+/* XFS v4/v5 reader and native v5 metadata transactions.
  * Disk layout: XFS Algorithms & Data Structures, and libxfs/xfs*_format.h.
  * Decode bytes explicitly: XFS metadata is big endian except CRC32c fields.
  */
@@ -19,7 +19,10 @@
 #define XFS_MOUNTS 4
 
 struct xfs_mount {
-    bool used, crc, ftype;
+    bool used, crc, ftype, writable, failed, has_orphans;
+    struct xfs_transaction* transaction;
+    uint64_t logoff, logbytes, lognext;
+    uint32_t logprev;
     char path[FS_MAX_PATH];
     const struct ext2_storage_ops* ops;
     void* ctx;
@@ -67,9 +70,13 @@ bool xfs_is_mounted_at(const char* path) {
     struct xfs_mount* m = mount_for(path);
     return m && strcmp(path, m->path) == 0;
 }
+static void transaction_overlay(struct xfs_mount*, uint64_t, void*, size_t);
+static int writable_mount(struct xfs_mount*, const uint8_t*);
 static int disk_read(struct xfs_mount* m, uint64_t off, void* buf, size_t len) {
     if (off > m->size || len > m->size - off) return -EIO;
-    return m->ops->read(m->ctx, off, buf, len) == 0 ? 0 : -EIO;
+    if (m->failed || m->ops->read(m->ctx, off, buf, len)) return -EIO;
+    transaction_overlay(m, off, buf, len);
+    return 0;
 }
 /* Encoded filesystem block numbers contain an AG number and a rounded-up
  * AG-relative block number; they are not linear disk block numbers. */
@@ -102,7 +109,9 @@ static int inode_read(struct xfs_mount* m, uint64_t number, struct xfs_inode* in
     if (ino->fork > m->inodesize - ino->core || ino->size > INT64_MAX) return -EIO;
     if (ino->format == 1 && ino->size > ino->fork) return -EIO;
     if (ino->format == 2 && ino->extents > ino->fork / 16) return -EIO;
-    if (ino->format < 1 || ino->format > 3) return -ENOTSUP;
+    if (ino->format > 3 || (!ino->format && ino->mode &&
+        (ino->mode & FS_S_IFMT) != FS_S_IFCHR && (ino->mode & FS_S_IFMT) != FS_S_IFBLK &&
+        (ino->mode & FS_S_IFMT) != FS_S_IFIFO && (ino->mode & FS_S_IFMT) != FS_S_IFSOCK)) return -ENOTSUP;
     return 0;
 }
 /* Return one mapping; absent and unwritten extents read as zeroes. */
@@ -285,6 +294,7 @@ int xfs_lookup(const char* path, struct fs_entry* out) {
         p = end;
     }
     if (r) return r;
+    if (!(ino.mode & FS_S_IFMT)) return -EIO;
     if (!out) return 0;
     memset(out, 0, sizeof(*out));
     strcpy(out->path, path);
@@ -294,7 +304,7 @@ int xfs_lookup(const char* path, struct fs_entry* out) {
     out->gid = be32(ino.bytes+12);
     out->inode = ino.number;
     out->backend = FS_BACKEND_XFS;
-    out->read_only = true;
+    out->read_only = !m->writable;
     return 0;
 }
 int xfs_read(const struct fs_entry* entry, size_t offset, void* buf, size_t count) {
@@ -372,14 +382,17 @@ static int memory_read(void* ctx, uint64_t off, void* buf, size_t len) {
 static int file_read(void* ctx, uint64_t off, void* buf, size_t len) {
     return fs_read(ctx, off, buf, len) == (int)len ? 0 : -EIO;
 }
-static const struct ext2_storage_ops memory_ops = {memory_read, NULL};
-static const struct ext2_storage_ops file_ops = {file_read, NULL};
+static const struct ext2_storage_ops memory_ops = {memory_read, NULL, NULL};
+static const struct ext2_storage_ops file_ops = {file_read, NULL, NULL};
 int xfs_mount_storage_at(const char* path, const struct ext2_storage_ops* ops, void* ctx, size_t size, bool read_only) {
 #ifndef CONFIG_KERNEL_XFS
     (void)path; (void)ops; (void)ctx; (void)size; (void)read_only;
     return -ENODEV;
 #endif
+#ifndef CONFIG_KERNEL_XFS_WRITE
     if (!read_only) return -EROFS;
+#endif
+    if (!read_only && (!ops || !ops->write || !ops->flush)) return -EROFS;
     /* Like the other boot backends, expose mounts immediately below root. */
     if (!path || path[0] != '/' || !path[1] || strlen(path) >= FS_MAX_NAME ||
         !strcmp(path, "/.") || !strcmp(path, "/..") || !ops || !ops->read) return -EINVAL;
@@ -417,6 +430,12 @@ int xfs_mount_storage_at(const char* path, const struct ext2_storage_ops* ops, v
     if (m.crc) {
         if (disk_read(&m, 0, sb, 1u << slog) || !crc_ok(sb, 1u << slog, 224)) return -EIO;
     }
+    strcpy(m.path, path);
+    if (!read_only) {
+        int r = writable_mount(&m, sb);
+        if (r) return r;
+        m.writable = true;
+    }
     struct xfs_inode root;
     int r = inode_read(&m, m.root, &root);
     if (r) return r;
@@ -440,4 +459,76 @@ int xfs_mount_file_at(const char* path, const struct fs_entry* file, bool read_o
         m->ctx = &m->file;
     }
     return r;
+}
+
+#include "xfs_write.inc"
+
+int xfs_get_metadata(const struct fs_entry* entry, struct xfs_metadata* out) {
+    if (!entry || !out || entry->backend != FS_BACKEND_XFS) return -EINVAL;
+    struct xfs_mount* m = mount_for(entry->path);
+    if (!m) return -ENOENT;
+    struct xfs_inode ino;
+    int r = inode_read(m, entry->inode, &ino);
+    if (r) return r;
+    memset(out, 0, sizeof(*out));
+    out->device = 0x100 + (size_t)(m-mounts);
+    out->size = ino.size; out->blocks = be64(ino.bytes+64)*(m->blocksize/512);
+    out->mode = ino.mode; out->uid = be32(ino.bytes+8); out->gid = be32(ino.bytes+12);
+    out->nlink = be32(ino.bytes+16);
+    if (!ino.format) {
+        uint32_t dev=be32(ino.bytes+ino.core), major=dev>>18, minor=dev&0x3ffff;
+        out->rdev=(major<<8)|(minor&255)|((minor&~255u)<<12);
+    }
+    for (unsigned i=0; i<3; ++i) {
+        const uint8_t* p = ino.bytes+32+i*8;
+        if (m->crc && (be64(ino.bytes+120) & 8)) {
+            uint64_t ns = be64(p);
+            out->seconds[i] = (int64_t)(ns/1000000000)-2147483648ll;
+            out->nanoseconds[i] = ns%1000000000;
+        } else {
+            out->seconds[i] = (int32_t)be32(p);
+            out->nanoseconds[i] = be32(p+4);
+        }
+    }
+    return 0;
+}
+
+struct xfs_readdir_ctx {
+    struct collect_ctx collect;
+    uint64_t skip;
+    uint64_t* numbers;
+};
+static int readdir_entry(const uint8_t* name, size_t len, uint64_t number, void* context) {
+    struct xfs_readdir_ctx* c=context;
+    if ((len==1 && name[0]=='.') || (len==2 && name[0]=='.' && name[1]=='.')) return 0;
+    if (len>=FS_MAX_NAME) return 0;
+    if (c->skip) { --c->skip; return 0; }
+    size_t before=c->collect.count;
+    int r=collect_entry(name,len,number,&c->collect);
+    if (before<c->collect.count) c->numbers[before]=number;
+    return r;
+}
+int xfs_readdir(const struct fs_entry* entry, uint64_t start, char names[][FS_MAX_NAME],
+                uint8_t types[], uint64_t numbers[], size_t max) {
+    if (!entry || !names || !types || !numbers || entry->backend!=FS_BACKEND_XFS) return -EINVAL;
+    if (!max) return 0;
+    struct xfs_mount* m=mount_for(entry->path); if (!m) return -ENOENT;
+    struct xfs_inode ino; int r=inode_read(m,entry->inode,&ino); if (r) return r;
+    if ((ino.mode&FS_S_IFMT)!=FS_S_IFDIR) return -ENOTDIR;
+    uint64_t parent;
+    if (ino.format==1) {
+        const uint8_t* p=ino.bytes+ino.core; size_t width=p[1]?8:4;
+        if (ino.size<2+width) return -EIO;
+        parent=width==8?be64(p+2):be32(p+2);
+    } else {
+        struct find_name f={"..",2,0}; r=directory_walk(m,&ino,find_entry,&f);
+        if (r!=1) return r<0?r:-EIO;
+        parent=f.number;
+    }
+    struct xfs_readdir_ctx c={.collect={m,names,types,0,max},.skip=start>2?start-2:0,.numbers=numbers};
+    for (uint64_t i=start;i<2 && c.collect.count<max;++i) {
+        size_t n=c.collect.count++; strcpy(names[n],i?"..":"."); types[n]=FS_DT_DIR; numbers[n]=i?parent:ino.number;
+    }
+    if (c.collect.count<max) { r=directory_walk(m,&ino,readdir_entry,&c); if (r<0) return r; }
+    return (int)c.collect.count;
 }

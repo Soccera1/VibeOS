@@ -18,7 +18,7 @@
 * Filesystem Design Summary::
 * Initramfs Backend::
 * ext2/ext3 Backend for /usr and /home::
-* Read-only XFS Backend::
+* XFS Backend::
 * VFS Routing Rules::
 * Synthetic Directories and Devices::
 * Path Resolution and Symlink Semantics::
@@ -34,7 +34,7 @@ set of fixed backends and a dispatcher:
 @itemize @bullet
 @item the initramfs backend for the root filesystem, and
 @item the ext2/ext3 backend for @file{/usr} and @file{/home}, and
-@item a read-only XFS backend for prepared images, including @file{/usr}.
+@item an XFS backend for prepared images, including @file{/usr}.
 @end itemize
 
 The VFS layer in @file{kernel/src/fs.c} decides which backend owns a path and
@@ -99,34 +99,77 @@ The ext2/ext3 backend claims paths rooted at fixed mount points such as
 @file{/usr} and @file{/home}.  Mounted images therefore augment the root
 namespace without replacing it.
 
-@node Read-only XFS Backend
-@section Read-only XFS Backend
+@node XFS Backend
+@section XFS Backend
 
-@file{kernel/src/xfs.c} implements read-only XFS v4/v5 support, controlled by
-@code{CONFIG_KERNEL_XFS}.  The generic @code{fs_mount_image},
-@code{fs_mount_file}, and @code{fs_mount_storage} APIs identify XFS by its
-superblock magic.  Boot uses these APIs for the @file{/usr} module or disk;
-the default @file{/usr} image is @file{build/usr.xfs}.  The writable
-@file{/home} image and GPT boot partition remain ext3.
+@file{kernel/src/xfs.c} implements the XFS v4/v5 reader.  The accompanying
+@file{xfs_write.inc}, @file{xfs_alloc.inc}, @file{xfs_file.inc},
+@file{xfs_dir.inc}, and @file{xfs_mutate.inc} implement writable v5 mounts.
+@code{CONFIG_KERNEL_XFS} enables the backend and
+@code{CONFIG_KERNEL_XFS_WRITE} enables writes.  Generic mount APIs detect XFS
+by its superblock magic.  The default @file{/usr} image remains mounted
+read-only; the default @file{/home} image remains ext3.
 
-The reader handles shortform directories and directory data blocks (including
-block, leaf, and node directory layouts), inline extent maps and B+tree data
-forks, sparse and unwritten extents, and inline and remote symlinks.  It retains
-64-bit inode numbers and verifies v5 superblock, inode, directory, extent-tree,
-and remote-symlink CRC32c checksums.  Directory enumeration scans data blocks
-instead of consulting the hash index.
+The reader supports shortform, block, leaf, and node directories; inline and
+B+tree extent maps; sparse and unwritten extents; and inline and remote
+symlinks.  It checks metadata CRC32c values, identities and bounds.  Inode
+numbers remain 64-bit.  Directory enumeration scans data blocks and supports
+paging through open directory inodes.
 
-There is no journal replay or write support.  Supply freshly formatted or
-cleanly unmounted images; recover an unclean image on Linux before use.
-Writable mount requests return @code{EROFS}, including the boot-time
-@file{/home} request, which then uses its ramdisk fallback.  Realtime data,
-external logs, special-file inodes, metadata-directory formats, and unknown
-incompatible features are unsupported.  XFS allows up to four mounts directly
-below root and rejects mounting over an existing ext2 or ramdisk path.
+Writable storage mounts support create, overwrite, append, sparse extension,
+truncate, mkdir, rmdir, hard links, symlinks, special-file creation, rename
+with replacement, chmod, chown, timestamps, and sync.  Allocation updates
+maintain both free-space trees, the AG free list, inode trees, extent trees,
+and filesystem counters.  Directories transition between shortform, block,
+leaf and node layouts.  Open unlinked inodes stay on native AGI orphan lists
+until the last descriptor closes; mount recovery reclaims abandoned orphans.
 
-The @code{make check-xfs} host suite uses @code{mkfs.xfs} prototype files to
-exercise real v4/v5 images without mounting them, plus synthetic tests for
-malformed metadata and extent trees.  It builds static musl test executables.
+The writer uses native XFS buffer log items and commit records.  New file data
+is flushed before allocation metadata commits.  Each log header and payload
+is flushed before proceeding to the next record.  Committed metadata is then
+written and flushed before a clean marker is published.  Recovery replays
+complete buffer transactions, discards incomplete transactions, and covers
+torn log records before publishing a clean marker.  Storage write or flush
+failure shuts down further access to that mount until remount and recovery.
+Storage callbacks must provide a working durability barrier; a write callback
+alone is insufficient.
+
+Writable mounts currently require v5 metadata, 4096-byte filesystem and
+directory blocks, 512-byte inodes and sectors, an internal unstriped log, and
+@code{ftype=1}.  Quotas, finobt, sparse inode chunks, rmapbt, reflink, bigtime,
+nrext64, exchange, parent pointers, metadata UUIDs, realtime devices, and
+metadata-directory formats are not supported writable.  Unsupported feature
+sets are rejected before replay or mutation.  Inodes with attribute forks
+are not mutable.  Foreign dirty logs containing
+items other than the supported native buffer transaction format must be
+recovered on Linux.  Read-only mounts do not replay logs; supply clean images.
+
+To prepare an optional writable image without changing boot defaults:
+
+@example
+python3 tools/make_xfs_image.py --writable root-directory output.xfs
+@end example
+
+The default builder invocation still creates the read-only @file{/usr} image.
+Memory-image and file-backed mount wrappers remain read-only; writable mounts
+use @code{fs_mount_storage} and its read, write, and flush callbacks.  XFS
+supports four mount points directly below root.  The VFS retains its 128-byte
+path and 64-byte component buffers.  Transactions are bounded to 1024 buffers;
+operations exceeding that bound fail without publishing metadata.  Directory
+indexes currently support one internal node level; allocation and extent tree
+rebuilds are limited to 512 nodes.  Large writes commit in
+64 KiB portions and can return a short count on failure.  Automatic timestamps
+use the kernel's wall clock; explicit timestamps persist.  Read access does
+not automatically update atime.  Immutable and append-only inode flags
+prevent mutation.
+
+@code{make check-xfs} checks real v4/v5 read-only images and malformed metadata.
+@code{make check-xfs-write} checks writable operations, remount persistence,
+directory and extent growth, and interrupted writes and recovery, using
+@code{xfs_repair -n} to check resulting images.  Host test binaries use static
+musl.  @code{make check-xfs-kernel} boots disposable test disks twice with
+static musl and dynamic glibc programs, checking writes and persistence.
+@code{make check-storage-flush} checks ATA and SCSI barrier behavior.
 
 @node VFS Routing Rules
 @section VFS Routing Rules
@@ -137,7 +180,7 @@ malformed metadata and extent trees.  It builds static musl test executables.
 The routing rule is intentionally small:
 
 @itemize @bullet
-@item If the path belongs to a mounted XFS tree, use the read-only XFS backend.
+@item If the path belongs to a mounted XFS tree, use the XFS backend with that mount's write policy.
 @item If the path belongs to a mounted ext2/ext3 tree such as @file{/usr} or
 @file{/home}, use that ext2/ext3 mount.
 @item If the path belongs to a ramdisk tree such as @file{/tmp} or the

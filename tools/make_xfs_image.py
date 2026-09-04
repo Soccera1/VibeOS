@@ -17,7 +17,7 @@ def token(value: str) -> str:
     return value
 
 
-def build(root: Path, output: Path) -> None:
+def build(root: Path, output: Path, writable: bool = False) -> None:
     root = root.resolve(strict=True)
     if not root.is_dir():
         raise ValueError(f"not a directory: {root}")
@@ -76,9 +76,12 @@ def build(root: Path, output: Path) -> None:
         try:
             with os.fdopen(fd, 'wb') as image:
                 image.truncate(size)
+            options = (['-m', 'crc=1,reflink=0,finobt=0,rmapbt=0,bigtime=0,inobtcount=0',
+                        '-i', 'sparse=0,nrext64=0,exchange=0', '-n', 'ftype=1,parent=0', '-s', 'size=512']
+                       if writable else ['-m', 'crc=1,reflink=0'])
             subprocess.run(['mkfs.xfs', '-f', '-q', '-b', 'size=4096',
                             '-i', 'size=512', '-l', 'size=64m',
-                            '-m', 'crc=1,reflink=0', '-L', 'VIBEUSR',
+                            *options, '-L', 'VIBEXFS' if writable else 'VIBEUSR',
                             '-p', str(proto), temporary], check=True)
             os.chmod(temporary, 0o644)
             os.replace(temporary, output)
@@ -88,9 +91,11 @@ def build(root: Path, output: Path) -> None:
 
 
 if __name__ == '__main__':
-    if len(sys.argv) != 3:
-        raise SystemExit('usage: make_xfs_image.py <root-directory> <output.xfs>')
+    writable = '--writable' in sys.argv[1:]
+    args = [arg for arg in sys.argv[1:] if arg != '--writable']
+    if len(args) != 2:
+        raise SystemExit('usage: make_xfs_image.py [--writable] <root-directory> <output.xfs>')
     try:
-        build(Path(sys.argv[1]), Path(sys.argv[2]))
+        build(Path(args[0]), Path(args[1]), writable=writable)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         raise SystemExit(f'XFS image build failed: {error}')

@@ -218,8 +218,14 @@ static int ata_read_sector(const struct ata_device* dev, uint32_t lba, void* buf
 }
 
 static int ata_flush_cache(const struct ata_device* dev) {
+    if (ata_wait_not_busy(dev) != 0) return -1;
+    uint8_t status = ata_status(dev);
+    if (!status || status == 0xffu || (status & (ATA_SR_ERR | ATA_SR_DF | ATA_SR_DRQ))) return -1;
     outb((uint16_t)(dev->io_base + ATA_REG_COMMAND), ATA_CMD_CACHE_FLUSH);
-    return ata_wait_not_busy(dev);
+    ata_delay_400ns(dev);
+    if (ata_wait_not_busy(dev) != 0) return -1;
+    status = ata_status(dev);
+    return !status || status == 0xffu || (status & (ATA_SR_ERR | ATA_SR_DF | ATA_SR_DRQ)) ? -1 : 0;
 }
 
 static int ata_write_sector(const struct ata_device* dev, uint32_t lba, const void* buf) {
@@ -327,9 +333,18 @@ static int ata_storage_write(void* ctx, uint64_t offset, const void* buf, size_t
     return 0;
 }
 
+static int ata_storage_flush(void* ctx) {
+    const struct ata_device* dev = ctx;
+    if (!dev || !dev->present) return -1;
+    if (ata_wait_not_busy(dev) != 0) return -1;
+    ata_select_drive(dev, 0u);
+    return ata_flush_cache(dev);
+}
+
 static const struct ext2_storage_ops g_ata_storage_ops = {
     .read = ata_storage_read,
     .write = ata_storage_write,
+    .flush = ata_storage_flush,
 };
 
 void ata_init(void) {

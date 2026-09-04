@@ -695,11 +695,15 @@ int fs_home_mount_error(void) {
 }
 
 int fs_sync(void) {
-    return ext2_sync_all();
+    int r = xfs_sync_all();
+    int ext = ext2_sync_all();
+    return r ? r : ext;
 }
 
 int fs_shutdown(void) {
-    return ext2_shutdown_all();
+    int r = xfs_sync_all();
+    int ext = ext2_shutdown_all();
+    return r ? r : ext;
 }
 
 int fs_mount_usr_from_file(const char* path, bool read_only) {
@@ -812,6 +816,7 @@ int fs_write(struct fs_entry* entry, size_t offset, const void* buf, size_t coun
         return -30;
     }
 
+    if (entry->backend == FS_BACKEND_XFS) return xfs_write(entry, offset, buf, count);
     if (entry->backend == FS_BACKEND_EXT2) {
         return ext2_write(entry, offset, buf, count);
     }
@@ -830,6 +835,7 @@ int fs_truncate(struct fs_entry* entry, size_t size) {
         return -30;
     }
 
+    if (entry->backend == FS_BACKEND_XFS) return xfs_truncate(entry, size);
     if (entry->backend == FS_BACKEND_EXT2) {
         return ext2_truncate(entry, size);
     }
@@ -868,7 +874,7 @@ int fs_readlink(const struct fs_entry* entry, char* out, size_t bufsz) {
 }
 
 bool fs_is_read_only_path(const char* path) {
-    if (xfs_owns_path(path)) return true;
+    if (xfs_owns_path(path)) return xfs_is_read_only_path(path);
     if (path == NULL) {
         return true;
     }
@@ -886,7 +892,7 @@ bool fs_is_read_only_path(const char* path) {
 }
 
 int fs_create(const char* path, uint32_t mode, uint32_t uid, uint32_t gid, struct fs_entry* out) {
-    if (xfs_owns_path(path)) return -EROFS;
+    if (xfs_owns_path(path)) return xfs_create(path, mode, uid, gid, out);
     if (path_in_ext2_mount(path)) {
         return ext2_create(path, mode, uid, gid, out);
     }
@@ -898,7 +904,7 @@ int fs_create(const char* path, uint32_t mode, uint32_t uid, uint32_t gid, struc
 }
 
 int fs_mknod(const char* path, uint32_t mode, uint32_t rdev, uint32_t uid, uint32_t gid, struct fs_entry* out) {
-    if (xfs_owns_path(path)) return -EROFS;
+    if (xfs_owns_path(path)) return xfs_mknod(path, mode, rdev, uid, gid, out);
     if (path_in_ext2_mount(path)) {
         return ext2_mknod(path, mode, rdev, uid, gid, out);
     }
@@ -910,7 +916,7 @@ int fs_mknod(const char* path, uint32_t mode, uint32_t rdev, uint32_t uid, uint3
 }
 
 int fs_mkdir(const char* path, uint32_t mode, uint32_t uid, uint32_t gid, struct fs_entry* out) {
-    if (xfs_owns_path(path)) return -EROFS;
+    if (xfs_owns_path(path)) return xfs_mkdir(path, mode, uid, gid, out);
     if (path_in_ext2_mount(path)) {
         return ext2_mkdir(path, mode, uid, gid, out);
     }
@@ -921,7 +927,7 @@ int fs_mkdir(const char* path, uint32_t mode, uint32_t uid, uint32_t gid, struct
 }
 
 int fs_symlink(const char* target, const char* linkpath, uint32_t uid, uint32_t gid, struct fs_entry* out) {
-    if (xfs_owns_path(linkpath)) return -EROFS;
+    if (xfs_owns_path(linkpath)) return xfs_symlink(target, linkpath, uid, gid, out);
     if (path_in_ext2_mount(linkpath)) {
         return ext2_symlink(target, linkpath, uid, gid, out);
     }
@@ -935,7 +941,7 @@ int fs_symlink(const char* target, const char* linkpath, uint32_t uid, uint32_t 
 }
 
 int fs_link(const char* existing, const char* newpath) {
-    if (xfs_owns_path(existing) || xfs_owns_path(newpath)) return -EROFS;
+    if (xfs_owns_path(existing) || xfs_owns_path(newpath)) return xfs_link(existing, newpath);
     if (path_in_ext2_mount(existing) && path_in_ext2_mount(newpath)) {
         return ext2_link(existing, newpath);
     }
@@ -946,7 +952,7 @@ int fs_link(const char* existing, const char* newpath) {
 }
 
 int fs_unlink(const char* path) {
-    if (xfs_owns_path(path)) return -EROFS;
+    if (xfs_owns_path(path)) return xfs_unlink(path);
     if (path_in_ext2_mount(path)) {
         return ext2_unlink(path);
     }
@@ -968,7 +974,7 @@ int fs_unlink(const char* path) {
 }
 
 int fs_rmdir(const char* path) {
-    if (xfs_owns_path(path)) return -EROFS;
+    if (xfs_owns_path(path)) return xfs_rmdir(path);
     if (path_in_ext2_mount(path)) {
         return ext2_rmdir(path);
     }
@@ -993,7 +999,7 @@ int fs_rmdir(const char* path) {
 }
 
 int fs_rename(const char* oldpath, const char* newpath) {
-    if (xfs_owns_path(oldpath) || xfs_owns_path(newpath)) return -EROFS;
+    if (xfs_owns_path(oldpath) || xfs_owns_path(newpath)) return xfs_rename(oldpath, newpath);
     if (path_in_ext2_mount(oldpath) && path_in_ext2_mount(newpath)) {
         return ext2_rename(oldpath, newpath);
     }
@@ -1004,7 +1010,7 @@ int fs_rename(const char* oldpath, const char* newpath) {
 }
 
 int fs_chmod(const char* path, uint32_t mode) {
-    if (xfs_owns_path(path)) return -EROFS;
+    if (xfs_owns_path(path)) return xfs_chmod(path, mode);
     if (path_in_ext2_mount(path)) {
         return ext2_chmod(path, mode);
     }
@@ -1020,7 +1026,7 @@ int fs_chmod(const char* path, uint32_t mode) {
 }
 
 int fs_chown(const char* path, uint32_t uid, uint32_t gid) {
-    if (xfs_owns_path(path)) return -EROFS;
+    if (xfs_owns_path(path)) return xfs_chown(path, uid, gid);
     if (path_in_ext2_mount(path)) {
         return ext2_chown(path, uid, gid);
     }
@@ -1041,7 +1047,7 @@ int fs_chown(const char* path, uint32_t uid, uint32_t gid) {
 }
 
 int fs_utime(const char* path, uint32_t atime, uint32_t mtime) {
-    if (xfs_owns_path(path)) return -EROFS;
+    if (xfs_owns_path(path)) return xfs_utime(path, atime, mtime);
     if (path_in_ext2_mount(path)) {
         return ext2_utime(path, atime, mtime);
     }

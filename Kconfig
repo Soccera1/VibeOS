@@ -61,8 +61,13 @@ config KERNEL_EXT2
 	default y
 
 config KERNEL_XFS
-	bool "Read-only XFS filesystem support"
+	bool "XFS filesystem support"
 	default y
+
+config KERNEL_XFS_WRITE
+	bool "Allow writable XFS mounts"
+	default y
+	depends on KERNEL_XFS
 
 config KERNEL_EXT2_WRITE
 	bool "Allow writable ext2/ext3 mounts"

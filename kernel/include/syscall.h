@@ -25,3 +25,5 @@ uint64_t syscall_dispatch(struct syscall_frame* frame);
 void syscall_random_bytes(void* buf, uint64_t len);
 
 void syscall_timer_interrupt(struct syscall_frame* frame);
+
+uint64_t syscall_wall_time_ns(void);

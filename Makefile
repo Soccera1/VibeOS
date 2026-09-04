@@ -215,7 +215,7 @@ check-run-tools:
 
 check-toolchain: check-iso-tools check-disk-tools check-run-tools
 
-check: check-xfs check-kmalloc check-console-reflow check-elf-loader check-glibc-runtime check-kernel-config
+check: check-storage-flush check-xfs check-xfs-write check-kmalloc check-console-reflow check-elf-loader check-glibc-runtime check-kernel-config
 
 check-kernel-config:
 	python3 tools/check_kernel_config.py
@@ -536,3 +536,61 @@ $(BUILD_DIR)/tests/xfs-unit-host-test $(BUILD_DIR)/tests/xfs-disabled-host-test:
 	ZIG_LOCAL_CACHE_DIR="$(HOST_TEST_ZIG_LOCAL_CACHE)" \
 	zig cc -target x86_64-linux-musl -static -no-pie -std=gnu11 -O2 -Wall -Wextra -Werror \
 		-Ikernel/include $(if $(findstring disabled,$@),,-DCONFIG_KERNEL_XFS) -o $@ $<
+
+.PHONY: check-scsi-flush
+check-scsi-flush: $(BUILD_DIR)/tests/scsi-flush-host-test
+	$<
+
+$(BUILD_DIR)/tests/scsi-flush-host-test: tests/scsi-flush-host-test.c kernel/src/scsi.c kernel/include/scsi.h kernel/include/ext2.h | $(BUILD_DIR)
+	@mkdir -p $(dir $@)
+	ZIG_GLOBAL_CACHE_DIR="$(HOST_TEST_ZIG_GLOBAL_CACHE)" \
+	ZIG_LOCAL_CACHE_DIR="$(HOST_TEST_ZIG_LOCAL_CACHE)" \
+	zig cc -target x86_64-linux-musl -static -no-pie -std=gnu11 -O2 -Wall -Wextra -Werror \
+		-Ikernel/include -o $@ $(filter %.c,$^)
+
+.PHONY: check-storage-flush
+check-storage-flush: check-scsi-flush $(BUILD_DIR)/tests/ata-flush-host-test
+	$(BUILD_DIR)/tests/ata-flush-host-test
+
+$(BUILD_DIR)/tests/ata-flush-host-test: tests/ata-flush-host-test.c kernel/src/ata.c $(wildcard kernel/include/*.h) | $(BUILD_DIR)
+	@mkdir -p $(dir $@)
+	ZIG_GLOBAL_CACHE_DIR="$(HOST_TEST_ZIG_GLOBAL_CACHE)" \
+	ZIG_LOCAL_CACHE_DIR="$(HOST_TEST_ZIG_LOCAL_CACHE)" \
+	zig cc -target x86_64-linux-musl -static -no-pie -std=gnu11 -O2 -Wall -Wextra -Werror \
+		-ffunction-sections -fdata-sections -Wl,--gc-sections -Ikernel/include -o $@ $<
+
+$(BUILD_DIR)/kernel/src/xfs.o $(BUILD_DIR)/tests/xfs-host-test $(BUILD_DIR)/tests/xfs-unit-host-test $(BUILD_DIR)/tests/xfs-disabled-host-test: $(wildcard kernel/src/xfs*.inc)
+
+.PHONY: check-xfs-write
+check-xfs-write: $(BUILD_DIR)/tests/xfs-write-host-test $(BUILD_DIR)/tests/xfs-allocation-host-test
+	python3 tools/check_xfs_write.py $^
+
+$(BUILD_DIR)/tests/xfs-write-host-test: tests/xfs-write-host-test.c kernel/src/xfs.c kernel/src/fs.c kernel/src/ext2.c kernel/src/initramfs.c $(wildcard kernel/include/*.h) $(wildcard kernel/src/xfs*.inc) | $(BUILD_DIR)
+	@mkdir -p $(dir $@)
+	ZIG_GLOBAL_CACHE_DIR="$(HOST_TEST_ZIG_GLOBAL_CACHE)" \
+	ZIG_LOCAL_CACHE_DIR="$(HOST_TEST_ZIG_LOCAL_CACHE)" \
+	zig cc -target x86_64-linux-musl -static -no-pie -std=gnu11 -O2 -ffunction-sections -fdata-sections \
+		-Wall -Wextra -Werror -Ikernel/include -DCONFIG_KERNEL_XFS -DCONFIG_KERNEL_XFS_WRITE \
+		-DCONFIG_KERNEL_EXT2 -DCONFIG_KERNEL_EXT2_WRITE -Wl,--gc-sections -o $@ $(filter %.c,$^)
+
+$(BUILD_DIR)/tests/xfs-allocation-host-test: tests/xfs-allocation-host-test.c kernel/src/xfs.c $(wildcard kernel/include/*.h) $(wildcard kernel/src/xfs*.inc) | $(BUILD_DIR)
+	@mkdir -p $(dir $@)
+	ZIG_GLOBAL_CACHE_DIR="$(HOST_TEST_ZIG_GLOBAL_CACHE)" \
+	ZIG_LOCAL_CACHE_DIR="$(HOST_TEST_ZIG_LOCAL_CACHE)" \
+	zig cc -target x86_64-linux-musl -static -no-pie -std=gnu11 -O2 -Wall -Wextra -Werror \
+		-Ikernel/include -DCONFIG_KERNEL_XFS -DCONFIG_KERNEL_XFS_WRITE -o $@ $<
+
+.PHONY: check-xfs-kernel
+check-xfs-kernel: $(KERNEL_BIN) $(INITRAMFS) $(USR_XFS) $(BUILD_DIR)/tests/xfs-kernel-static $(BUILD_DIR)/tests/xfs-kernel-dynamic
+	python3 tools/check_xfs_kernel.py $(KERNEL_BIN) $(INITRAMFS) $(USR_XFS) $(BUILD_DIR)/tests/xfs-kernel-static
+	python3 tools/check_xfs_kernel.py $(KERNEL_BIN) $(INITRAMFS) $(USR_XFS) $(BUILD_DIR)/tests/xfs-kernel-dynamic
+
+$(BUILD_DIR)/tests/xfs-kernel-static: tests/xfs-kernel-test.c | $(BUILD_DIR)
+	@mkdir -p $(dir $@)
+	ZIG_GLOBAL_CACHE_DIR="$(HOST_TEST_ZIG_GLOBAL_CACHE)" \
+	ZIG_LOCAL_CACHE_DIR="$(HOST_TEST_ZIG_LOCAL_CACHE)" \
+	zig cc -target x86_64-linux-musl -static -std=gnu11 -O2 -Wall -Wextra -Werror -o $@ $<
+
+$(BUILD_DIR)/tests/xfs-kernel-dynamic: tests/xfs-kernel-test.c | $(BUILD_DIR)
+	@mkdir -p $(dir $@)
+	$(GLIBC_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Wl,-rpath,/usr/lib64 -o $@ $<

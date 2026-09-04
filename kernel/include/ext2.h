@@ -9,6 +9,9 @@
 struct ext2_storage_ops {
     int (*read)(void* ctx, uint64_t offset, void* buf, size_t len);
     int (*write)(void* ctx, uint64_t offset, const void* buf, size_t len);
+    /* Optional durability barrier: zero means all preceding writes are on
+     * stable storage. NULL means that this guarantee is unavailable. */
+    int (*flush)(void* ctx);
 };
 
 int ext2_mount_storage_at(const char* mount_path, const struct ext2_storage_ops* ops, void* ctx, size_t size, bool read_only);

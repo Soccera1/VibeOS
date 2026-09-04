@@ -11,6 +11,7 @@
 #define SCSI_OP_READ_CAPACITY_10 0x25u
 #define SCSI_OP_READ_10 0x28u
 #define SCSI_OP_WRITE_10 0x2Au
+#define SCSI_OP_SYNCHRONIZE_CACHE_10 0x35u
 
 #define SCSI_SECTOR_SCRATCH_MAX 4096u
 
@@ -194,9 +195,18 @@ static int scsi_storage_write(void* ctx, uint64_t offset, const void* buf, size_
     return 0;
 }
 
+static int scsi_storage_flush(void* ctx) {
+    struct scsi_disk* disk = ctx;
+    if (!disk || !disk->present || !disk->writable || !disk->transport || !disk->transport->command) return -1;
+    /* IMMED=0 waits for completion; zero LBA and count cover the whole device. */
+    const uint8_t cdb[10] = {SCSI_OP_SYNCHRONIZE_CACHE_10};
+    return disk->transport->command(disk->transport_ctx, cdb, sizeof(cdb), NULL, 0, false);
+}
+
 static const struct ext2_storage_ops g_scsi_storage_ops = {
     .read = scsi_storage_read,
     .write = scsi_storage_write,
+    .flush = scsi_storage_flush,
 };
 
 const struct ext2_storage_ops* scsi_disk_storage_ops(void) {

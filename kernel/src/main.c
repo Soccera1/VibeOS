@@ -172,20 +172,20 @@ void kernel_main(uint64_t mb2_info) {
     }
     if (fs_home_mount_ready()) {
         if (virtio_scsi_disk_present(home_scsi_index)) {
-            console_printf("/home: ext3 SCSI disk %u mounted read-write (%u bytes)\n", (unsigned)home_scsi_index,
+            console_printf("/home: SCSI filesystem on disk %u mounted read-write (%u bytes)\n", (unsigned)home_scsi_index,
                            (unsigned)virtio_scsi_disk_size(home_scsi_index));
         } else {
-            console_write("/home: ext3 SCSI disk mounted read-write\n");
+            console_write("/home: SCSI filesystem mounted read-write\n");
         }
     } else if (fs_home_ramdisk_ready()) {
         if (fs_home_mount_error() != 0) {
-            console_printf("/home: ext3 SCSI disk mount failed (%s %d); ramdisk mounted read-write\n",
+            console_printf("/home: SCSI filesystem mount failed (%s %d); ramdisk mounted read-write\n",
                            errno_name(fs_home_mount_error()), fs_home_mount_error());
         } else {
             console_write("/home: ramdisk mounted read-write\n");
         }
     } else {
-        console_write("/home: no writable ext3 disk attached\n");
+        console_write("/home: no writable filesystem disk attached\n");
     }
     if (ata_scsi_present()) {
         console_printf("scsi: ATA PACKET device present (%u bytes)\n", (unsigned)ata_scsi_size());
