@@ -186,7 +186,13 @@ output continues over serial but does not draw into the framebuffer.  Returning
 to text mode redraws the saved console contents.  The single-console VT
 compatibility interface exposes @file{/dev/tty0} and @file{/dev/tty1} and the
 subset of @code{VT_*}, @code{KD*}, and keyboard-mode operations used by
-XLibre's KDrive Linux backend.
+XLibre's KDrive Linux backend.  The @command{startx-vibeos} launcher starts
+@command{st} 0.9.3 as the default client; @command{startx-vibeos-xterm}
+retains the previous Xterm session as a fallback.  The st renderer uses Xft
+and a minimal, regular-file Fontconfig configuration that selects the bundled
+@code{misc-fixed} bitmap fonts without relying on a @file{conf.d} symlink
+farm.  Its @code{st-256color} terminfo entry is staged under
+@file{/usr/share/terminfo}.
 
 Raw input is exposed as @file{/dev/input/event0} for the PS/2 pointer and
 @file{/dev/input/event1} for the PS/2 keyboard.  Both devices produce Linux
@@ -196,11 +202,16 @@ available whenever the keyboard event device is not grabbed.  An exclusive
 grab is released when its last duplicated or inherited open-file reference is
 closed, including when the owning process exits.
 
-Xterm uses the Unix98 pseudoterminal interface exposed through
+St and Xterm use the Unix98 pseudoterminal interface exposed through
 @file{/dev/ptmx} and dynamically allocated @file{/dev/pts/N} slave devices.
-PTY master and slave descriptors provide bidirectional buffering, terminal
-attributes and window sizing, foreground process-group operations, controlling
-terminal setup, readiness polling, and hangup detection.
+PTY master and slave descriptors provide bidirectional buffering, stored
+terminal attributes and window sizing, foreground process-group operations,
+controlling-terminal setup, readiness polling, and hangup detection.  The PTY
+path does not yet enforce a full line discipline: canonical input, echo,
+terminal-generated job-control signals, output translation, resize-triggered
+@code{SIGWINCH}, and non-root @code{grantpt} ownership remain incomplete.
+St performs its own UTF-8 decoding, but wide and combining character layout is
+limited because the runtime does not yet stage a compiled UTF-8 glibc locale.
 
 @node Power Management and Reset
 @section Power Management and Reset

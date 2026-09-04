@@ -128,7 +128,16 @@ GDBM_SRC := external/gdbm-src
 GROFF_SRC := external/groff-src
 MAN_DB_SRC := external/man-db-src
 CA_CERT_BUNDLE ?= /etc/ssl/certs/ca-certificates.crt
-DISTFILES_DIR ?= /var/cache/distfiles
+X11_EXTERNAL_DIR := external
+X11_SRC_NAMES := xorgproto xtrans libXau libXdmcp xcb-proto libxcb libX11 libXext \
+	libXrender libICE libSM libXt libXmu libXpm libXaw libXinerama termcap zlib \
+	libmd pixman freetype expat fontconfig libXft libfontenc libXfont2 libxkbfile \
+	xkbcomp xkeyboard-config font-util font-misc-misc xlibre xinit xterm st
+X11_SRC_DIRS := $(addprefix $(X11_EXTERNAL_DIR)/,$(addsuffix -src,$(X11_SRC_NAMES)))
+X11_SRC_FILES := $(shell find $(X11_SRC_DIRS) \
+	-path '*/.gitlab' -prune -o \
+	-path 'external/termcap-src/termcap.info' -prune -o \
+	-type f -print | sort)
 USER_SL := $(BUILD_DIR)/userspace/sl
 HELP_SRC := userspace/help.c
 KERNEL_TESTS_SRC := tests/kernel-tests.c tests/kernel-test-helper.c tests/glibc-dynamic-helper.c
@@ -178,7 +187,7 @@ check-build-tools:
 	@if [[ "$(STRIP_BINARIES)" != "0" ]]; then command -v $(STRIP) >/dev/null; fi
 	@command -v zig >/dev/null
 	@command -v readelf >/dev/null
-	@if [[ "$(CONFIG_USER_X11)" == "y" ]]; then command -v meson >/dev/null; command -v ninja >/dev/null; command -v pkg-config >/dev/null; fi
+	@if [[ "$(CONFIG_USER_X11)" == "y" ]]; then command -v meson >/dev/null; command -v ninja >/dev/null; command -v pkg-config >/dev/null; command -v gperf >/dev/null; command -v tic >/dev/null; fi
 
 check-image-tools: check-build-tools
 	@command -v cpio >/dev/null
@@ -361,11 +370,11 @@ $(USER_TESTS): $(KERNEL_TESTS_SRC) tools/build_kernel_tests.sh $(CONFIG_MK) | $(
 $(GLIBC_RUNTIME): tools/build_glibc_runtime.sh userspace/glibc_popcount.c $(GLIBC_SRC)/configure $(CONFIG_MK) | $(BUILD_DIR)
 	./tools/build_glibc_runtime.sh $@ "$(GLIBC_SRC)" "$(GLIBC_BUILD_ROOT)"
 
-$(USER_X11): $(GLIBC_RUNTIME) tools/build_x11.sh tools/patches/xlibre-vibeos-no-epoll.patch \
+$(USER_X11): $(GLIBC_RUNTIME) $(X11_SRC_FILES) tools/build_x11.sh tools/patches/xlibre-vibeos-no-epoll.patch \
 	tools/patches/xlibre-vibeos-baseline-libgcc.patch tools/patches/xlibre-vibeos-precompiled-xkb.patch \
-	tools/patches/xlibre-vibeos-vt-property.patch \
-	userspace/glibc_popcount.c userspace/xhello.c $(CONFIG_MK) | $(BUILD_DIR)
-	./tools/build_x11.sh $@ "$(DISTFILES_DIR)"
+	tools/patches/xlibre-vibeos-vt-property.patch $(wildcard tools/patches/termcap/*.patch) \
+	$(wildcard tools/patches/st/*.patch) userspace/glibc_popcount.c userspace/xhello.c $(CONFIG_MK) | $(BUILD_DIR)
+	./tools/build_x11.sh $@ "$(X11_EXTERNAL_DIR)"
 
 INITRAMFS_DEPS := $(USER_BUSYBOX)
 INITRAMFS_ARGS :=

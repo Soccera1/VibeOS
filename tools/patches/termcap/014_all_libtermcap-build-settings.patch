@@ -1,0 +1,33 @@
+respect CFLAGS/CPPFLAGS/CC/LDFLAGS
+
+--- a/Makefile
++++ b/Makefile
+@@ -7,9 +7,7 @@
+ VERSION=2.0.8
+ SONAME_VERSION=2
+ 
+-CC=gcc
+-CFLAGS=-O -I. -g
+-CFLAGS=-O -I.
++CPPFLAGS += -I.
+ 
+ AR=ar
+ ARFLAGS=ucvr
+@@ -28,7 +26,7 @@
+ prefix=/
+ 
+ .c.o:
+-	$(CC) $(CFLAGS) -fPIC -c $< -o $@
++	$(CC) $(CFLAGS) $(CPPFLAGS) -fPIC -c $< -o $@
+ 
+ SRCS = termcap.c tparam.c version.c
+ OBJS= $(SRCS:.c=.o)
+@@ -39,7 +37,7 @@
+ 	$(AR) $(ARFLAGS) $@ $(OBJS)
+ 
+ $(SHARED_LIB): $(OBJS)
+-	$(CC) -shared -o $@ -Wl,-soname,$(SONAME_SHARED_LIB) $(OBJS)
++	$(CC) $(CFLAGS) $(LDFLAGS) -shared -o $@ -Wl,-soname,$(SONAME_SHARED_LIB) $(OBJS)
+ 
+ install: lib install-dirs install-data
+ 	-if [ -f $(prefix)/lib/$(SHARED_LIB) ]; then \

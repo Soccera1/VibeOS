@@ -1,0 +1,13 @@
+in Gentoo, we only want the shared lib, so drop the static lib
+
+--- a/Makefile
++++ b/Makefile
+@@ -20,7 +20,7 @@
+ SHARED_LIB=lib$(LIBNAME).so.$(VERSION)
+ SONAME_SHARED_LIB=lib$(LIBNAME).so.$(SONAME_VERSION)
+ 
+-TARGETS=$(STATIC_LIB) $(SHARED_LIB)
++TARGETS=$(SHARED_LIB)
+ 
+ # Where is include and dir located?
+ prefix=/
