@@ -881,6 +881,9 @@ static void handle_icmp(uint32_t src_ip, const void* data, size_t len) {
         sock->count++;
     }
 
+#ifndef CONFIG_KERNEL_ICMP_ECHO
+    return;
+#endif
     if (len < sizeof(struct icmp_hdr)) {
         return;
     }

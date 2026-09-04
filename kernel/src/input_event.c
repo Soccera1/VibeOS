@@ -34,6 +34,9 @@ static size_t g_mouse_packet_size;
 static uint8_t g_mouse_buttons;
 
 static void queue_report(enum input_event_device device, const struct linux_input_event* events, size_t event_count) {
+#ifndef CONFIG_KERNEL_INPUT_EVENTS
+    return;
+#endif
     struct event_queue* queue = &g_queues[(unsigned)device];
     if (events == NULL || event_count == 0u || event_count > EVENT_QUEUE_CAPACITY) {
         return;
@@ -84,6 +87,9 @@ static uint16_t linux_keycode(uint8_t code, bool extended) {
 }
 
 static void handle_keyboard_byte(uint8_t byte) {
+#ifndef CONFIG_KERNEL_PS2_KEYBOARD
+    return;
+#endif
     if (byte == 0xe0u) {
         g_extended = true;
         return;
@@ -162,6 +168,9 @@ static bool mouse_command(uint8_t command) {
 }
 
 void input_event_init(void) {
+#ifndef CONFIG_KERNEL_PS2_MOUSE
+    return;
+#endif
     if (!wait_input_clear()) return;
     outb(0x64, 0xa8u); /* enable auxiliary port */
     if (!wait_input_clear()) return;
@@ -178,6 +187,9 @@ void input_event_init(void) {
 }
 
 void input_event_poll(void) {
+#if !defined(CONFIG_KERNEL_PS2_KEYBOARD) && !defined(CONFIG_KERNEL_PS2_MOUSE)
+    return;
+#endif
     while ((inb(0x64) & 1u) != 0u) {
         uint8_t status = inb(0x64);
         uint8_t byte = inb(0x60);

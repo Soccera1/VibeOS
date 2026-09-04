@@ -106,10 +106,18 @@ void kernel_main(uint64_t mb2_info) {
     console_write("VibeOS amd64 monolithic kernel prototype\n");
     power_init(mb2_info);
     kmalloc_init();
+#ifdef CONFIG_KERNEL_VIRTIO_GPU
     virtio_gpu_init();
+#endif
+#ifdef CONFIG_KERNEL_ATA
     ata_init();
+#endif
+#ifdef CONFIG_KERNEL_VIRTIO_SCSI
     virtio_scsi_init();
+#endif
+#ifdef CONFIG_KERNEL_VIRTIO_NET
     virtio_net_init();
+#endif
     input_event_init();
 
     const struct mb2_tag_module* initramfs_module = mb2_find_module(mb2_info, 0);

@@ -261,10 +261,16 @@ static int ramdisk_mount_path(const char* path, uint32_t mode) {
 }
 
 static int ramdisk_mount_home(void) {
+#ifndef CONFIG_KERNEL_HOME_RAMDISK
+    return -EROFS;
+#endif
     return ramdisk_mount_path("/home", 0755u);
 }
 
 static int ramdisk_mount_tmp(void) {
+#ifndef CONFIG_KERNEL_TMP_RAMDISK
+    return -EROFS;
+#endif
     return ramdisk_mount_path("/tmp", 01777u);
 }
 
@@ -569,6 +575,17 @@ void fs_init(const uint8_t* usrfs_start, size_t usrfs_size) {
     };
 
     for (size_t i = 0; i < sizeof(mounts) / sizeof(mounts[0]); ++i) {
+        bool mount_enabled = true;
+#ifndef CONFIG_KERNEL_USR_AUTOMOUNT
+        if (strcmp(mounts[i].mount_path, "/usr") == 0) mount_enabled = false;
+#endif
+#ifndef CONFIG_KERNEL_HOME_AUTOMOUNT
+        if (strcmp(mounts[i].mount_path, "/home") == 0) mount_enabled = false;
+#endif
+        if (!mount_enabled) {
+            if (strcmp(mounts[i].mount_path, "/home") == 0) (void)ramdisk_mount_home();
+            continue;
+        }
         int r = -1;
         switch (mounts[i].source) {
             case BOOT_EXT2_SOURCE_IMAGE:

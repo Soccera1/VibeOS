@@ -53,6 +53,7 @@ endif
 
 CONFIG_STRIP_BINARIES ?= y
 CONFIG_KERNEL_WERROR ?= y
+CONFIG_KERNEL_DEBUG_INFO ?= n
 CONFIG_USER_HELP ?= y
 CONFIG_USER_COREUTILS ?= y
 CONFIG_USER_BASH ?= y
@@ -70,6 +71,11 @@ CONFIG_USER_X11 ?= y
 
 ifeq ($(CONFIG_KERNEL_WERROR),y)
 CFLAGS += -Werror
+endif
+
+ifeq ($(CONFIG_KERNEL_DEBUG_INFO),y)
+CFLAGS += -g
+NASM_DEBUG_FLAGS := -g -F dwarf
 endif
 
 KERNEL_ASM := \
@@ -162,7 +168,7 @@ export STRIP
 
 .PHONY: all clean run iso disk docs check check-kmalloc check-console-reflow check-elf-loader check-glibc-runtime check-glibc-system check-preemption-system check-toolchain check-build-tools check-image-tools \
 	check-iso-tools check-disk-tools check-run-tools all-debug iso-debug disk-debug run-debug \
-	config oldconfig menuconfig defconfig olddefconfig savedefconfig
+	config oldconfig menuconfig defconfig olddefconfig savedefconfig check-kernel-config
 
 all: disk
 
@@ -208,7 +214,10 @@ check-run-tools:
 
 check-toolchain: check-iso-tools check-disk-tools check-run-tools
 
-check: check-kmalloc check-console-reflow check-elf-loader check-glibc-runtime
+check: check-kmalloc check-console-reflow check-elf-loader check-glibc-runtime check-kernel-config
+
+check-kernel-config:
+	python3 tools/check_kernel_config.py
 
 check-kmalloc: $(KMALLOC_HOST_TEST)
 	$<
@@ -272,9 +281,9 @@ savedefconfig: $(KCONFIG_TOOL) $(KCONFIG) $(CONFIG_FILE)
 $(DOCS_OUT):
 	@mkdir -p $(DOCS_OUT)
 
-$(BUILD_DIR)/kernel/boot/%.o: kernel/boot/%.asm | $(BUILD_DIR)
+$(BUILD_DIR)/kernel/boot/%.o: kernel/boot/%.asm $(CONFIG_HEADER) | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
-	$(NASM) -f elf64 $< -o $@
+	$(NASM) $(NASM_DEBUG_FLAGS) -f elf64 $< -o $@
 
 $(BUILD_DIR)/kernel/src/%.o: kernel/src/%.c $(wildcard kernel/include/*.h) $(CONFIG_HEADER) | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
@@ -303,7 +312,7 @@ $(ELF_LOADER_HOST_TEST): tests/elf-loader-host-test.c kernel/src/elf_loader.c ke
 
 $(KERNEL_BIN): $(KERNEL_OBJS) kernel/linker.ld | $(BUILD_DIR)
 	$(LD) $(LDFLAGS) -o $@ $(KERNEL_OBJS)
-	@if [[ "$(STRIP_BINARIES)" != "0" ]]; then $(STRIP) $@; fi
+	@if [[ "$(STRIP_BINARIES)" != "0" && "$(CONFIG_KERNEL_DEBUG_INFO)" != "y" ]]; then $(STRIP) $@; fi
 
 $(USER_BUSYBOX): tools/build_busybox.sh $(CONFIG_MK) | $(BUILD_DIR)
 	./tools/build_busybox.sh $@ "$(BUSYBOX_SRC)" "$(BUSYBOX_STATIC)" "$(BUSYBOX_ROOTFS)"

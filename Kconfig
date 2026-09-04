@@ -14,6 +14,155 @@ config KERNEL_WERROR
 	bool "Build the kernel with -Werror"
 	default y
 
+config KERNEL_DEBUG_INFO
+	bool "Generate and retain kernel debug symbols"
+	default n
+
+config KERNEL_TIMER_HZ
+	int "Scheduler timer frequency in Hz (19-1000)"
+	default 100
+
+menu "Networking"
+
+config KERNEL_INET
+	bool "IPv4 networking"
+	default y
+
+config KERNEL_UNIX_SOCKETS
+	bool "Unix-domain sockets and socketpair"
+	default y
+
+config KERNEL_TCP_SOCKETS
+	bool "IPv4 TCP sockets"
+	default y
+	depends on KERNEL_INET
+
+config KERNEL_UDP_SOCKETS
+	bool "IPv4 UDP sockets"
+	default y
+	depends on KERNEL_INET
+
+config KERNEL_RAW_ICMP_SOCKETS
+	bool "Raw ICMP sockets (ping)"
+	default y
+	depends on KERNEL_INET
+
+config KERNEL_ICMP_ECHO
+	bool "Reply to incoming ICMP echo requests"
+	default y
+	depends on KERNEL_INET
+
+endmenu
+
+menu "Filesystems"
+
+config KERNEL_EXT2
+	bool "Ext2/ext3 filesystem support"
+	default y
+
+config KERNEL_EXT2_WRITE
+	bool "Allow writable ext2/ext3 mounts"
+	default y
+	depends on KERNEL_EXT2
+
+config KERNEL_USR_AUTOMOUNT
+	bool "Mount /usr at boot"
+	default y
+	depends on KERNEL_EXT2
+
+config KERNEL_HOME_AUTOMOUNT
+	bool "Mount /home from disk at boot"
+	default y
+	depends on KERNEL_EXT2
+
+config KERNEL_TMP_RAMDISK
+	bool "Writable /tmp ramdisk"
+	default y
+
+config KERNEL_HOME_RAMDISK
+	bool "Use a /home ramdisk when no disk is mounted"
+	default y
+
+endmenu
+
+menu "Console and input"
+
+config KERNEL_SERIAL_CONSOLE
+	bool "Serial console output"
+	default y
+
+config KERNEL_SERIAL_INPUT
+	bool "Serial console input"
+	default y
+
+config KERNEL_PS2_KEYBOARD
+	bool "PS/2 keyboard input"
+	default y
+
+config KERNEL_PS2_MOUSE
+	bool "PS/2 mouse input"
+	default y
+
+config KERNEL_INPUT_EVENTS
+	bool "Input event devices (/dev/input/event*)"
+	default y
+	depends on KERNEL_PS2_KEYBOARD || KERNEL_PS2_MOUSE
+
+config KERNEL_FBDEV
+	bool "Userspace framebuffer device (/dev/fb0)"
+	default y
+
+config KERNEL_PTYS
+	bool "Pseudo-terminals (/dev/ptmx and /dev/pts)"
+	default y
+
+endmenu
+
+menu "Optional system calls"
+
+config KERNEL_PIPES
+	bool "Anonymous pipes"
+	default y
+
+config KERNEL_SYMLINK_CREATE
+	bool "Create symbolic links"
+	default y
+
+config KERNEL_HARDLINK_CREATE
+	bool "Create hard links"
+	default y
+
+config KERNEL_REBOOT
+	bool "Userspace reboot and poweroff requests"
+	default y
+
+config KERNEL_SETHOSTNAME
+	bool "Userspace hostname changes"
+	default y
+
+endmenu
+
+menu "Device initialization"
+
+config KERNEL_ATA
+	bool "Initialize ATA disks and ATAPI optical drives"
+	default y
+
+config KERNEL_VIRTIO_SCSI
+	bool "Initialize VirtIO SCSI storage"
+	default y
+
+config KERNEL_VIRTIO_NET
+	bool "Initialize VirtIO networking"
+	default y
+	depends on KERNEL_INET
+
+config KERNEL_VIRTIO_GPU
+	bool "Initialize VirtIO graphics"
+	default y
+
+endmenu
+
 endmenu
 
 menu "Userspace"

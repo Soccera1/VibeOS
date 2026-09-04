@@ -8,6 +8,9 @@ static int serial_ready(void) {
 }
 
 void serial_init(void) {
+#if !defined(CONFIG_KERNEL_SERIAL_CONSOLE) && !defined(CONFIG_KERNEL_SERIAL_INPUT)
+    return;
+#endif
     outb(COM1 + 1, 0x00);
     outb(COM1 + 3, 0x80);
     outb(COM1 + 0, 0x03);
@@ -18,6 +21,9 @@ void serial_init(void) {
 }
 
 void serial_putc(char c) {
+#ifndef CONFIG_KERNEL_SERIAL_CONSOLE
+    return;
+#endif
     while (!serial_ready()) {
     }
     outb(COM1 + 0, (unsigned char)c);
@@ -33,6 +39,9 @@ void serial_write(const char* s) {
 }
 
 int serial_input_ready(void) {
+#ifndef CONFIG_KERNEL_SERIAL_INPUT
+    return 0;
+#endif
     return (inb(COM1 + 5) & 0x01) != 0;
 }
 

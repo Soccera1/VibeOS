@@ -6,6 +6,9 @@
 #define PIT_HZ 1193182ull
 #define CALIBRATION_COUNT 59659u
 
+_Static_assert(CONFIG_KERNEL_TIMER_HZ >= 19 && CONFIG_KERNEL_TIMER_HZ <= 1000,
+               "CONFIG_KERNEL_TIMER_HZ must be between 19 and 1000 Hz");
+
 static uint64_t cycles_per_usec;
 static uint64_t boot_tsc;
 
@@ -45,11 +48,12 @@ void timer_init(void) {
     outb(0x21, 0xFE);
     outb(0xA1, 0xFF);
 
-    uint16_t divisor = (uint16_t)(PIT_HZ / 100u);
-    outb(0x43, 0x34); /* channel 0, rate generator, approximately 100 Hz */
+    uint16_t divisor = (uint16_t)(PIT_HZ / CONFIG_KERNEL_TIMER_HZ);
+    outb(0x43, 0x34); /* channel 0, rate generator */
     outb(0x40, divisor & 0xffu);
     outb(0x40, divisor >> 8);
-    console_printf("Timer: 100 Hz, calibrated TSC %u cycles/us\n", cycles_per_usec);
+    console_printf("Timer: %u Hz, calibrated TSC %u cycles/us\n",
+                   (unsigned)CONFIG_KERNEL_TIMER_HZ, cycles_per_usec);
 }
 
 uint64_t timer_cycles_per_usec(void) {

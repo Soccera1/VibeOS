@@ -3002,6 +3002,12 @@ static int ext2_validate_mount_features(const struct ext2_superblock* superblock
 
 static int ext2_build_mount(struct ext2_mount* mount, const char* mount_path, const struct ext2_storage_ops* ops, void* ctx,
                             size_t size, bool read_only) {
+#ifndef CONFIG_KERNEL_EXT2
+    return -ENOTSUP;
+#endif
+#ifndef CONFIG_KERNEL_EXT2_WRITE
+    if (!read_only) return -EROFS;
+#endif
     if (mount == NULL || mount_path == NULL || mount_path[0] != '/' || ops == NULL || ops->read == NULL || size < 2048u) {
         return -EINVAL;
     }

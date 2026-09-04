@@ -67,11 +67,58 @@ The generated files live under `build/`:
 - `build/include/generated/autoconf.h` for kernel C code
 
 The default configuration preserves the existing full image. Current options
-cover binary stripping, kernel `-Werror`, and which optional userspace packages
+cover binary stripping, kernel build and device settings, and which optional userspace packages
 are staged into the initramfs and `/usr` image. BusyBox remains mandatory
 because it provides the initramfs base shell and login applets. `make
 menuconfig` builds the host helper `build/tools/menuconfig` from
 `tools/menuconfig.c` and links it against ncurses.
+
+The Kernel menu includes:
+
+- `KERNEL_WERROR`: treat compiler warnings as errors (enabled by default).
+- `KERNEL_DEBUG_INFO`: generate C and assembly debug symbols and retain them in
+  the kernel even when `STRIP_BINARIES` is enabled (disabled by default).
+- `KERNEL_TIMER_HZ`: scheduler interrupt frequency, default 100 Hz. Values outside
+  19–1000 Hz are rejected during compilation; timekeeping uses the calibrated TSC.
+- `KERNEL_ATA`, `KERNEL_VIRTIO_SCSI`, `KERNEL_VIRTIO_NET`, and `KERNEL_VIRTIO_GPU`:
+  initialize the corresponding hardware (all enabled by default). These switches
+  skip device probing; driver code remains linked. Disabling storage drivers can
+  make disk-backed filesystems unavailable, disabling VirtIO networking removes
+  the network device, and disabling VirtIO graphics leaves the boot framebuffer.
+
+The following feature switches are enabled by default. Names in this table
+have the `CONFIG_KERNEL_` prefix in `.config`.
+
+| Menu | Options | Effect when disabled |
+| --- | --- | --- |
+| Networking | `INET` | Reject IPv4 sockets with `EAFNOSUPPORT`; also disables VirtIO network initialization and dependent IPv4 options. |
+| Networking | `UNIX_SOCKETS` | Reject Unix-domain sockets and `socketpair` with `EAFNOSUPPORT`. |
+| Networking | `TCP_SOCKETS`, `UDP_SOCKETS`, `RAW_ICMP_SOCKETS` | Reject the corresponding IPv4 socket types with `EPROTOTYPE`. The internal UDP path remains available for DHCP. |
+| Networking | `ICMP_ECHO` | Stop replying to incoming ping requests; raw ICMP reception is controlled separately. |
+| Filesystems | `EXT2` | Reject ext2/ext3 mounts; also disables the dependent write and boot-mount options. Initramfs and ramdisks remain available. |
+| Filesystems | `EXT2_WRITE` | Reject writable ext2/ext3 mounts with `EROFS`, while allowing read-only mounts. `/home` can fall back to a ramdisk. |
+| Filesystems | `USR_AUTOMOUNT`, `HOME_AUTOMOUNT` | Skip the corresponding disk/image mount at boot. `/home` can still use its ramdisk fallback. |
+| Filesystems | `TMP_RAMDISK`, `HOME_RAMDISK` | Disable the writable `/tmp` ramdisk or `/home` ramdisk fallback. |
+| Console and input | `SERIAL_CONSOLE`, `SERIAL_INPUT` | Disable serial output or input independently. |
+| Console and input | `PS2_KEYBOARD`, `PS2_MOUSE` | Disable the corresponding PS/2 input source. |
+| Console and input | `INPUT_EVENTS` | Hide `/dev/input` event devices and stop queuing evdev reports; PS/2 keyboard console input still works. Requires at least one PS/2 input source. |
+| Console and input | `FBDEV` | Hide `/dev/fb0` and disable userspace framebuffer access; kernel console rendering remains available. |
+| Console and input | `PTYS` | Hide `/dev/ptmx` and `/dev/pts`, disabling pseudo-terminal allocation. |
+| Optional system calls | `PIPES` | Return `ENOSYS` from `pipe` and `pipe2`. |
+| Optional system calls | `SYMLINK_CREATE`, `HARDLINK_CREATE` | Return `ENOSYS` from link-creation system calls; existing links still work. |
+| Optional system calls | `REBOOT`, `SETHOSTNAME` | Return `ENOSYS` from userspace reboot/poweroff or hostname-change requests. Kernel shutdown still works. |
+
+Feature switches control access and initialization, and do not guarantee complete
+removal of related code or static buffers from the kernel. Userspace package
+selection remains independent: for example, X11 terminal sessions need Unix
+sockets, PTYs, framebuffer access and writable temporary storage; shell pipelines
+need pipes; network tools need the appropriate socket types. Static musl and
+dynamic glibc executable loading remain supported in every configuration.
+
+Run `make check-kernel-config` for static-musl host regression tests covering
+default, disabled and mixed feature configurations, dependency resolution,
+disabled-interface errors, input handling and ramdisk availability. This check
+uses temporary configurations and leaves your `.config` choices intact.
 
 Artifacts:
 - `build/vibeos-kernel.bin`

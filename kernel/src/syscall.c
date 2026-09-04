@@ -2501,7 +2501,30 @@ static void reset_caught_signal_handlers_on_exec(void) {
     }
 }
 
+/* Keep disabled synthetic devices out of lookup, open, and directory listings. */
+static bool device_path_enabled(const char* path) {
+#ifndef CONFIG_KERNEL_PTYS
+    if (strcmp(path, "/dev/ptmx") == 0 || strcmp(path, "/dev/pts") == 0 ||
+        strncmp(path, "/dev/pts/", 9) == 0) return false;
+#endif
+#ifndef CONFIG_KERNEL_FBDEV
+    if (strcmp(path, "/dev/fb0") == 0) return false;
+#endif
+#ifndef CONFIG_KERNEL_INPUT_EVENTS
+    if (strcmp(path, "/dev/input") == 0 || strncmp(path, "/dev/input/", 11) == 0) return false;
+#endif
+#ifndef CONFIG_KERNEL_PS2_MOUSE
+    if (strcmp(path, "/dev/input/event0") == 0) return false;
+#endif
+#ifndef CONFIG_KERNEL_PS2_KEYBOARD
+    if (strcmp(path, "/dev/input/event1") == 0) return false;
+#endif
+    (void)path;
+    return true;
+}
+
 static bool is_special_dir(const char* path) {
+    if (!device_path_enabled(path)) return false;
     return (strcmp(path, "/") == 0) || (strcmp(path, "/dev") == 0) || (strcmp(path, "/proc") == 0) ||
            (strcmp(path, "/sys") == 0) || (strcmp(path, "/tmp") == 0) || (strcmp(path, "/bin") == 0) ||
            (strcmp(path, "/usr") == 0) || (strcmp(path, "/usr/bin") == 0) || (strcmp(path, "/etc") == 0) ||
@@ -2515,6 +2538,9 @@ static bool is_tty_path(const char* path) {
 }
 
 static int pty_slave_for_path(const char* path) {
+#ifndef CONFIG_KERNEL_PTYS
+    return -1;
+#endif
     const char prefix[] = "/dev/pts/";
     if (strncmp(path, prefix, sizeof(prefix) - 1u) != 0) return -1;
     const char* number = path + sizeof(prefix) - 1u;
@@ -2528,20 +2554,37 @@ static int pty_slave_for_path(const char* path) {
 }
 
 static bool is_ptmx_path(const char* path) {
+#ifndef CONFIG_KERNEL_PTYS
+    return false;
+#endif
     return strcmp(path, "/dev/ptmx") == 0;
 }
 
 static int input_device_for_path(const char* path) {
+#ifndef CONFIG_KERNEL_INPUT_EVENTS
+    return -1;
+#endif
+#ifdef CONFIG_KERNEL_PS2_MOUSE
     if (strcmp(path, "/dev/input/event0") == 0) return INPUT_EVENT_POINTER;
+#endif
+#ifdef CONFIG_KERNEL_PS2_KEYBOARD
     if (strcmp(path, "/dev/input/event1") == 0) return INPUT_EVENT_KEYBOARD;
+#endif
+    (void)path;
     return -1;
 }
 
 static bool is_fb_path(const char* path) {
+#ifndef CONFIG_KERNEL_FBDEV
+    return false;
+#endif
     return strcmp(path, "/dev/fb0") == 0;
 }
 
 static bool get_fb_info(struct console_framebuffer_info* info) {
+#ifndef CONFIG_KERNEL_FBDEV
+    return false;
+#endif
     if (info == NULL) {
         return false;
     }
@@ -2954,6 +2997,7 @@ static bool path_has_child(const char* dir) {
 }
 
 static int path_mode_size(const char* path, uint32_t* mode_out, size_t* size_out, struct fs_entry* entry_out) {
+    if (!device_path_enabled(path)) return err(ENOENT);
     struct fs_entry e;
 
     int pty_id = pty_slave_for_path(path);
@@ -3197,7 +3241,23 @@ static size_t collect_children(const char* dir, char names[MAX_CHILDREN][64], ui
         }
     }
 
-    return count;
+    size_t kept = 0;
+    for (size_t i = 0; i < count; ++i) {
+        char path[FS_MAX_PATH];
+        size_t dir_len = strlen(dir);
+        size_t name_len = strlen(names[i]);
+        if (dir_len + name_len + 2u > sizeof(path)) continue;
+        memcpy(path, dir, dir_len);
+        path[dir_len] = '/';
+        memcpy(path + dir_len + 1u, names[i], name_len + 1u);
+        if (!device_path_enabled(path)) continue;
+        if (kept != i) {
+            memcpy(names[kept], names[i], 64);
+            types[kept] = types[i];
+        }
+        ++kept;
+    }
+    return kept;
 }
 
 static int copy_user_string(const char* user, char* out, size_t out_len) {
@@ -3342,6 +3402,8 @@ static int sys_openat(int dirfd, const char* path_user, uint32_t flags, uint32_t
     if (r != 0) {
         return r;
     }
+
+    if (!device_path_enabled(path)) return err(ENOENT);
 
     if (is_ptmx_path(path)) {
         int pty_id = alloc_pty_slot();
@@ -4876,6 +4938,9 @@ static int sys_dup_common(int oldfd, int wanted, bool exact) {
 }
 
 static int sys_pipe2(int* pipefd, uint32_t flags) {
+#ifndef CONFIG_KERNEL_PIPES
+    return err(ENOSYS);
+#endif
     if (pipefd == NULL) {
         return err(EFAULT);
     }
@@ -4972,14 +5037,23 @@ static int parse_inet_socket_type(int type, int protocol, int* socktype_out, uin
     }
     int socktype = type & SOCK_TYPE_MASK;
     if (socktype == SOCK_DGRAM) {
+#ifndef CONFIG_KERNEL_UDP_SOCKETS
+        return err(EPROTOTYPE);
+#endif
         if (protocol != 0 && protocol != IPPROTO_IP && protocol != IPPROTO_UDP) {
             return err(EPROTOTYPE);
         }
     } else if (socktype == SOCK_STREAM) {
+#ifndef CONFIG_KERNEL_TCP_SOCKETS
+        return err(EPROTOTYPE);
+#endif
         if (protocol != 0 && protocol != IPPROTO_IP && protocol != IPPROTO_TCP) {
             return err(EPROTOTYPE);
         }
     } else if (socktype == SOCK_RAW) {
+#ifndef CONFIG_KERNEL_RAW_ICMP_SOCKETS
+        return err(EPROTOTYPE);
+#endif
         if (protocol != IPPROTO_ICMP) {
             return err(EPROTOTYPE);
         }
@@ -5050,6 +5124,12 @@ static int inet_ensure_bound(struct inet_socket_state* sock) {
 }
 
 static int sys_socket(int domain, int type, int protocol) {
+#ifndef CONFIG_KERNEL_INET
+    if (domain == AF_INET) return err(EAFNOSUPPORT);
+#endif
+#ifndef CONFIG_KERNEL_UNIX_SOCKETS
+    if (domain == AF_UNIX || domain == AF_LOCAL) return err(EAFNOSUPPORT);
+#endif
     if (domain == AF_INET) {
         int socktype = 0;
         uint32_t fd_open_flags = 0;
@@ -5129,6 +5209,9 @@ static int sys_socket(int domain, int type, int protocol) {
 }
 
 static int sys_socketpair(int domain, int type, int protocol, int* sv) {
+#ifndef CONFIG_KERNEL_UNIX_SOCKETS
+    return err(EAFNOSUPPORT);
+#endif
     if (sv == NULL) {
         return err(EFAULT);
     }
@@ -7319,6 +7402,9 @@ static int sys_renameat2(int olddirfd, const char* old_user, int newdirfd, const
 }
 
 static int sys_symlinkat(const char* target_user, int newdirfd, const char* link_user) {
+#ifndef CONFIG_KERNEL_SYMLINK_CREATE
+    return err(ENOSYS);
+#endif
     char target[128];
     int r = copy_user_string(target_user, target, sizeof(target));
     if (r != 0) {
@@ -7334,6 +7420,9 @@ static int sys_symlinkat(const char* target_user, int newdirfd, const char* link
 }
 
 static int sys_linkat(int olddirfd, const char* old_user, int newdirfd, const char* new_user, uint32_t flags) {
+#ifndef CONFIG_KERNEL_HARDLINK_CREATE
+    return err(ENOSYS);
+#endif
     if ((flags & ~(AT_SYMLINK_FOLLOW | AT_SYMLINK_NOFOLLOW)) != 0u) {
         return err(EINVAL);
     }
@@ -7833,6 +7922,9 @@ static int sys_uname(struct linux_utsname* uts) {
 }
 
 static int sys_sethostname(const char* name, size_t len) {
+#ifndef CONFIG_KERNEL_SETHOSTNAME
+    return err(ENOSYS);
+#endif
     if (!current_is_superuser()) {
         return err(EPERM);
     }
@@ -9706,6 +9798,9 @@ static int sys_fsync(int fd, bool data_only) {
 }
 
 static int sys_reboot(int magic1, int magic2, uint64_t cmd) {
+#ifndef CONFIG_KERNEL_REBOOT
+    return err(ENOSYS);
+#endif
     if (magic1 != (int)0xfee1dead || magic2 != 672274793) {
         return err(EINVAL);
     }
