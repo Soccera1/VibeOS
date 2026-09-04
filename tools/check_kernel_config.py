@@ -36,9 +36,10 @@ def main():
             values = kconfig.resolve(model, raw)
             if name == "mixed":
                 for symbol in ("VIRTIO_NET", "TCP_SOCKETS", "UDP_SOCKETS", "RAW_ICMP_SOCKETS",
-                               "ICMP_ECHO", "EXT2_WRITE", "USR_AUTOMOUNT", "HOME_AUTOMOUNT"):
+                               "ICMP_ECHO", "EXT2_WRITE", "HOME_AUTOMOUNT"):
                     assert values[f"KERNEL_{symbol}"] == "n", symbol
                 assert values["KERNEL_INPUT_EVENTS"] == "y"
+                assert values["KERNEL_USR_AUTOMOUNT"] == "y"
             if name == "no-keyboard":
                 assert values["KERNEL_INPUT_EVENTS"] == "y"
             if name == "disabled":

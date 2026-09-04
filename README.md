@@ -9,7 +9,7 @@ VibeOS is an amd64 monolithic-kernel OS prototype that boots via Multiboot2 and 
 - **Syscalls:** Extensive Linux-style syscall ABI via amd64 `syscall` instruction (70+ syscalls implemented).
 - **Scheduling and clocks:** 100 Hz PIT-driven userspace and kernel preemption, round-robin scheduling, saved x87/SSE/AVX state, and PIT-calibrated TSC timekeeping with separate monotonic and RTC-seeded realtime clocks. Per-process kernel stacks preserve interrupted syscalls; a preemptible global lock serializes legacy kernel operations.
 - **Process Management:** Support for `fork` (state snapshotting), `execve` (ELF64 loader), and `wait4`.
-- **VFS:** Read-only initramfs (`cpio newc`) root with an `ext2`/`ext3` `/usr` mount path, a writable `/home` ext3 mount or ramdisk fallback, a writable volatile `/tmp` ramdisk, plus support for pipes, symlinks, Unix-domain sockets, and device nodes (`/dev/tty`, `/dev/null`, `/dev/fb0`). The shipped `/usr` and `/home` images are `ext3`.
+- **VFS:** Read-only initramfs (`cpio newc`) root with an `ext2`/`ext3` or read-only XFS `/usr` mount path, a writable `/home` ext3 mount or ramdisk fallback, a writable volatile `/tmp` ramdisk, plus support for pipes, symlinks, Unix-domain sockets, and device nodes (`/dev/tty`, `/dev/null`, `/dev/fb0`). The shipped `/usr` and `/home` images are `ext3`.
 - **I/O:** TTY support over VGA text mode, Multiboot/virtio framebuffer, keyboard, and serial (`COM1`).
 - **Graphics:** XLibre's Xfbdev and Xvfb servers, evdev keyboard/pointer input, xinit, XKB data, st 0.9.3 as the default X terminal, an xterm fallback, and a small Xlib probe client.
 - **Networking:** virtio-net with a small IPv4 stack covering ARP, DHCP, ICMP, UDP, and client-side TCP streams.
@@ -95,7 +95,8 @@ have the `CONFIG_KERNEL_` prefix in `.config`.
 | Networking | `UNIX_SOCKETS` | Reject Unix-domain sockets and `socketpair` with `EAFNOSUPPORT`. |
 | Networking | `TCP_SOCKETS`, `UDP_SOCKETS`, `RAW_ICMP_SOCKETS` | Reject the corresponding IPv4 socket types with `EPROTOTYPE`. The internal UDP path remains available for DHCP. |
 | Networking | `ICMP_ECHO` | Stop replying to incoming ping requests; raw ICMP reception is controlled separately. |
-| Filesystems | `EXT2` | Reject ext2/ext3 mounts; also disables the dependent write and boot-mount options. Initramfs and ramdisks remain available. |
+| Filesystems | `EXT2` | Reject ext2/ext3 mounts; also disables ext2 writes and `/home` automount. `/usr` automount remains available when XFS is enabled. |
+| Filesystems | `XFS` | Reject XFS mounts. XFS support is read-only and independent of ext2/ext3. |
 | Filesystems | `EXT2_WRITE` | Reject writable ext2/ext3 mounts with `EROFS`, while allowing read-only mounts. `/home` can fall back to a ramdisk. |
 | Filesystems | `USR_AUTOMOUNT`, `HOME_AUTOMOUNT` | Skip the corresponding disk/image mount at boot. `/home` can still use its ramdisk fallback. |
 | Filesystems | `TMP_RAMDISK`, `HOME_RAMDISK` | Disable the writable `/tmp` ramdisk or `/home` ramdisk fallback. |
@@ -170,4 +171,26 @@ VibeOS ships BusyBox, GNU coreutils, Bash, Vim, upstream `file(1)`, `wget`, and 
 
 Static linking is preferred because self-contained executables fit the VibeOS deployment model, not because musl is preferred. The ideal static target would use glibc, but glibc cannot be made reliably self-contained for facilities that retain dynamic runtime dependencies, including NSS and related loading behavior. Musl is used for static artifacts as a pragmatic compromise. Where dynamic linking is intended, glibc is the preferred and supported libc.
 
-The initramfs now carries the root filesystem, the essential `/bin` command set, BusyBox, and empty `/usr`, `/home`, and `/tmp` mountpoints. The kernel filesystem backend supports both ext2 and ext3 images. On the default GPT/QEMU run path, `build/usr.ext3` is attached as virtio SCSI target 0 and mounted read-only at `/usr`, while `build/home.ext3` is attached as target 1 and mounted read-write at `/home`; `/tmp` is always backed by a volatile writable ramdisk. ISO boot still loads `/usr` as a Multiboot module. The kernel can also mount ext2 or ext3 filesystems from regular files through the existing ext2/ext3 loopback path when those files are already reachable through VFS, but there is not yet a kernel block-device/boot-filesystem reader for opening `/boot/usr.ext3` directly from the boot medium.
+The initramfs now carries the root filesystem, the essential `/bin` command set, BusyBox, and empty `/usr`, `/home`, and `/tmp` mountpoints. The kernel filesystem backends support ext2/ext3 and read-only XFS v4/v5 images. On the default GPT/QEMU run path, `build/usr.ext3` is attached as virtio SCSI target 0 and mounted read-only at `/usr`, while `build/home.ext3` is attached as target 1 and mounted read-write at `/home`; `/tmp` is always backed by a volatile writable ramdisk. ISO boot still loads `/usr` as a Multiboot module. The kernel can also mount ext2 or ext3 filesystems from regular files through the existing ext2/ext3 loopback path when those files are already reachable through VFS, but there is not yet a kernel block-device/boot-filesystem reader for opening `/boot/usr.ext3` directly from the boot medium.
+
+XFS is enabled by `CONFIG_KERNEL_XFS`. The generic `fs_mount_image`,
+`fs_mount_file`, and `fs_mount_storage` kernel APIs detect the filesystem by
+magic; explicit `fs_mount_xfs_*` APIs are also available. A prepared XFS image
+can replace the read-only `/usr` SCSI disk or Multiboot module. The shipped
+image builders still produce ext3. XFS mounts require `read_only=true`;
+requesting a writable XFS `/home` returns `EROFS` and boot uses the home ramdisk
+fallback.
+
+The XFS reader supports shortform and block/leaf/node directories, extent and
+B+tree data forks, sparse/unwritten extents, inline and remote symlinks, 64-bit
+inode numbers, and v5 metadata CRC32c verification. It does **not replay the
+journal**: use images created by `mkfs.xfs` or cleanly unmounted on Linux.
+Recovery-required images must be recovered on Linux before use. Realtime data,
+external logs, metadata-directory formats, special-file inodes, and unknown
+incompatible features are unsupported. Mount points must be immediately below
+root, with at most four XFS mounts; existing namespace path/name limits apply.
+
+Run `make check-xfs` for static musl host tests, including real images generated
+by `mkfs.xfs` (requires host `xfsprogs`). The tests never mount an image or need
+root privileges. They also exercise disabled support, invalid metadata, sparse
+and unwritten extents, B+tree traversal, and read-only enforcement.

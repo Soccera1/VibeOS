@@ -60,6 +60,10 @@ config KERNEL_EXT2
 	bool "Ext2/ext3 filesystem support"
 	default y
 
+config KERNEL_XFS
+	bool "Read-only XFS filesystem support"
+	default y
+
 config KERNEL_EXT2_WRITE
 	bool "Allow writable ext2/ext3 mounts"
 	default y
@@ -68,7 +72,7 @@ config KERNEL_EXT2_WRITE
 config KERNEL_USR_AUTOMOUNT
 	bool "Mount /usr at boot"
 	default y
-	depends on KERNEL_EXT2
+	depends on KERNEL_EXT2 || KERNEL_XFS
 
 config KERNEL_HOME_AUTOMOUNT
 	bool "Mount /home from disk at boot"

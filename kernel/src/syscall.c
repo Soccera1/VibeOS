@@ -3361,7 +3361,7 @@ static uint64_t stat_inode_for_entry(const struct fs_entry* entry) {
 }
 
 static uint64_t stat_device_for_entry(const struct fs_entry* entry) {
-    if (entry->backend == FS_BACKEND_EXT2) {
+    if (entry->backend == FS_BACKEND_EXT2 || entry->backend == FS_BACKEND_XFS) {
         if (strncmp(entry->path, "/usr", 4) == 0 && (entry->path[4] == '\0' || entry->path[4] == '/')) {
             return 2;
         }

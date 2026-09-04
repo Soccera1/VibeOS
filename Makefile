@@ -214,7 +214,7 @@ check-run-tools:
 
 check-toolchain: check-iso-tools check-disk-tools check-run-tools
 
-check: check-kmalloc check-console-reflow check-elf-loader check-glibc-runtime check-kernel-config
+check: check-xfs check-kmalloc check-console-reflow check-elf-loader check-glibc-runtime check-kernel-config
 
 check-kernel-config:
 	python3 tools/check_kernel_config.py
@@ -513,3 +513,24 @@ docs: $(DOCS_SRC) | $(DOCS_OUT)
 
 clean:
 	rm -rf $(BUILD_DIR) $(DOCS_OUT) $(ZIG_GLOBAL_CACHE) $(ZIG_LOCAL_CACHE) $(COREUTILS_ZIG_GLOBAL_CACHE) $(COREUTILS_ZIG_LOCAL_CACHE) $(GNUTLS_SRC)/build-musl $(WGET_SRC)/build-musl
+
+.PHONY: check-xfs
+check-xfs: $(BUILD_DIR)/tests/xfs-host-test $(BUILD_DIR)/tests/xfs-unit-host-test $(BUILD_DIR)/tests/xfs-disabled-host-test
+	$(BUILD_DIR)/tests/xfs-unit-host-test
+	$(BUILD_DIR)/tests/xfs-disabled-host-test
+	python3 tools/check_xfs.py $<
+
+$(BUILD_DIR)/tests/xfs-host-test: tests/xfs-host-test.c kernel/src/xfs.c kernel/src/fs.c kernel/src/ext2.c kernel/src/initramfs.c $(wildcard kernel/include/*.h) | $(BUILD_DIR)
+	@mkdir -p $(dir $@)
+	ZIG_GLOBAL_CACHE_DIR="$(HOST_TEST_ZIG_GLOBAL_CACHE)" \
+	ZIG_LOCAL_CACHE_DIR="$(HOST_TEST_ZIG_LOCAL_CACHE)" \
+	zig cc -target x86_64-linux-musl -static -no-pie -std=gnu11 -O2 -ffunction-sections -fdata-sections \
+		-Wall -Wextra -Werror -Ikernel/include -DCONFIG_KERNEL_XFS -DCONFIG_KERNEL_EXT2 -DCONFIG_KERNEL_EXT2_WRITE \
+		-Wl,--gc-sections -o $@ $(filter %.c,$^)
+
+$(BUILD_DIR)/tests/xfs-unit-host-test $(BUILD_DIR)/tests/xfs-disabled-host-test: tests/xfs-unit-host-test.c kernel/src/xfs.c $(wildcard kernel/include/*.h) | $(BUILD_DIR)
+	@mkdir -p $(dir $@)
+	ZIG_GLOBAL_CACHE_DIR="$(HOST_TEST_ZIG_GLOBAL_CACHE)" \
+	ZIG_LOCAL_CACHE_DIR="$(HOST_TEST_ZIG_LOCAL_CACHE)" \
+	zig cc -target x86_64-linux-musl -static -no-pie -std=gnu11 -O2 -Wall -Wextra -Werror \
+		-Ikernel/include $(if $(findstring disabled,$@),,-DCONFIG_KERNEL_XFS) -o $@ $<

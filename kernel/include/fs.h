@@ -32,6 +32,7 @@ enum fs_backend {
     FS_BACKEND_INITRAMFS,
     FS_BACKEND_EXT2,
     FS_BACKEND_RAMDISK,
+    FS_BACKEND_XFS,
 };
 
 struct ext2_storage_ops;
@@ -43,7 +44,7 @@ struct fs_entry {
     uint32_t mode;
     uint32_t uid;
     uint32_t gid;
-    uint32_t inode;
+    uint64_t inode;
     enum fs_backend backend;
     bool read_only;
 };
@@ -60,6 +61,13 @@ int fs_shutdown(void);
 int fs_mount_ext2_image(const char* mount_path, const uint8_t* image, size_t size, bool read_only);
 int fs_mount_ext2_file(const char* mount_path, const char* path, bool read_only);
 int fs_mount_ext2_storage(const char* mount_path, const struct ext2_storage_ops* ops, void* ctx, size_t size, bool read_only);
+/* Generic mounts detect ext2/ext3 or XFS by on-disk magic. */
+int fs_mount_image(const char* mount_path, const uint8_t* image, size_t size, bool read_only);
+int fs_mount_file(const char* mount_path, const char* path, bool read_only);
+int fs_mount_storage(const char* mount_path, const struct ext2_storage_ops* ops, void* ctx, size_t size, bool read_only);
+int fs_mount_xfs_image(const char* mount_path, const uint8_t* image, size_t size, bool read_only);
+int fs_mount_xfs_file(const char* mount_path, const char* path, bool read_only);
+int fs_mount_xfs_storage(const char* mount_path, const struct ext2_storage_ops* ops, void* ctx, size_t size, bool read_only);
 int fs_mount_usr_from_file(const char* path, bool read_only);
 
 int fs_lookup(const char* path, struct fs_entry* out);
