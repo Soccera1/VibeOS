@@ -15,13 +15,17 @@ def fail(message: str, output: bytearray) -> None:
 
 
 def main() -> int:
-    if len(sys.argv) != 4:
-        print("usage: check_glibc_dynamic.py <gpt-image> <usr-image> <home-image>", file=sys.stderr)
+    if len(sys.argv) < 4:
+        print("usage: check_glibc_dynamic.py <gpt-image> <usr-image> <home-image> [test-group ...]", file=sys.stderr)
         return 2
 
+    groups = sys.argv[4:] or ["glibc_dynamic_linking"]
+    if any(not group.replace("_", "").isalnum() for group in groups):
+        raise ValueError("invalid test group")
+    binary = "/usr/libexec/kernel-tests/glibc-kernel-tests" if os.environ.get("KERNEL_TEST_LIBC") == "glibc" else "/usr/bin/kernel-tests"
     with tempfile.TemporaryDirectory(prefix="vibeos-glibc-", dir="/tmp") as temp_dir:
         images = []
-        for source in sys.argv[1:]:
+        for source in sys.argv[1:4]:
             destination = os.path.join(temp_dir, os.path.basename(source))
             shutil.copyfile(source, destination)
             images.append(destination)
@@ -30,7 +34,7 @@ def main() -> int:
             "qemu-system-x86_64",
             "-name", "vibeos-glibc-check",
             "-machine", "q35,accel=tcg",
-            "-cpu", "max",
+            "-cpu", os.environ.get("QEMU_CPU", "max"),
             "-m", "1G",
             "-display", "none",
             "-device", "virtio-vga",
@@ -62,10 +66,10 @@ def main() -> int:
                         continue
                     output.extend(chunk)
                     if not command_sent and b"root@vibeos" in output:
-                        process.stdin.write(b"cd / && /usr/bin/kernel-tests glibc_dynamic_linking\n")
+                        process.stdin.write(("cd / && " + " && ".join(f"{binary} {group}" for group in groups) + "\n").encode())
                         process.stdin.flush()
                         command_sent = True
-                    if b"[PASS] glibc_dynamic_linking" in output and b"0 failures" in output:
+                    if all(f"[PASS] {group}".encode() in output for group in groups) and output.count(b"0 failures") == len(groups):
                         success = True
                         process.stdin.write(b"poweroff\n")
                         process.stdin.flush()
@@ -83,8 +87,10 @@ def main() -> int:
                     process.wait(timeout=3)
 
         if not success:
-            fail("glibc dynamic system test did not pass", output)
-        print("glibc dynamic system test passed")
+            fail("kernel system tests did not pass", output)
+        libc = os.environ.get("KERNEL_TEST_LIBC", "musl")
+        cpu = os.environ.get("QEMU_CPU", "max")
+        print(f"kernel system tests passed ({libc}, {cpu}): {', '.join(groups)}")
         return 0
 
 

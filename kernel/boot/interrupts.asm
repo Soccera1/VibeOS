@@ -41,6 +41,7 @@ global isr29
 global isr30
 global isr31
 
+extern syscall_timer_interrupt
 extern syscall_dispatch
 extern kernel_exit_stack_top
 extern userland_exit_handler
@@ -98,13 +99,64 @@ enter_user_mode:
 
     push qword 0x1B
     push rsi
-    pushfq
+    push qword 0x202 ; Enable interrupts only on return to userspace.
     push qword 0x23
     push rdi
     iretq
 
+; IRQ0 preserves every GPR, including the interrupted RAX.
+global irq_timer
+irq_timer:
+    cld
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push rbp
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+
+    mov rdi, rsp
+    call syscall_timer_interrupt
+
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rbp
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    iretq
+
+global irq_spurious_master
+irq_spurious_master:
+    iretq
+
+global irq_spurious_slave
+irq_spurious_slave:
+    push rax
+    mov al, 0x20
+    out 0x20, al
+    pop rax
+    iretq
+
 ; int 0x80 syscall entry from ring3.
-; Preserves all GPRs except rax (return value), then iretq back to user.
 isr128:
     cld
     push rax

@@ -28,7 +28,7 @@ reason to do otherwise:
 @item use glibc for dynamically linked executables,
 @item validate static non-PIE and dynamic PIE forms explicitly,
 @item the root filesystem and @file{/usr} remain read-only, and
-@item scheduler behavior remains cooperative and syscall-driven.
+@item userspace is timer-preemptible, but kernel paths run with interrupts disabled.
 @end itemize
 
 The static preference and the libc choice are separate decisions.  Static

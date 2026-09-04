@@ -23,3 +23,5 @@ struct syscall_frame {
 void syscall_init(void);
 uint64_t syscall_dispatch(struct syscall_frame* frame);
 void syscall_random_bytes(void* buf, uint64_t len);
+
+void syscall_timer_interrupt(struct syscall_frame* frame);

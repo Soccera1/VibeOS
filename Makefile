@@ -160,7 +160,7 @@ WGET_SRC_FILES := $(shell find $(WGET_SRC) -path "$(WGET_SRC)/build-musl" -prune
 export STRIP_BINARIES := $(if $(filter y,$(CONFIG_STRIP_BINARIES)),1,0)
 export STRIP
 
-.PHONY: all clean run iso disk docs check check-kmalloc check-console-reflow check-elf-loader check-glibc-runtime check-glibc-system check-toolchain check-build-tools check-image-tools \
+.PHONY: all clean run iso disk docs check check-kmalloc check-console-reflow check-elf-loader check-glibc-runtime check-glibc-system check-preemption-system check-toolchain check-build-tools check-image-tools \
 	check-iso-tools check-disk-tools check-run-tools all-debug iso-debug disk-debug run-debug \
 	config oldconfig menuconfig defconfig olddefconfig savedefconfig
 
@@ -225,6 +225,11 @@ check-glibc-runtime: $(GLIBC_RUNTIME) $(USER_TESTS)
 		--library-path $(GLIBC_RUNTIME)/usr/lib64 \
 		$(USER_TESTS)/libexec/kernel-tests/glibc-dynamic-helper argument
 
+check-preemption-system: disk
+	./tools/check_glibc_dynamic.py $(DISK_IMAGE) $(USR_EXT3) $(HOME_EXT3) preemption_and_clocks
+	QEMU_CPU=qemu64 ./tools/check_glibc_dynamic.py $(DISK_IMAGE) $(USR_EXT3) $(HOME_EXT3) preemption_and_clocks
+	KERNEL_TEST_LIBC=glibc ./tools/check_glibc_dynamic.py $(DISK_IMAGE) $(USR_EXT3) $(HOME_EXT3) preemption_and_clocks
+
 check-glibc-system: disk
 	./tools/check_glibc_dynamic.py $(DISK_IMAGE) $(USR_EXT3) $(HOME_EXT3)
 
@@ -271,7 +276,7 @@ $(BUILD_DIR)/kernel/boot/%.o: kernel/boot/%.asm | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
 	$(NASM) -f elf64 $< -o $@
 
-$(BUILD_DIR)/kernel/src/%.o: kernel/src/%.c $(CONFIG_HEADER) | $(BUILD_DIR)
+$(BUILD_DIR)/kernel/src/%.o: kernel/src/%.c $(wildcard kernel/include/*.h) $(CONFIG_HEADER) | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 

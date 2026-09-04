@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "fs.h"
+#include "fpu.h"
 #include "syscall.h"
 #include "vm.h"
 
@@ -133,6 +134,7 @@ struct process {
     uint64_t itimer_real_deadline_tsc;
     uint64_t itimer_real_interval_ns;
 
+    struct fpu_state fpu;
     struct syscall_frame saved_frame;
     uint64_t saved_iret[5];
     bool has_saved_context;

@@ -77,6 +77,10 @@ if [[ "${GLIBC_DYNAMIC_TEST:-1}" == "1" ]]; then
     -Wl,-z,relro,-z,now,--no-as-needed \
     -o "$OUT_ROOT/libexec/kernel-tests/glibc-dynamic-helper" \
     "$TESTS_DIR/glibc-dynamic-helper.c" -lm -ldl
+  "$GLIBC_CC" \
+    -O2 -fPIE -pie -Wall -Wextra -Werror -DENABLE_GLIBC_DYNAMIC_TEST=1 \
+    -o "$OUT_ROOT/libexec/kernel-tests/glibc-kernel-tests" \
+    "$TESTS_DIR/kernel-tests.c"
 fi
 
 ln -sfn ../../libexec/kernel-tests/kernel-test-helper "$OUT_ROOT/share/kernel-tests/helper-link"

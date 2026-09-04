@@ -56,6 +56,9 @@ extern void isr29(void);
 extern void isr30(void);
 extern void isr31(void);
 extern void isr128(void);
+extern void irq_timer(void);
+extern void irq_spurious_master(void);
+extern void irq_spurious_slave(void);
 
 static void idt_set_gate(int vec, void (*handler)(void), uint8_t type_attr, uint8_t ist) {
     uint64_t addr = (uint64_t)(uintptr_t)handler;
@@ -82,6 +85,9 @@ void idt_init(void) {
         idt_set_gate(i, handlers[i], 0x8E, ist);
     }
 
+    idt_set_gate(32, irq_timer, 0x8E, 0);
+    idt_set_gate(39, irq_spurious_master, 0x8E, 0);
+    idt_set_gate(47, irq_spurious_slave, 0x8E, 0);
     idt_set_gate(128, isr128, 0xEE, 0);
 
     struct idtr idtr;

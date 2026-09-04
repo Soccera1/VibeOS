@@ -66,6 +66,12 @@ Built-in console font dimensions and glyph table declaration.
 Public interface of the ext2/ext3 backend.  The file keeps its historical name
 even though the implementation now supports both formats.
 
+@item kernel/include/fpu.h
+Aligned x87/SSE/AVX save area and state-management API.
+
+@item kernel/include/timer.h
+PIT setup and calibrated TSC clock API.
+
 @item kernel/include/fs.h
 VFS-level path, mode, backend, and lookup interfaces.
 
@@ -212,6 +218,12 @@ Read-only initramfs parser and entry indexer.
 Ext2/ext3 filesystem implementation used for the @file{/usr} and @file{/home}
 mounts.  The file keeps its historical name even though the implementation now
 supports both formats.
+
+@item kernel/src/fpu.c
+Extended-state save, restore, reset, and signal-frame validation.
+
+@item kernel/src/timer.c
+PIC remapping, periodic PIT setup, and TSC calibration.
 
 @item kernel/src/fs.c
 VFS dispatcher over initramfs and the ext2/ext3 backend.

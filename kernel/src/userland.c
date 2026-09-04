@@ -1,3 +1,4 @@
+#include "fpu.h"
 #include "userland.h"
 
 #include <stdint.h>
@@ -251,6 +252,7 @@ static int userland_run_program(const char* path, const char* const* argv, size_
     current->vm = next_vm;
     console_write(launch_message);
     vm_space_activate(&current->vm);
+    fpu_reset();
     enter_user_mode(exec.start, user_stack);
     return 0;
 }

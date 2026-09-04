@@ -7,6 +7,7 @@ VibeOS is an amd64 monolithic-kernel OS prototype that boots via Multiboot2 and 
 - **Kernel:** amd64 64-bit long mode, identity-mapped bootstrap paging for the first 4 GiB.
 - **Boot:** Multiboot2 compliant, supports BIOS+GPT and ISO boot via GRUB.
 - **Syscalls:** Extensive Linux-style syscall ABI via amd64 `syscall` instruction (70+ syscalls implemented).
+- **Scheduling and clocks:** 100 Hz PIT-driven userspace preemption, round-robin scheduling, saved x87/SSE/AVX state, and PIT-calibrated TSC timekeeping with separate monotonic and RTC-seeded realtime clocks. Kernel execution remains non-preemptible.
 - **Process Management:** Support for `fork` (state snapshotting), `execve` (ELF64 loader), and `wait4`.
 - **VFS:** Read-only initramfs (`cpio newc`) root with an `ext2`/`ext3` `/usr` mount path, a writable `/home` ext3 mount or ramdisk fallback, a writable volatile `/tmp` ramdisk, plus support for pipes, symlinks, Unix-domain sockets, and device nodes (`/dev/tty`, `/dev/null`, `/dev/fb0`). The shipped `/usr` and `/home` images are `ext3`.
 - **I/O:** TTY support over VGA text mode, Multiboot/virtio framebuffer, keyboard, and serial (`COM1`).
@@ -44,7 +45,9 @@ make disk  # Build BIOS+GPT raw disk image without root privileges
 Each image target checks only the host tools it actually needs before starting.
 Run `make check-toolchain` to preflight the combined ISO, disk, and QEMU toolset.
 Run `make check` for static-musl host-side regression tests that do not require
-booting VibeOS.
+booting VibeOS. Run `make check-preemption-system` for QEMU tests of CPU-bound
+processes, timer signals, sleeping-process wakeups, and floating-point state
+preservation with static musl and dynamic glibc, including a non-XSAVE CPU.
 
 ### Configuration
 

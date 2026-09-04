@@ -102,19 +102,22 @@ kernel IPC object.
 
 @findex schedule_away
 
-VibeOS scheduling is not timer-driven.  The scheduler runs when the current task
-blocks in the syscall layer or exits.
+The scheduler runs when a task blocks or exits and on the roughly 100 Hz
+PIT IRQ0 interrupt while userspace is executing.  Runnable tasks and ready
+blocked tasks share a round-robin scan, so a CPU-bound task cannot starve a
+sleeping task whose deadline has passed.
 
-This makes the system cooperative in practice:
+Interrupt and syscall entry clear IF.  Kernel execution remains
+non-preemptible, and userspace returns with interrupts enabled.  The interrupt
+stub uses the syscall register-frame layout; context switches preserve the
+integer registers, user stack and flags, FS base, and x87/SSE/AVX state.
+XSAVE/XRSTOR save the enabled extended state, with FXSAVE/FXRSTOR on CPUs
+without OSXSAVE.  Signal delivery also preserves this state and leaves the
+128-byte AMD64 red zone intact.
 
-@itemize @bullet
-@item a process runs until it traps into the kernel and performs a syscall,
-@item if that syscall can complete immediately, the process often continues,
-@item if it must wait and another process has saved runnable context, the kernel
-saves the current process and resumes another one.
-@end itemize
-
-There is no periodic preemption and no interrupt-driven timeslice accounting.
+The legacy PIC is remapped to vectors 32--47 and only IRQ0 is unmasked.
+Other devices retain their polling paths.  There is no per-task CPU-time
+accounting, SMP scheduling, or kernel preemption.
 
 @node Blocking Operations
 @section Blocking Operations

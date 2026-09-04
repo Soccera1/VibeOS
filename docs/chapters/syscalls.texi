@@ -196,11 +196,11 @@ Process-management and signal-related calls include:
 @item 15 @tab @code{rt_sigreturn} @tab Restore user context after signal
 delivery.
 @item 35 @tab @code{nanosleep} @tab Busy-wait or scheduler-assisted sleep using
-a synthetic time base.
-@item 36 @tab @code{getitimer} @tab Reports the synthetic real interval timer.
-@item 37 @tab @code{alarm} @tab Sets the synthetic real interval timer in
+a PIT-calibrated TSC time base.
+@item 36 @tab @code{getitimer} @tab Reports the real interval timer.
+@item 37 @tab @code{alarm} @tab Sets the real interval timer in
 seconds.
-@item 38 @tab @code{setitimer} @tab Configures the synthetic real interval
+@item 38 @tab @code{setitimer} @tab Configures the real interval
 timer.
 @item 39 @tab @code{getpid} @tab Returns the current PID.
 @item 56 @tab @code{clone} @tab Restricted clone implementation.
@@ -271,9 +271,8 @@ permitted and returns the old value.
 @item 162 @tab @code{sync} @tab Flushes writable ext2/ext3 mounts.
 @item 186 @tab @code{gettid} @tab Returns the current PID; VibeOS does not have
 separate thread IDs.
-@item 228 @tab @code{clock_gettime} @tab Synthetic time source.
-@item 229 @tab @code{clock_getres} @tab Reports a fixed synthetic clock
-resolution.
+@item 228 @tab @code{clock_gettime} @tab RTC-seeded realtime or boot-relative monotonic time.
+@item 229 @tab @code{clock_getres} @tab Reports one-microsecond clock resolution.
 @item 235 @tab @code{utimes} @tab Updates path timestamps through the VFS.
 @item 261 @tab @code{futimesat} @tab Updates path timestamps relative to a
 directory fd.
@@ -324,9 +323,12 @@ Important semantic caveats to remember:
 @item Filesystem mutation is limited to writable ext2/ext3 mounts, the
 @file{/home} ramdisk fallback, and the @file{/tmp} ramdisk; the root initramfs
 and shipped @file{/usr} are read-only.
-@item @code{poll}, @code{select}, and @code{nanosleep} are not driven by a
-preemptive timer interrupt.  Wall-clock time is seeded from RTC state when
-available and then advanced from the TSC.
+@item @code{poll}, @code{select}, and @code{nanosleep} check deadlines using
+PIT-calibrated TSC cycles.  Timer preemption allows ready blocked tasks to
+resume alongside CPU-bound tasks, but idle kernel waits still poll.
+Wall-clock time is seeded from RTC state and advanced from the calibrated TSC.
+Realtime/coarse realtime and monotonic/raw/coarse/boottime clocks are supported;
+CPU-time clocks are rejected with @code{EINVAL}.
 @item @code{clone} does not offer full Linux thread semantics.
 @item @code{/proc} and @code{/sys} are not real filesystems.
 @item @code{mprotect} enforces only coarse present/write page permissions; page

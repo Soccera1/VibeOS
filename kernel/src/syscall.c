@@ -1,3 +1,4 @@
+#include "timer.h"
 #include "syscall.h"
 
 #include <stdbool.h>
@@ -338,7 +339,7 @@
 #define IEXTEN 0x00008000u
 
 #define RLIM_INFINITY (~0ull)
-#define APPROX_TSC_CYCLES_PER_USEC 2000ull
+#define TSC_CYCLES_PER_USEC (timer_cycles_per_usec())
 
 #define MAX_PIPES 64
 #define PIPE_CAPACITY 65536
@@ -517,6 +518,7 @@ struct linux_rt_sigframe_vibe {
     struct syscall_frame regs;
     uint64_t iret[5];
     uint64_t sig_mask;
+    struct fpu_state fpu;
 };
 
 struct linux_stat {
@@ -779,6 +781,9 @@ static uint32_t g_umask = 022u;
 static struct linux_termios g_tty_termios;
 static int g_terminal_fg_pgrp = 1;
 static int g_scheduler_index = 0;
+/* A blocking syscall can resume an arbitrary interrupted instruction. Its C
+ * return type must not truncate or replace that instruction's saved RAX. */
+static bool g_return_context_restored;
 
 static void add_zombie(int pid, int ppid, int pgid, int exit_code, int exit_status);
 static void remove_zombie(int idx);
@@ -802,6 +807,7 @@ static int try_complete_nanosleep(struct process* proc);
 static int try_complete_futex(struct process* proc);
 static bool process_block_ready(const struct process* proc);
 static uint64_t schedule_away(struct syscall_frame* frame);
+static bool user_range_valid(const void* user, size_t len);
 static int signal_process_group(int pgid, int sig);
 static int signal_process(struct process* proc, int sig);
 static int tty_signal_for_char(int c);
@@ -1084,10 +1090,10 @@ static uint64_t timeout_to_tsc_cycles(int64_t sec, int64_t nsec) {
     if (nsec > 0) {
         total_usec += (uint64_t)nsec / 1000ull;
     }
-    if (total_usec > UINT64_MAX / APPROX_TSC_CYCLES_PER_USEC) {
+    if (total_usec > UINT64_MAX / TSC_CYCLES_PER_USEC) {
         return UINT64_MAX;
     }
-    return total_usec * APPROX_TSC_CYCLES_PER_USEC;
+    return total_usec * TSC_CYCLES_PER_USEC;
 }
 
 static uint64_t ns_to_tsc_cycles(uint64_t ns) {
@@ -1116,7 +1122,7 @@ static void fill_timeval_remaining(uint64_t deadline_tsc, struct linux_timeval* 
         return;
     }
 
-    uint64_t usec = (deadline_tsc - now + APPROX_TSC_CYCLES_PER_USEC - 1ull) / APPROX_TSC_CYCLES_PER_USEC;
+    uint64_t usec = (deadline_tsc - now + TSC_CYCLES_PER_USEC - 1ull) / TSC_CYCLES_PER_USEC;
     out->tv_sec = (int64_t)(usec / 1000000ull);
     out->tv_usec = (int64_t)(usec % 1000000ull);
 }
@@ -1238,9 +1244,14 @@ static bool deliver_current_signal(struct syscall_frame* frame, int64_t syscall_
 
     uint64_t* raw = (uint64_t*)(void*)frame;
     uint64_t old_rsp = raw[IRET_SLOT_RSP];
-    uint64_t sigframe_addr = (old_rsp - sizeof(struct linux_rt_sigframe_vibe) - sizeof(uint64_t)) & ~15ull;
+    uint64_t sigframe_addr = (old_rsp - 128u - sizeof(struct linux_rt_sigframe_vibe)) & ~63ull;
     sigframe_addr -= 8ull;
     struct linux_rt_sigframe_vibe* sigframe = (struct linux_rt_sigframe_vibe*)(uintptr_t)(sigframe_addr + sizeof(uint64_t));
+    if (!user_range_valid((void*)(uintptr_t)sigframe_addr, sizeof(*sigframe) + 8u)) {
+        terminate_process(current_process(), 128 + SIGSEGV, SIGSEGV);
+        return false;
+    }
+    fpu_save(&sigframe->fpu);
     *(uint64_t*)(uintptr_t)sigframe_addr = (uint64_t)(uintptr_t)action->restorer;
 
     struct syscall_frame saved = *frame;
@@ -1375,14 +1386,14 @@ static uint64_t rtc_wall_time_ns(void) {
     return rtc_unix_seconds(full_year, month, day, hour, minute, second) * 1000000000ull;
 }
 
-static uint64_t synthetic_time_ns(void) {
+static uint64_t wall_time_ns(void) {
     if (g_wall_time_base_tsc == 0) {
         g_wall_time_base_ns = rtc_wall_time_ns();
         g_wall_time_base_tsc = read_tsc();
     }
 
     uint64_t elapsed_cycles = read_tsc() - g_wall_time_base_tsc;
-    uint64_t elapsed_usec = elapsed_cycles / APPROX_TSC_CYCLES_PER_USEC;
+    uint64_t elapsed_usec = elapsed_cycles / TSC_CYCLES_PER_USEC;
     return g_wall_time_base_ns + elapsed_usec * 1000ull;
 }
 
@@ -1405,6 +1416,7 @@ static void capture_user_context(struct process* proc, struct syscall_frame* fra
         return;
     }
 
+    fpu_save(&proc->fpu);
     proc->saved_frame = *frame;
     uint64_t* raw = (uint64_t*)(void*)frame;
     proc->saved_iret[0] = raw[IRET_SLOT_RIP];
@@ -1527,6 +1539,7 @@ static void sync_current_process_runtime(void) {
 static void load_process_runtime(struct process* proc) {
     vm_space_activate(&proc->vm);
     process_set_current(proc);
+    fpu_restore(&proc->fpu);
     g_current_pid = proc->pid;
     g_current_ppid = proc->ppid;
     g_current_pgid = proc->pgid;
@@ -1670,10 +1683,12 @@ static struct process* pick_next_runnable_process(const struct process* current)
     for (int i = 0; i < MAX_PROCESSES; ++i) {
         g_scheduler_index = (g_scheduler_index + 1) % MAX_PROCESSES;
         struct process* proc = process_at(g_scheduler_index);
-        if (proc == NULL || proc->state != PROCESS_RUNNABLE || !proc->has_saved_context) {
+        if (proc == NULL || !proc->has_saved_context ||
+            (proc->state != PROCESS_RUNNABLE && !process_block_ready(proc))) {
             continue;
         }
-        if (proc == current) {
+        if (proc->state == PROCESS_ZOMBIE || proc->state == PROCESS_STOPPED ||
+            (proc == current && proc->state == PROCESS_RUNNABLE)) {
             continue;
         }
         return proc;
@@ -6429,20 +6444,6 @@ static bool process_block_ready(const struct process* proc) {
         }
 }
 
-static struct process* pick_ready_blocked_process(void) {
-    for (int i = 0; i < MAX_PROCESSES; ++i) {
-        g_scheduler_index = (g_scheduler_index + 1) % MAX_PROCESSES;
-        struct process* proc = process_at(g_scheduler_index);
-        if (proc == NULL || !proc->has_saved_context) {
-            continue;
-        }
-        if (process_block_ready(proc)) {
-            return proc;
-        }
-    }
-    return NULL;
-}
-
 static bool has_schedulable_process_except(const struct process* current) {
     for (int i = 0; i < MAX_PROCESSES; ++i) {
         struct process* proc = process_at(i);
@@ -6914,9 +6915,6 @@ static uint64_t schedule_away(struct syscall_frame* frame) {
 
     for (;;) {
         struct process* next = pick_next_runnable_process(outgoing);
-        if (next == NULL) {
-            next = pick_ready_blocked_process();
-        }
 
         if (next != NULL) {
             load_process_runtime(next);
@@ -6934,6 +6932,7 @@ static uint64_t schedule_away(struct syscall_frame* frame) {
             }
             next->state = PROCESS_RUNNING;
             restore_user_context(next, frame);
+            g_return_context_restored = true;
             return frame->rax;
         }
 
@@ -7401,7 +7400,7 @@ static int sys_fchown(int fd, uint32_t uid, uint32_t gid) {
 }
 
 static uint32_t current_time_sec32(void) {
-    return (uint32_t)(synthetic_time_ns() / 1000000000ull);
+    return (uint32_t)(wall_time_ns() / 1000000000ull);
 }
 
 static int clamp_time_sec(int64_t sec, uint32_t* out) {
@@ -7794,19 +7793,21 @@ static int sys_sethostname(const char* name, size_t len) {
     return 0;
 }
 
-static int sys_clock_gettime(struct linux_timespec* ts) {
-    uint64_t now = synthetic_time_ns();
-    ts->tv_sec = (int64_t)(now / 1000000000ull);
-    ts->tv_nsec = (int64_t)(now % 1000000000ull);
-    return 0;
+static bool supported_clock(int clock_id) {
+    return clock_id == 0 || clock_id == 1 || clock_id == 4 || clock_id == 5 || clock_id == 6 || clock_id == 7;
 }
 
-static int sys_clock_getres(struct linux_timespec* ts) {
-    if (ts != NULL) {
-        ts->tv_sec = 0;
-        ts->tv_nsec = 1000000;
-    }
-    return 0;
+static int sys_clock_gettime(int clock_id, struct linux_timespec* ts) {
+    if (!supported_clock(clock_id)) return err(EINVAL);
+    uint64_t now = (clock_id == 0 || clock_id == 5) ? wall_time_ns() : timer_monotonic_ns();
+    struct linux_timespec value = { (int64_t)(now / 1000000000ull), (int64_t)(now % 1000000000ull) };
+    return copy_to_user(ts, &value, sizeof(value));
+}
+
+static int sys_clock_getres(int clock_id, struct linux_timespec* ts) {
+    if (!supported_clock(clock_id)) return err(EINVAL);
+    struct linux_timespec value = { 0, 1000 };
+    return ts != NULL ? copy_to_user(ts, &value, sizeof(value)) : 0;
 }
 
 static void fill_current_itimer(struct linux_itimerval* out) {
@@ -9350,14 +9351,20 @@ static uint64_t sys_rt_sigreturn(struct syscall_frame* frame) {
 
     uint64_t* raw = (uint64_t*)(void*)frame;
     struct linux_rt_sigframe_vibe* sigframe = (struct linux_rt_sigframe_vibe*)(uintptr_t)raw[IRET_SLOT_RSP];
+    if (((uintptr_t)sigframe & 63u) != 0 || !user_range_valid(sigframe, sizeof(*sigframe)) ||
+        !fpu_state_valid(&sigframe->fpu)) {
+        terminate_process(current_process(), 128 + SIGSEGV, SIGSEGV);
+        return (uint64_t)err(EFAULT);
+    }
+    fpu_restore(&sigframe->fpu);
     struct syscall_frame restored = sigframe->regs;
     *frame = restored;
     raw = (uint64_t*)(void*)frame;
     raw[IRET_SLOT_RIP] = sigframe->iret[0];
-    raw[IRET_SLOT_CS] = sigframe->iret[1];
-    raw[IRET_SLOT_RFLAGS] = sigframe->iret[2];
+    raw[IRET_SLOT_CS] = 0x23;
+    raw[IRET_SLOT_RFLAGS] = (sigframe->iret[2] & 0x240dd5ull) | 0x202ull;
     raw[IRET_SLOT_RSP] = sigframe->iret[3];
-    raw[IRET_SLOT_SS] = sigframe->iret[4];
+    raw[IRET_SLOT_SS] = 0x1b;
     g_sig_mask = sigframe->sig_mask;
     sync_current_process_runtime();
     return restored.rax;
@@ -9913,6 +9920,7 @@ static int sys_fork_like(struct syscall_frame* frame, uint64_t clone_flags, uint
         return err(ENOMEM);
     }
 
+    child->fpu = current->fpu;
     child->saved_frame = current->saved_frame;
     memcpy(child->saved_iret, current->saved_iret, sizeof(child->saved_iret));
     child->saved_frame.rax = 0;
@@ -10315,9 +10323,9 @@ static uint64_t syscall_dispatch_body(struct syscall_frame* frame) {
         case 218:
             return (uint64_t)sys_set_tid_address(a0);
         case 228:
-            return (uint64_t)sys_clock_gettime((struct linux_timespec*)(uintptr_t)a1);
+            return (uint64_t)sys_clock_gettime((int)a0, (struct linux_timespec*)(uintptr_t)a1);
         case 229:
-            return (uint64_t)sys_clock_getres((struct linux_timespec*)(uintptr_t)a1);
+            return (uint64_t)sys_clock_getres((int)a0, (struct linux_timespec*)(uintptr_t)a1);
         case 230:
             if (a0 > 1u || a1 != 0u) {
                 return (uint64_t)err(EINVAL);
@@ -10389,21 +10397,43 @@ static uint64_t syscall_dispatch_body(struct syscall_frame* frame) {
     }
 }
 
-uint64_t syscall_dispatch(struct syscall_frame* frame) {
-    uint64_t result = syscall_dispatch_body(frame);
-    struct process* current = current_process();
-    if (current != NULL && (current->state == PROCESS_STOPPED || current->state == PROCESS_ZOMBIE)) {
-        return schedule_away(frame);
-    }
-
-    if (current_has_pending_signal()) {
-        (void)deliver_current_signal(frame, (int64_t)result);
-        current = current_process();
-        if (current != NULL && (current->state == PROCESS_STOPPED || current->state == PROCESS_ZOMBIE)) {
-            return schedule_away(frame);
+static uint64_t finish_user_return(struct syscall_frame* frame) {
+    for (;;) {
+        if (current_has_pending_signal()) {
+            (void)deliver_current_signal(frame, (int64_t)frame->rax);
         }
-        return frame != NULL ? frame->rax : result;
+        struct process* current = current_process();
+        if (current == NULL || (current->state != PROCESS_STOPPED && current->state != PROCESS_ZOMBIE)) {
+            return frame->rax;
+        }
+        (void)schedule_away(frame);
     }
+}
 
-    return result;
+uint64_t syscall_dispatch(struct syscall_frame* frame) {
+    g_return_context_restored = false;
+    uint64_t result = syscall_dispatch_body(frame);
+    if (!g_return_context_restored) frame->rax = result;
+    return finish_user_return(frame);
+}
+
+/* The kernel remains non-preemptible: interrupt gates and FMASK clear IF.
+ * IRQ0 arrives on the TSS stack with the same frame layout as syscall entry. */
+void syscall_timer_interrupt(struct syscall_frame* frame) {
+    outb(0x20, 0x20); /* Acknowledge before scheduling, which may wait for I/O. */
+    uint64_t* raw = (uint64_t*)(void*)frame;
+    struct process* current = current_process();
+    if ((raw[IRET_SLOT_CS] & 3u) != 3u || current == NULL) return;
+
+    virtio_gpu_poll();
+    if (current_has_pending_signal()) {
+        (void)deliver_current_signal(frame, (int64_t)frame->rax);
+    }
+    current = current_process();
+    if (current->state == PROCESS_RUNNING) {
+        (void)save_live_process(current, frame);
+        current->state = PROCESS_RUNNABLE;
+    }
+    (void)schedule_away(frame);
+    (void)finish_user_return(frame);
 }

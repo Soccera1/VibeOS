@@ -14,6 +14,7 @@
 #include "power.h"
 #include "string.h"
 #include "syscall.h"
+#include "timer.h"
 #include "userland.h"
 #include "virtio_net.h"
 #include "virtio_gpu.h"
@@ -83,8 +84,7 @@ static void enable_user_xsave(void) {
         cr4 |= (1ull << 18);  // OSXSAVE
         write_cr4(cr4);
 
-        uint64_t xcr0 = xgetbv(0);
-        xcr0 |= 0x7ull;       // x87 + SSE + AVX
+        uint64_t xcr0 = 0x7ull;       // x87 + SSE + AVX
         xsetbv(0, xcr0);
         return;
     }
@@ -189,6 +189,7 @@ void kernel_main(uint64_t mb2_info) {
     gdt_set_kernel_stack(kernel_exit_stack_top);
     idt_init();
     enable_user_xsave();
+    timer_init();
     syscall_init();
 
     if (userland_run_default_shell() != 0) {

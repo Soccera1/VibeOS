@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 
 #include <asm/prctl.h>
+#include <cpuid.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -961,7 +962,7 @@ static void test_process_groups_and_signals(void) {
     if (group_child == 0) {
         char token = 0;
         close(gate[1]);
-        (void)read(gate[0], &token, 1);
+        if (read(gate[0], &token, 1) < 0) _exit(1);
         _exit(0);
     }
 
@@ -1242,12 +1243,122 @@ static void test_compat_syscalls(void) {
     }
 }
 
+
+static volatile sig_atomic_t preempt_done;
+static int preempt_avx;
+
+__attribute__((target("avx"))) static void preempt_clobber_avx(void) {
+    __asm__ volatile("vzeroall" : : : "ymm0", "ymm1", "ymm2", "ymm3", "ymm4", "ymm5", "ymm6", "ymm7",
+                     "ymm8", "ymm9", "ymm10", "ymm11", "ymm12", "ymm13", "ymm14", "ymm15");
+}
+
+__attribute__((target("avx"))) static int preempt_spin_avx(uint64_t marker) {
+    uint64_t observed;
+    __asm__ volatile(
+        "vmovq %[marker], %%xmm0\n"
+        "vinsertf128 $1, %%xmm0, %%ymm0, %%ymm0\n"
+        "1: pause\n"
+        "cmpl $0, %[done]\n"
+        "je 1b\n"
+        "vextractf128 $1, %%ymm0, %%xmm0\n"
+        "vmovq %%xmm0, %[observed]\n"
+        : [observed] "=r"(observed)
+        : [marker] "r"(marker), [done] "m"(preempt_done)
+        : "ymm0", "memory", "cc");
+    return observed == marker;
+}
+
+static void preempt_signal(int sig) {
+    (void)sig;
+    /* Deliberately clobber caller-saved SIMD state in an asynchronous handler. */
+    __asm__ volatile("pxor %%xmm0, %%xmm0" : : : "xmm0");
+    if (preempt_avx) preempt_clobber_avx();
+    __asm__ volatile("fninit" : : : "memory");
+    preempt_done = 1;
+}
+
+static int preempt_spin(uint64_t marker) {
+    uint64_t observed;
+    uint64_t redzone;
+    uint64_t gpr;
+    double x87;
+    __asm__ volatile(
+        "movq %[marker], %%rax\n"
+        "fld1\n"
+        "movq %[marker], %%xmm0\n"
+        "movq %[marker], -8(%%rsp)\n"
+        "1: pause\n"
+        "cmpl $0, %[done]\n"
+        "je 1b\n"
+        "movq %%xmm0, %[observed]\n"
+        "movq -8(%%rsp), %[redzone]\n"
+        "fstpl %[x87]\n"
+        "movq %%rax, %[gpr]\n"
+        : [gpr] "=&r"(gpr), [x87] "=m"(x87), [observed] "=&r"(observed), [redzone] "=&r"(redzone)
+        : [marker] "r"(marker), [done] "m"(preempt_done)
+        : "rax", "xmm0", "st", "memory", "cc");
+    return gpr == marker && observed == marker && redzone == marker && x87 == 1.0;
+}
+
+static void test_preemption_and_clocks(void) {
+    uint32_t eax, ebx, ecx, edx;
+    preempt_avx = __get_cpuid(1, &eax, &ebx, &ecx, &edx) &&
+                  (ecx & bit_AVX) && (ecx & bit_OSXSAVE);
+    int ready[2];
+    struct sigaction action = {0}, old_usr, old_alarm;
+    action.sa_handler = preempt_signal;
+    sigemptyset(&action.sa_mask);
+    REQUIRE(sigaction(SIGUSR1, &action, &old_usr) == 0, "install SIGUSR1 handler");
+    REQUIRE(sigaction(SIGALRM, &action, &old_alarm) == 0, "install SIGALRM handler");
+    REQUIRE(pipe(ready) == 0, "create readiness pipe");
+    preempt_done = 0;
+    pid_t child = fork();
+    REQUIRE(child >= 0, "fork CPU-bound child");
+    if (child == 0) {
+        close(ready[0]);
+        if (write(ready[1], "r", 1) != 1) _exit(2);
+        _exit(preempt_spin(0x1122334455667788ull) ? 0 : 3);
+    }
+    close(ready[1]);
+    char byte;
+    REQUIRE(read(ready[0], &byte, 1) == 1, "CPU-bound child must allow pipe reader to run");
+    close(ready[0]);
+    struct timespec before, after, wall;
+    REQUIRE(clock_gettime(CLOCK_MONOTONIC, &before) == 0, "read monotonic clock");
+    struct itimerval timer = { .it_value = { .tv_sec = 0, .tv_usec = 150000 } };
+    REQUIRE(setitimer(ITIMER_REAL, &timer, NULL) == 0, "arm signal during computation");
+    int preserved = preempt_spin(0x8877665544332211ull);
+    if (preempt_avx) {
+        preempt_done = 0;
+        REQUIRE(setitimer(ITIMER_REAL, &timer, NULL) == 0, "arm AVX interruption");
+        preserved = preempt_spin_avx(0xaabbccddeeff1234ull) && preserved;
+    }
+    /* Parent and child have both been computing without syscalls. Now block the
+     * parent: the timer must wake it even though the child remains runnable. */
+    REQUIRE(nanosleep(&(struct timespec){ .tv_nsec = 100000000 }, NULL) == 0, "wake sleeper beside CPU-bound child");
+    REQUIRE(kill(child, SIGUSR1) == 0, "interrupt CPU-bound child");
+    wait_for_exit_code(child, 0);
+    REQUIRE(preserved, "SIMD registers and red zone survive preemption and signal delivery");
+    REQUIRE(clock_gettime(CLOCK_MONOTONIC, &after) == 0, "read elapsed monotonic clock");
+    int64_t elapsed = (after.tv_sec - before.tv_sec) * 1000000000ll + after.tv_nsec - before.tv_nsec;
+    REQUIRE(elapsed >= 240000000ll && elapsed < 3000000000ll, "timer elapsed time out of range: %lld", (long long)elapsed);
+    REQUIRE(clock_gettime(CLOCK_REALTIME, &wall) == 0, "read realtime clock");
+    REQUIRE(wall.tv_sec > 1700000000 && before.tv_sec < 86400, "realtime and boot-relative monotonic clocks must differ");
+    errno = 0;
+    REQUIRE(syscall(SYS_clock_gettime, -1, &wall) == -1 && errno == EINVAL, "reject unsupported clock ID");
+    errno = 0;
+    REQUIRE(syscall(SYS_clock_gettime, CLOCK_MONOTONIC, NULL) == -1 && errno == EFAULT, "reject null clock output");
+    REQUIRE(sigaction(SIGUSR1, &old_usr, NULL) == 0, "restore SIGUSR1 handler");
+    REQUIRE(sigaction(SIGALRM, &old_alarm, NULL) == 0, "restore SIGALRM handler");
+}
+
 struct test_case {
     const char* name;
     void (*fn)(void);
 };
 
 static const struct test_case g_tests[] = {
+    { "preemption_and_clocks", test_preemption_and_clocks },
     { "identity_and_paths", test_identity_and_paths },
     { "user_group_permissions", test_user_group_permissions },
     { "file_io_and_mmap", test_file_io_and_mmap },

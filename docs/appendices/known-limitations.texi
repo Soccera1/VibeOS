@@ -18,17 +18,14 @@ in the current source tree.
 @node Kernel and Scheduler Limits
 @appendixsec Kernel and Scheduler Limits
 
-The scheduler is cooperative in practice.  There is no periodic timer interrupt
-and no preemptive multitasking.
+Userspace is preempted by a roughly 100 Hz PIT interrupt.  Kernel execution
+remains non-preemptible, so long-running syscalls can delay other processes.
+Device readiness and idle waits still rely on polling; this is not an
+interrupt-driven I/O scheduler.  There is no SMP scheduling support.
 
-Related consequences include:
-
-@itemize @bullet
-@item CPU-bound programs do not lose the processor unless they enter the kernel
-through syscalls.
-@item Sleep and readiness waiting rely on polling and saved syscall context.
-@item Timekeeping is synthetic rather than driven by a real wall-clock source.
-@end itemize
+Elapsed time uses a TSC calibrated once against PIT channel 2; realtime is
+seeded from the RTC.  This assumes a stable TSC frequency and does not provide
+clock discipline, suspend accounting, or per-process CPU clocks.
 
 Exception handling is also intentionally simple: kernel exceptions are reported
 and then the machine halts.
