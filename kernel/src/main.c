@@ -105,7 +105,15 @@ void kernel_main(uint64_t mb2_info) {
     console_init(mb2_info);
     console_write("VibeOS amd64 monolithic kernel prototype\n");
     power_init(mb2_info);
-    kmalloc_init();
+    /* A full XFS module can extend into the old fixed 256 MiB heap. Reserve
+     * all boot data before any driver allocation can overwrite it. */
+    uintptr_t boot_reserved_end = mb2_info ? mb2_info + *(const uint32_t*)(uintptr_t)mb2_info : 0;
+    for (size_t i = 0;; ++i) {
+        const struct mb2_tag_module* module = mb2_find_module(mb2_info, i);
+        if (module == NULL) break;
+        if (module->mod_end > boot_reserved_end) boot_reserved_end = module->mod_end;
+    }
+    kmalloc_init(boot_reserved_end);
 #ifdef CONFIG_KERNEL_VIRTIO_GPU
     virtio_gpu_init();
 #endif
@@ -145,21 +153,21 @@ void kernel_main(uint64_t mb2_info) {
     fs_init(usrfs_start, usrfs_size);
     if (fs_usr_mount_ready()) {
         if (usrfs_module != NULL) {
-            console_printf("/usr: ext3 module mounted (%u bytes)\n", (unsigned)usrfs_size);
+            console_printf("/usr: filesystem module mounted (%u bytes)\n", (unsigned)usrfs_size);
         } else if (usr_from_scsi) {
-            console_printf("/usr: ext3 SCSI disk mounted read-only (%u bytes)\n", (unsigned)virtio_scsi_disk_size(0u));
+            console_printf("/usr: filesystem SCSI disk mounted read-only (%u bytes)\n", (unsigned)virtio_scsi_disk_size(0u));
         } else {
-            console_write("/usr: ext3 image mounted from /boot/usr.ext3\n");
+            console_write("/usr: filesystem image mounted from /boot/usr.xfs\n");
         }
     } else {
         if (usrfs_module != NULL) {
-            console_printf("/usr: ext3 module present but mount failed (%s %d)\n", errno_name(fs_usr_mount_error()),
+            console_printf("/usr: filesystem module present but mount failed (%s %d)\n", errno_name(fs_usr_mount_error()),
                            fs_usr_mount_error());
         } else if (usr_from_scsi) {
-            console_printf("/usr: ext3 SCSI disk mount failed (%s %d); /boot/usr.ext3 unavailable\n",
+            console_printf("/usr: filesystem SCSI disk mount failed (%s %d); /boot/usr.xfs unavailable\n",
                            errno_name(fs_usr_mount_error()), fs_usr_mount_error());
         } else {
-            console_write("/usr: no ext3 module provided and /boot/usr.ext3 unavailable\n");
+            console_write("/usr: no filesystem module provided and /boot/usr.xfs unavailable\n");
         }
     }
     if (fs_home_mount_ready()) {

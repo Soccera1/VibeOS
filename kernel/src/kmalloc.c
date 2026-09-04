@@ -11,7 +11,19 @@ extern char __kernel_end[];
 
 #define HEAP_START 0x10000000ull
 #define HEAP_SIZE (256u * 1024u * 1024u)
-#define HEAP_END (HEAP_START + HEAP_SIZE)
+/* Keep the heap below the fixed initramfs copy at 768 MiB. */
+#define HEAP_LIMIT 0x30000000ull
+static uintptr_t g_heap_start = HEAP_START;
+static uintptr_t g_heap_end = HEAP_START + HEAP_SIZE;
+
+static bool heap_after_reserved(uintptr_t reserved_end) {
+    if (reserved_end > HEAP_LIMIT - HEAP_SIZE) return false;
+    uintptr_t start = (reserved_end + 4095u) & ~(uintptr_t)4095u;
+    if (start < HEAP_START) start = HEAP_START;
+    g_heap_start = start;
+    g_heap_end = start + HEAP_SIZE;
+    return true;
+}
 #define KMALLOC_ALIGN 16u
 #define MIN_BLOCK_SIZE (sizeof(struct block_header) * 2u + KMALLOC_ALIGN)
 
@@ -64,7 +76,7 @@ static void set_footer(struct block_header* header) {
 }
 
 static struct block_header* request_space(size_t total_size) {
-    if (g_heap_break > HEAP_END || total_size > HEAP_END - g_heap_break) {
+    if (g_heap_break > g_heap_end || total_size > g_heap_end - g_heap_break) {
         return NULL;
     }
 
@@ -90,11 +102,11 @@ static struct block_header* next_block(struct block_header* block) {
 }
 
 static struct block_header* prev_block(struct block_header* block) {
-    if ((uintptr_t)block <= HEAP_START) {
+    if ((uintptr_t)block <= g_heap_start) {
         return NULL;
     }
 
-    struct block_header* current = (struct block_header*)HEAP_START;
+    struct block_header* current = (struct block_header*)g_heap_start;
     struct block_header* previous = NULL;
     while ((uintptr_t)current < g_heap_break && current != block) {
         if (current->magic != BLOCK_HEADER_MAGIC || current->size == 0) {
@@ -125,23 +137,27 @@ static void split_block(struct block_header* block, size_t total_size) {
     set_footer(new_block);
 }
 
-void kmalloc_init(void) {
+void kmalloc_init(uintptr_t reserved_end) {
     if (g_initialized) {
         return;
     }
 
-    if ((uintptr_t)__kernel_end >= HEAP_START) {
+    if (!heap_after_reserved(reserved_end)) {
+        console_write("kmalloc: boot modules leave no safe heap below the initramfs copy\n");
+        for (;;) {}
+    }
+    if ((uintptr_t)__kernel_end >= g_heap_start) {
         console_write("kmalloc: heap overlaps kernel image\n");
         for (;;) {
         }
     }
 
-    g_heap_break = HEAP_START;
+    g_heap_break = g_heap_start;
     g_initialized = true;
 
-    console_printf("kmalloc: heap at 0x%lx - 0x%lx (%u MB)\n",
-                   (unsigned long)HEAP_START,
-                   (unsigned long)HEAP_END,
+    console_printf("kmalloc: heap at %u - %u MiB (%u MB)\n",
+                   (unsigned)(g_heap_start / (1024u * 1024u)),
+                   (unsigned)(g_heap_end / (1024u * 1024u)),
                    (unsigned)(HEAP_SIZE / (1024u * 1024u)));
 }
 
@@ -152,7 +168,7 @@ void* kmalloc(size_t size) {
     }
 
     struct block_header* best = NULL;
-    struct block_header* current = (struct block_header*)HEAP_START;
+    struct block_header* current = (struct block_header*)g_heap_start;
     while ((uintptr_t)current < g_heap_break) {
         if (current->magic != BLOCK_HEADER_MAGIC) {
             console_printf("kmalloc: corruption detected at %p\n", (void*)current);
@@ -295,7 +311,7 @@ bool kmalloc_owns(const void* ptr) {
     }
 
     uintptr_t addr = (uintptr_t)ptr;
-    if (addr < HEAP_START + sizeof(struct block_header) || addr >= g_heap_break) {
+    if (addr < g_heap_start + sizeof(struct block_header) || addr >= g_heap_break) {
         return false;
     }
 

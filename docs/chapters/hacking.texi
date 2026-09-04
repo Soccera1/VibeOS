@@ -54,7 +54,7 @@ The normal route for a new program is:
 @item validate the binary with @code{readelf},
 @item decide whether it belongs in the initramfs or in @file{/usr}, and
 @item add the staging path to either @file{tools/make_initramfs.sh} or
-@file{tools/make_usr_ext2.sh}, or both.
+@file{tools/make_usr_xfs.sh}, or both.
 @end enumerate
 
 In-tree programs should live under @file{userspace/} and be built by a wrapper
@@ -86,7 +86,7 @@ The runtime namespace is jointly defined by:
 
 @itemize @bullet
 @item @file{tools/make_initramfs.sh},
-@item @file{tools/make_usr_ext2.sh},
+@item @file{tools/make_usr_xfs.sh},
 @item @file{tools/make_home_ext2.sh},
 @item @file{kernel/src/fs.c},
 @item @file{kernel/src/ext2.c}, and

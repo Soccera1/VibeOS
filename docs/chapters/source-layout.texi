@@ -100,7 +100,7 @@ Broadly speaking, the scripts fall into four classes:
 @item package build wrappers, such as @file{build_bash.sh} or
 @file{build_coreutils.sh};
 @item staging helpers, such as @file{make_initramfs.sh},
-@file{make_usr_ext2.sh}, and @file{make_home_ext2.sh};
+@file{make_usr_xfs.sh}, and @file{make_home_ext2.sh};
 @item boot media generators, such as @file{make_iso.sh} and
 @file{make_gpt_disk.sh}; and
 @item shared helpers such as @file{strip_helpers.sh}.

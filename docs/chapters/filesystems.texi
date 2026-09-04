@@ -69,8 +69,8 @@ VibeOS scripts and loaded as an immutable module.
 @node ext2/ext3 Backend for /usr and /home
 @section ext2/ext3 Backend for /usr and /home
 
-The ext2/ext3 implementation is the secondary filesystem backend used for
-@file{/usr} and @file{/home}.  In the shipped boot configuration @file{/usr} is
+The ext2/ext3 implementation supports @file{/usr} and @file{/home}; the
+default @file{/usr} image now uses the XFS backend.  In the shipped boot configuration @file{/usr} is
 mounted read-only, while @file{/home} is mounted read-write when a writable SCSI
 disk image is attached.  If no writable home disk is available, the kernel falls
 back to a volatile in-memory @file{/home} ramdisk.
@@ -106,7 +106,8 @@ namespace without replacing it.
 @code{CONFIG_KERNEL_XFS}.  The generic @code{fs_mount_image},
 @code{fs_mount_file}, and @code{fs_mount_storage} APIs identify XFS by its
 superblock magic.  Boot uses these APIs for the @file{/usr} module or disk;
-the standard image builders continue to produce ext3.
+the default @file{/usr} image is @file{build/usr.xfs}.  The writable
+@file{/home} image and GPT boot partition remain ext3.
 
 The reader handles shortform directories and directory data blocks (including
 block, leaf, and node directory layouts), inline extent maps and B+tree data
@@ -154,7 +155,7 @@ This affects:
 @end itemize
 
 The root directory behaves like a merged view.  It can expose initramfs entries
-plus @file{/usr} when the ext2/ext3 backend is mounted.
+plus mount points exposed by the ext2/ext3 and XFS backends.
 
 @node Synthetic Directories and Devices
 @section Synthetic Directories and Devices

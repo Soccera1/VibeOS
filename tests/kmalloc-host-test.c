@@ -45,6 +45,20 @@ int main(void) {
     kfree_aligned(page);
     kfree(allocation);
     assert(munmap(heap, HEAP_SIZE) == 0);
+    assert(heap_after_reserved(0));
+    assert(g_heap_start == HEAP_START);
+    assert(heap_after_reserved(0x18000001u));
+    assert(g_heap_start == 0x18001000u);
+    assert(g_heap_end == g_heap_start + HEAP_SIZE);
+    assert(!heap_after_reserved(HEAP_LIMIT - HEAP_SIZE + 1));
+    heap = mmap((void*)g_heap_start, HEAP_SIZE, PROT_READ | PROT_WRITE,
+                MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+    assert(heap == (void*)g_heap_start);
+    g_heap_break = g_heap_start;
+    allocation = kmalloc(4096);
+    assert((uintptr_t)allocation >= 0x18001000u && kmalloc_owns(allocation));
+    kfree(allocation);
+    assert(munmap(heap, HEAP_SIZE) == 0);
     puts("kmalloc host tests passed");
     return 0;
 }

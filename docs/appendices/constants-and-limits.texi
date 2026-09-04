@@ -38,7 +38,7 @@ coverage
 
 @multitable @columnfractions .35 .20 .45
 @headitem Constant @tab Value @tab Meaning
-@item @code{HEAP_START} @tab @code{0x10000000} @tab Kernel heap start
+@item @code{HEAP_START} @tab @code{0x10000000} @tab Minimum kernel heap start (moved past boot modules)
 @item @code{HEAP_SIZE} @tab @code{256 MiB} @tab Kernel heap size
 @item @code{VM_PAGE_SIZE} @tab @code{0x1000} @tab Page size
 @item @code{VM_USER_BASE} @tab @code{0x00400000} @tab Lowest user address
@@ -113,16 +113,17 @@ The image-building scripts also encode important assumptions:
 
 @multitable @columnfractions .35 .20 .45
 @headitem Constant @tab Value @tab Meaning
-@item Disk image size @tab @code{128 MiB} @tab Raw GPT disk size created by
+@item Disk image size @tab At least 384 MiB @tab Grows to fit the boot payload; created by
 @file{tools/make_gpt_disk.sh}
 @item BIOS GRUB partition @tab @code{1 MiB-3 MiB} @tab Reserved boot area on
 the GPT disk
 @item Main disk partition start @tab @code{3 MiB} @tab Start of the VIBEOS ext3
 partition
-@item ext3 image block size @tab 4096 @tab Block size used by
-@file{tools/make_usr_ext2.sh}
-@item ext3 inode size @tab 256 @tab Inode size used while estimating the
-filesystem image
+@item XFS image block size @tab 4096 @tab Block size used by
+@file{tools/make_usr_xfs.sh}
+@item XFS inode size @tab 512 @tab Inode size in the default @file{/usr} image
+@item XFS image size @tab At least 384 MiB @tab Grows with the staged payload
+@item XFS internal log @tab 64 MiB @tab Journal reserved by the image builder
 @item Home image size @tab @code{64 MiB} @tab Writable ext3 image size created
 by @file{tools/make_home_ext2.sh}
 @end multitable

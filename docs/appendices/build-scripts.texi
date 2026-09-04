@@ -158,13 +158,16 @@ layout, copies BusyBox and essential coreutils into @file{/bin}, writes
 and creates BusyBox applet symlinks while avoiding applets that should be
 provided by GNU coreutils instead.
 
-@item tools/make_usr_ext2.sh
-Constructs the read-only @file{/usr} ext3 image.  It copies optional program
+@item tools/make_usr_xfs.sh
+Constructs the read-only @file{/usr} XFS image.  It copies optional program
 trees, stages non-essential coreutils, installs data files such as
 @file{magic.mgc}, copies selected terminfo entries including @code{ansi} and
 @code{vibeos}, stages @code{wget} runtime configuration and the CA bundle,
-estimates the block count, and then runs @code{mkfs.ext3 -d} to create the
-filesystem image.
+and calls @file{tools/make_xfs_image.py}.  That helper generates a
+@code{mkfs.xfs} prototype, sizes the image for payload, metadata, and an
+internal log (at least 384 MiB), and formats it without mounting.  Names and
+symlink targets containing whitespace or beginning with @samp{:} or @samp{$}
+are rejected because they cannot be represented safely in the prototype.
 
 @item tools/make_home_ext2.sh
 Constructs the writable @file{/home} ext3 image used by the default QEMU run

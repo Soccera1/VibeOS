@@ -15,8 +15,10 @@ trying to be a tiny bootstrap environment.  Software installation is still
 awkward, so the current policy is to ship a broad userland up front and defer
 size reduction until the post-boot install story is much better.
 
-The figures below were measured from the current build artifacts in
-@file{build/} on 2026-05-18.
+The figures below are historical measurements from the ext3 @file{/usr}
+build artifacts in @file{build/} on 2026-05-18.  The current default uses
+@file{usr.xfs}, with a minimum size of 384 MiB including its internal log;
+these measurements do not describe the current image size.
 
 @menu
 * Why the ISO is Large::

@@ -36,7 +36,7 @@ The checked tools include:
 @item @code{zig} for static musl userspace builds,
 @item GCC, GNU make, and @code{readelf} for the baseline glibc runtime and
 dynamic executable validation,
-@item @code{cpio}, @code{mkfs.ext3}, and @code{tic} for filesystem images,
+@item @code{cpio}, @code{mkfs.xfs}, @code{mkfs.ext3}, and @code{tic} for filesystem images,
 @item @code{grub-mkrescue},
 @item @code{xorriso} and @code{mformat} for ISO generation,
 @item @code{grub-mkimage} and @code{parted} for the rootless GPT disk builder,
@@ -70,7 +70,7 @@ The main targets exposed by the root @file{Makefile} are:
 Alias for @code{disk}.
 
 @item iso
-Build the kernel, initramfs, and @file{/usr} ext3 image, then package them into
+Build the kernel, initramfs, and @file{/usr} XFS image, then package them into
 @file{build/vibeos.iso}.
 
 @item disk
@@ -159,8 +159,8 @@ The linked kernel.
 @item build/initramfs.cpio
 The root filesystem image loaded as Multiboot module 0.
 
-@item build/usr.ext3
-The ext3 image loaded as Multiboot module 1 for ISO boot, or attached as a
+@item build/usr.xfs
+The XFS image loaded as Multiboot module 1 for ISO boot, or attached as a
 read-only SCSI disk by the default QEMU run path, and mounted at @file{/usr}.
 
 @item build/home.ext3
@@ -184,7 +184,7 @@ The initramfs contains the minimum system needed to come up:
 initialization creates @file{/home/user} after @file{/home} is mounted.
 @end itemize
 
-The ext3 image contains the larger optional userspace:
+The XFS image contains the larger optional userspace:
 
 @itemize @bullet
 @item Bash,
@@ -216,7 +216,7 @@ qemu-system-x86_64 \
   -device virtio-vga \
   -drive format=raw,file=build/vibeos-gpt.img,if=ide,index=0 \
   -device virtio-scsi-pci-transitional,id=scsi0 \
-  -drive format=raw,file=build/usr.ext3,if=none,id=usr \
+  -drive format=raw,file=build/usr.xfs,if=none,id=usr \
   -device scsi-hd,drive=usr,bus=scsi0.0,scsi-id=0,lun=0 \
   -drive format=raw,file=build/home.ext3,if=none,id=home \
   -device scsi-hd,drive=home,bus=scsi0.0,scsi-id=1,lun=0 \
@@ -229,10 +229,10 @@ qemu-system-x86_64 \
 The serial console is especially important because the kernel mirrors console
 output to COM1.
 
-On the default GPT/QEMU run path, @file{build/usr.ext3} is attached as virtio
+On the default GPT/QEMU run path, @file{build/usr.xfs} is attached as virtio
 SCSI target 0 for @file{/usr}, while @file{build/home.ext3} is attached as
-target 1 for @file{/home}.  ISO boot still stages @file{/usr} as a Multiboot
-module.
+target 1 for @file{/home}.  Both GPT and ISO GRUB configurations also stage
+@file{/usr} as a Multiboot module, which the kernel prefers when present.
 
 @node Building the Manual
 @section Building the Manual

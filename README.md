@@ -9,7 +9,7 @@ VibeOS is an amd64 monolithic-kernel OS prototype that boots via Multiboot2 and 
 - **Syscalls:** Extensive Linux-style syscall ABI via amd64 `syscall` instruction (70+ syscalls implemented).
 - **Scheduling and clocks:** 100 Hz PIT-driven userspace and kernel preemption, round-robin scheduling, saved x87/SSE/AVX state, and PIT-calibrated TSC timekeeping with separate monotonic and RTC-seeded realtime clocks. Per-process kernel stacks preserve interrupted syscalls; a preemptible global lock serializes legacy kernel operations.
 - **Process Management:** Support for `fork` (state snapshotting), `execve` (ELF64 loader), and `wait4`.
-- **VFS:** Read-only initramfs (`cpio newc`) root with an `ext2`/`ext3` or read-only XFS `/usr` mount path, a writable `/home` ext3 mount or ramdisk fallback, a writable volatile `/tmp` ramdisk, plus support for pipes, symlinks, Unix-domain sockets, and device nodes (`/dev/tty`, `/dev/null`, `/dev/fb0`). The shipped `/usr` and `/home` images are `ext3`.
+- **VFS:** Read-only initramfs (`cpio newc`) root with an `ext2`/`ext3` or read-only XFS `/usr` mount path, a writable `/home` ext3 mount or ramdisk fallback, a writable volatile `/tmp` ramdisk, plus support for pipes, symlinks, Unix-domain sockets, and device nodes (`/dev/tty`, `/dev/null`, `/dev/fb0`). The shipped `/usr` image is XFS; `/home` remains ext3.
 - **I/O:** TTY support over VGA text mode, Multiboot/virtio framebuffer, keyboard, and serial (`COM1`).
 - **Graphics:** XLibre's Xfbdev and Xvfb servers, evdev keyboard/pointer input, xinit, XKB data, st 0.9.3 as the default X terminal, an xterm fallback, and a small Xlib probe client.
 - **Networking:** virtio-net with a small IPv4 stack covering ARP, DHCP, ICMP, UDP, and client-side TCP streams.
@@ -29,7 +29,7 @@ VibeOS is an amd64 monolithic-kernel OS prototype that boots via Multiboot2 and 
 
 - `gcc`, `ld`, `nasm` (for the kernel)
 - `grub-mkrescue`, `grub-mkimage` (for bootable images)
-- `mkfs.ext3` and `parted` (for ext3 and GPT images)
+- `mkfs.xfs` (xfsprogs), `mkfs.ext3`, and `parted` (for XFS, ext3, and GPT images)
 - `qemu-system-x86_64` (for `make run`)
 - `xorriso`, `mtools`, `libisoboot` (usually dependencies of `grub-mkrescue`)
 - `zig` (required for musl userspace builds via `zig cc`)
@@ -124,7 +124,7 @@ uses temporary configurations and leaves your `.config` choices intact.
 Artifacts:
 - `build/vibeos-kernel.bin`
 - `build/initramfs.cpio`
-- `build/usr.ext3`
+- `build/usr.xfs`
 - `build/home.ext3`
 - `build/vibeos.iso`
 - `build/vibeos-gpt.img`
@@ -147,7 +147,7 @@ qemu-system-x86_64 \
   -device virtio-vga \
   -drive format=raw,file=build/vibeos-gpt.img,if=ide,index=0 \
   -device virtio-scsi-pci-transitional,id=scsi0 \
-  -drive format=raw,file=build/usr.ext3,if=none,id=usr \
+  -drive format=raw,file=build/usr.xfs,if=none,id=usr \
   -device scsi-hd,drive=usr,bus=scsi0.0,scsi-id=0,lun=0 \
   -drive format=raw,file=build/home.ext3,if=none,id=home \
   -device scsi-hd,drive=home,bus=scsi0.0,scsi-id=1,lun=0 \
@@ -171,13 +171,12 @@ VibeOS ships BusyBox, GNU coreutils, Bash, Vim, upstream `file(1)`, `wget`, and 
 
 Static linking is preferred because self-contained executables fit the VibeOS deployment model, not because musl is preferred. The ideal static target would use glibc, but glibc cannot be made reliably self-contained for facilities that retain dynamic runtime dependencies, including NSS and related loading behavior. Musl is used for static artifacts as a pragmatic compromise. Where dynamic linking is intended, glibc is the preferred and supported libc.
 
-The initramfs now carries the root filesystem, the essential `/bin` command set, BusyBox, and empty `/usr`, `/home`, and `/tmp` mountpoints. The kernel filesystem backends support ext2/ext3 and read-only XFS v4/v5 images. On the default GPT/QEMU run path, `build/usr.ext3` is attached as virtio SCSI target 0 and mounted read-only at `/usr`, while `build/home.ext3` is attached as target 1 and mounted read-write at `/home`; `/tmp` is always backed by a volatile writable ramdisk. ISO boot still loads `/usr` as a Multiboot module. The kernel can also mount ext2 or ext3 filesystems from regular files through the existing ext2/ext3 loopback path when those files are already reachable through VFS, but there is not yet a kernel block-device/boot-filesystem reader for opening `/boot/usr.ext3` directly from the boot medium.
+The initramfs now carries the root filesystem, the essential `/bin` command set, BusyBox, and empty `/usr`, `/home`, and `/tmp` mountpoints. The kernel filesystem backends support ext2/ext3 and read-only XFS v4/v5 images. On the default GPT/QEMU run path, `build/usr.xfs` is attached as virtio SCSI target 0 and mounted read-only at `/usr`, while `build/home.ext3` is attached as target 1 and mounted read-write at `/home`; `/tmp` is always backed by a volatile writable ramdisk. Both GPT and ISO GRUB configurations also load `/usr` as a Multiboot module; the kernel prefers that module when present. The kernel can also mount ext2 or ext3 filesystems from regular files through the existing ext2/ext3 loopback path when those files are already reachable through VFS, but there is not yet a kernel block-device/boot-filesystem reader for opening `/boot/usr.xfs` directly from the boot medium.
 
 XFS is enabled by `CONFIG_KERNEL_XFS`. The generic `fs_mount_image`,
 `fs_mount_file`, and `fs_mount_storage` kernel APIs detect the filesystem by
-magic; explicit `fs_mount_xfs_*` APIs are also available. A prepared XFS image
-can replace the read-only `/usr` SCSI disk or Multiboot module. The shipped
-image builders still produce ext3. XFS mounts require `read_only=true`;
+magic; explicit `fs_mount_xfs_*` APIs are also available. The default builder produces `build/usr.xfs` for the read-only `/usr` SCSI
+disk or Multiboot module. `/home` and the GPT boot partition remain ext3. XFS mounts require `read_only=true`;
 requesting a writable XFS `/home` returns `EROFS` and boot uses the home ramdisk
 fallback.
 
@@ -194,3 +193,16 @@ Run `make check-xfs` for static musl host tests, including real images generated
 by `mkfs.xfs` (requires host `xfsprogs`). The tests never mount an image or need
 root privileges. They also exercise disabled support, invalid metadata, sparse
 and unwritten extents, B+tree traversal, and read-only enforcement.
+
+`tools/make_usr_xfs.sh` stages the `/usr` tree and uses
+`tools/make_xfs_image.py` to populate XFS through a `mkfs.xfs` prototype, without
+root access or loop mounts. The image is at least 384 MiB and grows with the
+payload; the GPT disk is sized to hold it. Prototype names and symlink targets
+must contain no whitespace and must not start with `:` or `$`; unsupported
+entries fail the build explicitly. Regular files, directories, symlinks, and
+permission/ownership bits are preserved (sticky modes are unsupported).
+
+The kernel places its heap after the boot modules so the larger XFS image
+cannot overlap allocations. With the current fixed memory layout, Multiboot
+modules and boot information must finish below 512 MiB to leave room for the
+256 MiB heap before the initramfs copy.

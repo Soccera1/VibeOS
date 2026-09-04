@@ -341,8 +341,11 @@ Build and stage the in-tree kernel regression tests.
 @item tools/make_initramfs.sh
 Create the initramfs root archive.
 
-@item tools/make_usr_ext2.sh
-Create the ext3 @file{/usr} image.
+@item tools/make_usr_xfs.sh
+Stage and create the XFS @file{/usr} image.
+
+@item tools/make_xfs_image.py
+Populate XFS from a directory using a mkfs prototype without mounting.
 
 @item tools/make_home_ext2.sh
 Create the ext3 @file{/home} image.

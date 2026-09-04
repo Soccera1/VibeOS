@@ -2,14 +2,14 @@
 set -euo pipefail
 
 if [[ $# -ne 4 ]]; then
-  echo "usage: $0 <output.img> <kernel.bin> <initramfs.cpio> <usr.ext3>" >&2
+  echo "usage: $0 <output.img> <kernel.bin> <initramfs.cpio> <usr.xfs>" >&2
   exit 1
 fi
 
 OUT_IMG="$1"
 KERNEL_BIN="$2"
 INITRAMFS="$3"
-USR_EXT3="$4"
+USR_XFS="$4"
 
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
@@ -28,7 +28,7 @@ fi
 
 cp "$KERNEL_BIN" "$BOOT_ROOT/boot/vibeos-kernel.bin"
 cp "$INITRAMFS" "$BOOT_ROOT/boot/initramfs.cpio"
-cp "$USR_EXT3" "$BOOT_ROOT/boot/usr.ext3"
+cp "$USR_XFS" "$BOOT_ROOT/boot/usr.xfs"
 
 cat > "$BOOT_ROOT/boot/grub/grub.cfg" <<'CFG'
 set timeout=0
@@ -41,13 +41,18 @@ set gfxpayload=keep
 menuentry "VibeOS" {
     multiboot2 /boot/vibeos-kernel.bin
     module2 /boot/initramfs.cpio
-    module2 /boot/usr.ext3
+    module2 /boot/usr.xfs
     boot
 }
 CFG
 
 mkdir -p "$(dirname "$OUT_IMG")"
-truncate -s 384M "$OUT_IMG"
+# The embedded XFS image includes its internal log and can exceed the old
+# fixed 384 MiB boot disk. Leave room for ext3 metadata and the boot payload.
+BOOT_BYTES="$(du -sb "$BOOT_ROOT" | cut -f1)"
+DISK_MIB=$(( (BOOT_BYTES + BOOT_BYTES / 10 + 1048575) / 1048576 + 64 ))
+if (( DISK_MIB < 384 )); then DISK_MIB=384; fi
+truncate -s "${DISK_MIB}M" "$OUT_IMG"
 
 parted -s "$OUT_IMG" mklabel gpt
 parted -s "$OUT_IMG" mkpart BIOSGRUB 1MiB 3MiB

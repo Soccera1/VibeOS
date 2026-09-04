@@ -26,15 +26,19 @@
 @node Kernel Heap Allocator
 @section Kernel Heap Allocator
 
-The kernel heap is a fixed virtual range managed by @file{kernel/src/kmalloc.c}.
+The kernel heap is a contiguous 256 MiB range managed by @file{kernel/src/kmalloc.c}.
+Boot places it at or above 256 MiB, after all Multiboot modules and information,
+so the default XFS module cannot be overwritten by driver or process allocations.
+The heap must end before the fixed initramfs copy at 768 MiB; boot stops with a
+diagnostic if the reserved boot data extends beyond 512 MiB.
 
 Key constants are:
 
 @multitable @columnfractions .35 .20 .45
 @headitem Constant @tab Value @tab Meaning
-@item @code{HEAP_START} @tab @code{0x10000000} @tab Start of the kernel heap
+@item @code{HEAP_START} @tab @code{0x10000000} @tab Minimum start of the kernel heap
 @item @code{HEAP_SIZE} @tab @code{256 MiB} @tab Total heap span
-@item @code{HEAP_END} @tab @code{0x20000000} @tab End of the heap
+@item @code{HEAP_LIMIT} @tab @code{0x30000000} @tab Upper limit before the initramfs copy
 @end multitable
 
 The allocator is a straightforward block allocator with:

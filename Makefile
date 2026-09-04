@@ -9,7 +9,7 @@ CONFIG_MK := $(BUILD_DIR)/config.mk
 CONFIG_HEADER := $(BUILD_DIR)/include/generated/autoconf.h
 KERNEL_BIN := $(BUILD_DIR)/vibeos-kernel.bin
 INITRAMFS := $(BUILD_DIR)/initramfs.cpio
-USR_EXT3 := $(BUILD_DIR)/usr.ext3
+USR_XFS := $(BUILD_DIR)/usr.xfs
 HOME_EXT3 := $(BUILD_DIR)/home.ext3
 ISO_IMAGE := $(BUILD_DIR)/vibeos.iso
 DISK_IMAGE := $(BUILD_DIR)/vibeos-gpt.img
@@ -198,6 +198,7 @@ check-build-tools:
 check-image-tools: check-build-tools
 	@command -v cpio >/dev/null
 	@command -v mkfs.ext3 >/dev/null
+	@command -v mkfs.xfs >/dev/null
 	@command -v tic >/dev/null
 
 check-iso-tools: check-image-tools
@@ -235,12 +236,12 @@ check-glibc-runtime: $(GLIBC_RUNTIME) $(USER_TESTS)
 		$(USER_TESTS)/libexec/kernel-tests/glibc-dynamic-helper argument
 
 check-preemption-system: disk
-	./tools/check_glibc_dynamic.py $(DISK_IMAGE) $(USR_EXT3) $(HOME_EXT3) preemption_and_clocks kernel_preemption kernel_syscall_contention
-	QEMU_CPU=qemu64 ./tools/check_glibc_dynamic.py $(DISK_IMAGE) $(USR_EXT3) $(HOME_EXT3) preemption_and_clocks kernel_preemption kernel_syscall_contention
-	KERNEL_TEST_LIBC=glibc ./tools/check_glibc_dynamic.py $(DISK_IMAGE) $(USR_EXT3) $(HOME_EXT3) preemption_and_clocks kernel_preemption kernel_syscall_contention
+	./tools/check_glibc_dynamic.py $(DISK_IMAGE) $(USR_XFS) $(HOME_EXT3) preemption_and_clocks kernel_preemption kernel_syscall_contention
+	QEMU_CPU=qemu64 ./tools/check_glibc_dynamic.py $(DISK_IMAGE) $(USR_XFS) $(HOME_EXT3) preemption_and_clocks kernel_preemption kernel_syscall_contention
+	KERNEL_TEST_LIBC=glibc ./tools/check_glibc_dynamic.py $(DISK_IMAGE) $(USR_XFS) $(HOME_EXT3) preemption_and_clocks kernel_preemption kernel_syscall_contention
 
 check-glibc-system: disk
-	./tools/check_glibc_dynamic.py $(DISK_IMAGE) $(USR_EXT3) $(HOME_EXT3)
+	./tools/check_glibc_dynamic.py $(DISK_IMAGE) $(USR_XFS) $(HOME_EXT3)
 
 $(BUILD_DIR):
 	@mkdir -p $(BUILD_DIR)
@@ -474,20 +475,20 @@ USR_DEPS += $(USER_VIM)
 USR_TREE_ARGS += $(USER_VIM)
 endif
 
-$(USR_EXT3): tools/make_usr_ext2.sh $(CONFIG_MK) $(USR_DEPS)
-	./tools/make_usr_ext2.sh $@ "$(USR_BASH_ARG)" "$(USR_HELP_ARG)" "$(USR_SL_ARG)" "$(USR_FILE_ARG)" "$(USR_FILE_MAGIC_ARG)" "$(USR_NANO_ARG)" "$(USR_LESS_ARG)" "$(USR_COREUTILS_DIR_ARG)" "$(USR_COREUTILS_PROGS_ARG)" $(USR_TREE_ARGS)
+$(USR_XFS): tools/make_usr_xfs.sh tools/make_xfs_image.py $(CONFIG_MK) $(USR_DEPS)
+	./tools/make_usr_xfs.sh $@ "$(USR_BASH_ARG)" "$(USR_HELP_ARG)" "$(USR_SL_ARG)" "$(USR_FILE_ARG)" "$(USR_FILE_MAGIC_ARG)" "$(USR_NANO_ARG)" "$(USR_LESS_ARG)" "$(USR_COREUTILS_DIR_ARG)" "$(USR_COREUTILS_PROGS_ARG)" $(USR_TREE_ARGS)
 
 $(HOME_EXT3): tools/make_home_ext2.sh | $(BUILD_DIR)
 	./tools/make_home_ext2.sh $@
 
-iso: check-iso-tools $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT3)
-	./tools/make_iso.sh $(ISO_IMAGE) $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT3)
+iso: check-iso-tools $(KERNEL_BIN) $(INITRAMFS) $(USR_XFS)
+	./tools/make_iso.sh $(ISO_IMAGE) $(KERNEL_BIN) $(INITRAMFS) $(USR_XFS)
 
 # BIOS + GPT raw disk image, built without loop devices or root privileges.
-disk: check-disk-tools $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT3) $(HOME_EXT3)
-	./tools/make_gpt_disk.sh $(DISK_IMAGE) $(KERNEL_BIN) $(INITRAMFS) $(USR_EXT3)
+disk: check-disk-tools $(KERNEL_BIN) $(INITRAMFS) $(USR_XFS) $(HOME_EXT3)
+	./tools/make_gpt_disk.sh $(DISK_IMAGE) $(KERNEL_BIN) $(INITRAMFS) $(USR_XFS)
 
-run: check-run-tools disk $(USR_EXT3) $(HOME_EXT3)
+run: check-run-tools disk $(USR_XFS) $(HOME_EXT3)
 	qemu-system-x86_64 \
 		-machine q35,accel=kvm:tcg \
 		-m 1G \
@@ -495,7 +496,7 @@ run: check-run-tools disk $(USR_EXT3) $(HOME_EXT3)
 		-device virtio-vga \
 		-drive format=raw,file=$(DISK_IMAGE),if=ide,index=0 \
 		-device virtio-scsi-pci-transitional,id=scsi0 \
-		-drive format=raw,file=$(USR_EXT3),if=none,id=usr \
+		-drive format=raw,file=$(USR_XFS),if=none,id=usr \
 		-device scsi-hd,drive=usr,bus=scsi0.0,scsi-id=0,lun=0 \
 		-drive format=raw,file=$(HOME_EXT3),if=none,id=home \
 		-device scsi-hd,drive=home,bus=scsi0.0,scsi-id=1,lun=0 \
@@ -519,6 +520,7 @@ check-xfs: $(BUILD_DIR)/tests/xfs-host-test $(BUILD_DIR)/tests/xfs-unit-host-tes
 	$(BUILD_DIR)/tests/xfs-unit-host-test
 	$(BUILD_DIR)/tests/xfs-disabled-host-test
 	python3 tools/check_xfs.py $<
+	python3 tools/check_xfs_image.py
 
 $(BUILD_DIR)/tests/xfs-host-test: tests/xfs-host-test.c kernel/src/xfs.c kernel/src/fs.c kernel/src/ext2.c kernel/src/initramfs.c $(wildcard kernel/include/*.h) | $(BUILD_DIR)
 	@mkdir -p $(dir $@)

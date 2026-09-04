@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/strip_helpers.sh"
 
 if [[ $# -lt 1 ]]; then
-  echo "usage: $0 <output.ext3> [bash-bin] [help-bin] [sl-bin] [file-bin] [file-magic] [nano-bin] [less-bin] [coreutils-dir] [coreutils-programs] [usr-tree...]" >&2
+  echo "usage: $0 <output.xfs> [bash-bin] [help-bin] [sl-bin] [file-bin] [file-magic] [nano-bin] [less-bin] [coreutils-dir] [coreutils-programs] [usr-tree...]" >&2
   exit 1
 fi
 
@@ -230,89 +230,4 @@ maybe_strip_tree_binaries "$ROOT"
 
 mkdir -p "$(dirname "$OUT_IMG")"
 
-BLOCK_SIZE=4096
-INODE_SIZE=256
-MIN_FREE_BLOCKS=256
-FREE_BLOCK_PERCENT=5
-
-count_root_inodes() {
-  find "$ROOT" -printf '.' | wc -c
-}
-
-estimate_data_blocks() {
-  find "$ROOT" -printf '%y %s\n' | awk -v block_size="$BLOCK_SIZE" '
-    $1 == "d" {
-      blocks += 1
-      next
-    }
-    $1 == "f" {
-      blocks += int(($2 + block_size - 1) / block_size)
-      next
-    }
-    $1 == "l" {
-      if ($2 > 60) {
-        blocks += int(($2 + block_size - 1) / block_size)
-      }
-      next
-    }
-    END {
-      if (blocks < 1) {
-        blocks = 1
-      }
-      print blocks
-    }
-  '
-}
-
-build_ext3_image() {
-  local image="$1"
-  local blocks="$2"
-
-  rm -f "$image"
-  mkfs.ext3 -q -F \
-    -b "$BLOCK_SIZE" \
-    -m 0 \
-    -N "$INODE_COUNT" \
-    -O ^dir_index \
-    -L VIBEUSR \
-    -d "$ROOT" \
-    "$image" "$blocks" >/dev/null 2>&1
-}
-
-INODE_COUNT="$(count_root_inodes)"
-if [[ -z "$INODE_COUNT" || "$INODE_COUNT" -lt 1 ]]; then
-  INODE_COUNT=1
-fi
-
-DATA_BLOCKS="$(estimate_data_blocks)"
-INODE_TABLE_BLOCKS=$(( (INODE_COUNT * INODE_SIZE + BLOCK_SIZE - 1) / BLOCK_SIZE ))
-LOWER_BLOCKS=$(( DATA_BLOCKS + INODE_TABLE_BLOCKS + 8 ))
-if (( LOWER_BLOCKS < 16 )); then
-  LOWER_BLOCKS=16
-fi
-
-TMP_IMG="$WORKDIR/usr.ext3"
-UPPER_BLOCKS="$LOWER_BLOCKS"
-until build_ext3_image "$TMP_IMG" "$UPPER_BLOCKS"; do
-  UPPER_BLOCKS=$(( UPPER_BLOCKS * 2 ))
-done
-
-while (( LOWER_BLOCKS < UPPER_BLOCKS )); do
-  MID_BLOCKS=$(( (LOWER_BLOCKS + UPPER_BLOCKS) / 2 ))
-  if build_ext3_image "$TMP_IMG" "$MID_BLOCKS"; then
-    UPPER_BLOCKS="$MID_BLOCKS"
-  else
-    LOWER_BLOCKS=$(( MID_BLOCKS + 1 ))
-  fi
-done
-
-FREE_BLOCKS=$(( (LOWER_BLOCKS * FREE_BLOCK_PERCENT + 99) / 100 ))
-if (( FREE_BLOCKS < MIN_FREE_BLOCKS )); then
-  FREE_BLOCKS="$MIN_FREE_BLOCKS"
-fi
-TARGET_BLOCKS=$(( LOWER_BLOCKS + FREE_BLOCKS ))
-
-build_ext3_image "$OUT_IMG" "$TARGET_BLOCKS" || {
-  echo "Failed to build ext3 image with $TARGET_BLOCKS blocks" >&2
-  exit 1
-}
+python3 "$SCRIPT_DIR/make_xfs_image.py" "$ROOT" "$OUT_IMG"

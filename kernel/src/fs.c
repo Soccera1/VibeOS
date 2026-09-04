@@ -617,7 +617,7 @@ void fs_init(const uint8_t* usrfs_start, size_t usrfs_size) {
             .scsi_disk_index = 0u,
             .image = usrfs_start,
             .size = usrfs_size,
-            .file_path = "/boot/usr.ext3",
+            .file_path = "/boot/usr.xfs",
         },
         {
             .mount_path = "/home",
