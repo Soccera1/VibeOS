@@ -103,21 +103,37 @@ kernel IPC object.
 @findex schedule_away
 
 The scheduler runs when a task blocks or exits and on the roughly 100 Hz
-PIT IRQ0 interrupt while userspace is executing.  Runnable tasks and ready
-blocked tasks share a round-robin scan, so a CPU-bound task cannot starve a
-sleeping task whose deadline has passed.
+PIT IRQ0 interrupt, including during ordinary syscall execution.  Each process
+has a 64 KiB kernel stack.  Timer preemption records the kernel interrupt frame
+on that stack and later resumes the exact interrupted instruction, preserving
+all outstanding C calls and local variables.
 
-Interrupt and syscall entry clear IF.  Kernel execution remains
-non-preemptible, and userspace returns with interrupts enabled.  The interrupt
-stub uses the syscall register-frame layout; context switches preserve the
-integer registers, user stack and flags, FS base, and x87/SSE/AVX state.
-XSAVE/XRSTOR save the enabled extended state, with FXSAVE/FXRSTOR on CPUs
-without OSXSAVE.  Signal delivery also preserves this state and leaves the
-128-byte AMD64 red zone intact.
+Interrupt and syscall entry initially clear IF.  Syscalls enable interrupts
+after installing their stack and acquiring the global kernel lock.  This lock
+serializes the legacy syscall and device code but does not disable preemption:
+other tasks can run userspace while its owner is suspended.  A new syscall
+entrant saves its arguments and waits until the owner releases the lock.
+Releasing the lock hands execution to queued entrants to avoid starvation.
+
+The scheduler runs with interrupts disabled on a separate stack.  While the
+kernel lock is held it selects only runnable userspace or the suspended owner;
+it does not inspect device queues, complete waits, or deliver signals against
+partially updated shared state.  A separate runtime snapshot preserves the
+owner's global syscall state without overwriting its in-progress process data.
+When the lock is free, runnable and ready blocked tasks share a round-robin scan.
+Blocking syscall returns use saved userspace frames; suspended kernel calls use
+their original stacks.  Reaping can therefore free a task's stack safely.
+
+Context switches preserve integer registers, flags, FS base, and x87/SSE/AVX
+state.  XSAVE/XRSTOR save the enabled extended state, with FXSAVE/FXRSTOR on
+CPUs without OSXSAVE.  Signal delivery preserves this state and the AMD64 red
+zone.  Signals for suspended kernel calls are deferred until a safe user return.
 
 The legacy PIC is remapped to vectors 32--47 and only IRQ0 is unmasked.
-Other devices retain their polling paths.  There is no per-task CPU-time
-accounting, SMP scheduling, or kernel preemption.
+Entry/return, scheduling, and address-space replacement remain interrupt-disabled
+critical sections.  Device I/O still polls and there is no SMP support.
+@code{getrusage} reports task user/system CPU time and voluntary/involuntary
+context switches; it excludes time when a task is not scheduled.
 
 @node Blocking Operations
 @section Blocking Operations

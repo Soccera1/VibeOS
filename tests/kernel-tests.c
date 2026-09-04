@@ -1352,6 +1352,91 @@ static void test_preemption_and_clocks(void) {
     REQUIRE(sigaction(SIGALRM, &old_alarm, NULL) == 0, "restore SIGALRM handler");
 }
 
+
+static void test_kernel_preemption(void) {
+    struct sigaction action = {0}, old_action;
+    action.sa_handler = preempt_signal;
+    sigemptyset(&action.sa_mask);
+    REQUIRE(sigaction(SIGUSR1, &action, &old_action) == 0, "install kernel-preemption handler");
+    preempt_done = 0;
+    preempt_avx = 0;
+    int ready[2];
+    REQUIRE(pipe(ready) == 0, "create kernel-preemption pipe");
+    pid_t child = fork();
+    REQUIRE(child >= 0, "fork kernel-preemption observer");
+    if (child == 0) {
+        close(ready[0]);
+        if (write(ready[1], "r", 1) != 1) _exit(2);
+        _exit(preempt_spin(0x1234abcdef987654ull) ? 0 : 3);
+    }
+    close(ready[1]);
+    char token;
+    REQUIRE(read(ready[0], &token, 1) == 1, "start observer");
+    close(ready[0]);
+
+    const size_t length = 2 * 1024 * 1024 + 3;
+    unsigned char* data = malloc(length + 16);
+    REQUIRE(data != NULL, "allocate random buffer");
+    memset(data, 0, length + 16);
+    memset(data, 0x5a, 8);
+    memset(data + length + 8, 0xa5, 8);
+    struct rusage before, after;
+    REQUIRE(getrusage(RUSAGE_SELF, &before) == 0, "read initial scheduling counters");
+    /* There is only one syscall between these samples, and it never blocks or
+     * explicitly yields. Multiple involuntary switches must happen in kernel
+     * code, not merely at entry/return or on the surrounding user instructions. */
+    ssize_t generated = syscall(SYS_getrandom, data + 8, length, 0);
+    REQUIRE(getrusage(RUSAGE_SELF, &after) == 0, "read final scheduling counters");
+    REQUIRE(kill(child, SIGUSR1) == 0, "stop observer");
+    wait_for_exit_code(child, 0);
+    REQUIRE(generated == (ssize_t)length, "preempted getrandom returned %zd", generated);
+    long switches = after.ru_nivcsw - before.ru_nivcsw;
+    printf("kernel-preemption: %ld involuntary switches during getrandom\n", switches);
+    REQUIRE(switches >= 3, "long syscall was not timer-preempted repeatedly (%ld switches)", switches);
+    int64_t system_us = (after.ru_stime.tv_sec - before.ru_stime.tv_sec) * 1000000ll +
+                        after.ru_stime.tv_usec - before.ru_stime.tv_usec;
+    REQUIRE(system_us > 0, "kernel CPU time did not advance");
+    for (size_t i = 0; i < 8; ++i) {
+        REQUIRE(data[i] == 0x5a && data[length + 8 + i] == 0xa5, "kernel continuation corrupted buffer bounds");
+    }
+    REQUIRE(memcmp(data + 8, data + length - 56, 64) != 0, "random output was not filled");
+    free(data);
+    REQUIRE(sigaction(SIGUSR1, &old_action, NULL) == 0, "restore kernel-preemption handler");
+    errno = 0;
+    REQUIRE(syscall(SYS_getrusage, RUSAGE_SELF, NULL) == -1 && errno == EFAULT, "getrusage rejects null output");
+}
+
+
+static void test_kernel_syscall_contention(void) {
+    pid_t children[3];
+    for (size_t i = 0; i < 3; ++i) {
+        children[i] = fork();
+        REQUIRE(children[i] >= 0, "fork concurrent syscall worker");
+        if (children[i] == 0) {
+            const size_t length = 128 * 1024 + 7;
+            unsigned char* data = malloc(length + 2);
+            if (data == NULL) _exit(2);
+            for (int round = 0; round < 4; ++round) {
+                data[0] = 0x69;
+                data[length + 1] = 0x96;
+                if (syscall(SYS_getrandom, data + 1, length, 0) != (ssize_t)length ||
+                    data[0] != 0x69 || data[length + 1] != 0x96) _exit(3);
+                if (getpid() <= 0) _exit(4);
+            }
+            free(data);
+            _exit(0);
+        }
+    }
+    for (size_t i = 0; i < 3; ++i) wait_for_exit_code(children[i], 0);
+    /* Reuse process slots and kernel stacks after all pending calls complete. */
+    for (int i = 0; i < 8; ++i) {
+        pid_t child = fork();
+        REQUIRE(child >= 0, "reuse reaped worker slot");
+        if (child == 0) _exit(0);
+        wait_for_exit_code(child, 0);
+    }
+}
+
 struct test_case {
     const char* name;
     void (*fn)(void);
@@ -1359,6 +1444,8 @@ struct test_case {
 
 static const struct test_case g_tests[] = {
     { "preemption_and_clocks", test_preemption_and_clocks },
+    { "kernel_preemption", test_kernel_preemption },
+    { "kernel_syscall_contention", test_kernel_syscall_contention },
     { "identity_and_paths", test_identity_and_paths },
     { "user_group_permissions", test_user_group_permissions },
     { "file_io_and_mmap", test_file_io_and_mmap },

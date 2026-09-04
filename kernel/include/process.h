@@ -14,6 +14,7 @@
 #define MAX_PENDING_SIGNALS 32
 #define PROCESS_MAX_FDS 64
 #define PROCESS_SELECT_FDSET_BYTES 128
+#define PROCESS_KERNEL_STACK_SIZE 65536u
 
 #define SIGNAL_HANDLER_DFL ((void*)0)
 #define SIGNAL_HANDLER_IGN ((void*)1)
@@ -140,6 +141,17 @@ struct process {
     bool has_saved_context;
     bool resumed_from_block;
 
+    uint8_t* kernel_stack;
+    struct process* kernel_runtime;
+    struct syscall_frame* kernel_frame;
+    bool syscall_pending;
+    uint64_t voluntary_switches;
+    uint64_t involuntary_switches;
+    uint64_t user_time_ns;
+    uint64_t kernel_time_ns;
+    uint64_t account_start_ns;
+    bool accounting_kernel;
+
     uint64_t fs_base;
     uint64_t tid_address;
     struct process_wait_state wait;
@@ -158,3 +170,4 @@ bool process_has_pending_signal(struct process* proc);
 int process_take_pending_signal(struct process* proc);
 void process_set_current(struct process* proc);
 int process_next_pid(void);
+uint64_t process_kernel_stack_top(const struct process* proc);

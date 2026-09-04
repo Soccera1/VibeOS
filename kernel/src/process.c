@@ -1,6 +1,7 @@
 #include "process.h"
 
 #include <string.h>
+#include "kmalloc.h"
 
 static struct process g_processes[MAX_PROCESSES];
 static struct process* g_current_process = NULL;
@@ -18,6 +19,11 @@ void process_init(void) {
     g_processes[0].pgid = 1;
     g_processes[0].sid = 1;
     g_processes[0].state = PROCESS_RUNNING;
+    g_processes[0].kernel_stack = kmalloc_aligned(PROCESS_KERNEL_STACK_SIZE, 16);
+    g_processes[0].kernel_runtime = kmalloc_aligned(sizeof(struct process), _Alignof(struct process));
+    if (g_processes[0].kernel_stack == NULL || g_processes[0].kernel_runtime == NULL) {
+        for (;;) {}
+    }
     g_processes[0].is_child = false;
     g_processes[0].brk_current = VM_USER_BRK_BASE;
     g_processes[0].mmap_next = VM_USER_MMAP_BASE;
@@ -83,11 +89,21 @@ struct process* process_alloc(void) {
             proc->sgid = 0;
             proc->fsgid = 0;
             proc->dumpable = true;
+            proc->kernel_stack = kmalloc_aligned(PROCESS_KERNEL_STACK_SIZE, 16);
+            proc->kernel_runtime = kmalloc_aligned(sizeof(struct process), _Alignof(struct process));
+            if (proc->kernel_stack == NULL || proc->kernel_runtime == NULL) {
+                kfree_aligned(proc->kernel_stack);
+                kfree_aligned(proc->kernel_runtime);
+                proc->state = PROCESS_FREE;
+                return NULL;
+            }
             for (int j = 0; j < PROCESS_MAX_FDS; ++j) {
                 proc->fds[j].pipe_id = -1;
                 proc->fds[j].socket_id = -1;
             }
             if (vm_space_init(&proc->vm) != 0) {
+                kfree_aligned(proc->kernel_stack);
+                kfree_aligned(proc->kernel_runtime);
                 memset(proc, 0, sizeof(*proc));
                 proc->state = PROCESS_FREE;
                 return NULL;
@@ -104,9 +120,17 @@ void process_free(struct process* proc) {
     }
 
     vm_space_destroy(&proc->vm);
+    kfree_aligned(proc->kernel_stack);
+    proc->kernel_stack = NULL;
+    kfree_aligned(proc->kernel_runtime);
+    proc->kernel_runtime = NULL;
 
     proc->pid = 0;
     proc->state = PROCESS_FREE;
+}
+
+uint64_t process_kernel_stack_top(const struct process* proc) {
+    return (uint64_t)(uintptr_t)(proc->kernel_stack + PROCESS_KERNEL_STACK_SIZE);
 }
 
 struct process* process_at(int index) {

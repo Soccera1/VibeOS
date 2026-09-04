@@ -1,4 +1,5 @@
 #include "timer.h"
+#include "gdt.h"
 #include "syscall.h"
 
 #include <stdbool.h>
@@ -781,9 +782,35 @@ static uint32_t g_umask = 022u;
 static struct linux_termios g_tty_termios;
 static int g_terminal_fg_pgrp = 1;
 static int g_scheduler_index = 0;
-/* A blocking syscall can resume an arbitrary interrupted instruction. Its C
- * return type must not truncate or replace that instruction's saved RAX. */
-static bool g_return_context_restored;
+/* Legacy syscall/device state is serialized, but the owner is preemptible.
+ * Other tasks may execute user code; syscall entrants park until it releases
+ * the lock. The scheduler never inspects device queues while it is held. */
+static struct process* g_kernel_owner;
+static bool g_switch_involuntary;
+static uint8_t g_scheduler_stack[65536] __attribute__((aligned(16)));
+uint64_t scheduler_stack_top;
+extern uint64_t kernel_exit_stack_top;
+extern void kernel_schedule_enter(void) __attribute__((noreturn));
+extern void kernel_resume_context(struct syscall_frame*) __attribute__((noreturn));
+extern void kernel_resume_syscall(struct syscall_frame*) __attribute__((noreturn));
+static uint64_t finish_user_return(struct syscall_frame* frame);
+
+static void account_runtime(struct process* proc, bool kernel) {
+    uint64_t now = timer_monotonic_ns();
+    if (proc->account_start_ns != 0) {
+        uint64_t delta = now - proc->account_start_ns;
+        if (proc->accounting_kernel) proc->kernel_time_ns += delta;
+        else proc->user_time_ns += delta;
+    }
+    proc->account_start_ns = now;
+    proc->accounting_kernel = kernel;
+}
+
+static void park_runtime(struct process* proc) {
+    account_runtime(proc, proc->accounting_kernel);
+    proc->account_start_ns = 0;
+}
+
 
 static void add_zombie(int pid, int ppid, int pgid, int exit_code, int exit_status);
 static void remove_zombie(int idx);
@@ -1493,8 +1520,7 @@ static int save_live_process(struct process* proc, struct syscall_frame* frame) 
     return 0;
 }
 
-static void sync_current_process_runtime(void) {
-    struct process* proc = current_process();
+static void save_process_runtime(struct process* proc) {
     if (proc == NULL) {
         return;
     }
@@ -1536,10 +1562,17 @@ static void sync_current_process_runtime(void) {
     userland_get_image_span(&proc->image_start, &proc->image_end);
 }
 
+static void sync_current_process_runtime(void) {
+    save_process_runtime(current_process());
+}
+
 static void load_process_runtime(struct process* proc) {
     vm_space_activate(&proc->vm);
     process_set_current(proc);
+    kernel_exit_stack_top = process_kernel_stack_top(proc);
+    gdt_set_kernel_stack(kernel_exit_stack_top);
     fpu_restore(&proc->fpu);
+    if (proc->kernel_frame != NULL) proc = proc->kernel_runtime;
     g_current_pid = proc->pid;
     g_current_ppid = proc->ppid;
     g_current_pgid = proc->pgid;
@@ -1683,21 +1716,22 @@ static struct process* pick_next_runnable_process(const struct process* current)
     for (int i = 0; i < MAX_PROCESSES; ++i) {
         g_scheduler_index = (g_scheduler_index + 1) % MAX_PROCESSES;
         struct process* proc = process_at(g_scheduler_index);
-        if (proc == NULL || !proc->has_saved_context ||
-            (proc->state != PROCESS_RUNNABLE && !process_block_ready(proc))) {
-            continue;
+        if (proc == NULL || !proc->has_saved_context) continue;
+        if (g_kernel_owner != NULL) {
+            /* A suspended lock owner may be midway through a queue/VM update.
+             * Inspect only scheduler-owned fields until it finishes. */
+            if (proc->state != PROCESS_RUNNABLE || proc->syscall_pending) continue;
+        } else {
+            if (proc->state != PROCESS_RUNNABLE && !process_block_ready(proc)) continue;
+            if (proc->state == PROCESS_ZOMBIE || proc->state == PROCESS_STOPPED) continue;
         }
-        if (proc->state == PROCESS_ZOMBIE || proc->state == PROCESS_STOPPED ||
-            (proc == current && proc->state == PROCESS_RUNNABLE)) {
-            continue;
-        }
+        if (proc == current && proc->state == PROCESS_RUNNABLE) continue;
         return proc;
     }
-
-    if (current != NULL && current->state == PROCESS_RUNNABLE && current->has_saved_context) {
+    if (current != NULL && current->state == PROCESS_RUNNABLE && current->has_saved_context &&
+        (g_kernel_owner == NULL || !current->syscall_pending)) {
         return (struct process*)current;
     }
-
     return NULL;
 }
 
@@ -6911,32 +6945,56 @@ static int complete_blocked_process(struct process* proc) {
 }
 
 static uint64_t schedule_away(struct syscall_frame* frame) {
+    (void)frame;
+    cli();
     struct process* outgoing = current_process();
+    outgoing->kernel_frame = NULL;
+    outgoing->syscall_pending = false;
+    g_switch_involuntary = false;
+    park_runtime(outgoing);
+    if (g_kernel_owner == outgoing) g_kernel_owner = NULL;
+    kernel_schedule_enter();
+}
 
+/* Always entered with IF clear on the dedicated scheduler stack. Blocking
+ * syscalls have saved user returns; timer-preempted syscalls retain their full
+ * kernel stack, including the interrupt frame and all outstanding C calls. */
+void syscall_schedule(void) {
+    struct process* outgoing = current_process();
     for (;;) {
         struct process* next = pick_next_runnable_process(outgoing);
-
-        if (next != NULL) {
-            load_process_runtime(next);
-            if (next->state == PROCESS_BLOCKED) {
-                int cr = complete_blocked_process(next);
-                if (cr != 0) {
-                    if (next->state == PROCESS_BLOCKED) {
-                        continue;
-                    }
-                }
-                if (next->state != PROCESS_RUNNABLE) {
-                    continue;
-                }
-                load_process_runtime(next);
-            }
-            next->state = PROCESS_RUNNING;
-            restore_user_context(next, frame);
-            g_return_context_restored = true;
-            return frame->rax;
+        if (next == NULL) {
+            KERNEL_IDLE_POLL();
+            continue;
         }
-
-        KERNEL_IDLE_POLL();
+        load_process_runtime(next);
+        if (next->state == PROCESS_BLOCKED) {
+            int cr = complete_blocked_process(next);
+            if (cr != 0 && next->state == PROCESS_BLOCKED) continue;
+            if (next->state != PROCESS_RUNNABLE) continue;
+            load_process_runtime(next);
+        }
+        if (next != outgoing) {
+            if (g_switch_involuntary) outgoing->involuntary_switches++;
+            else outgoing->voluntary_switches++;
+        }
+        next->state = PROCESS_RUNNING;
+        if (next->kernel_frame != NULL) {
+            struct syscall_frame* resume = next->kernel_frame;
+            next->kernel_frame = NULL;
+            account_runtime(next, true);
+            kernel_resume_context(resume);
+        }
+        struct syscall_frame* resume = (struct syscall_frame*)(uintptr_t)
+            (process_kernel_stack_top(next) - sizeof(struct syscall_frame) - 5 * sizeof(uint64_t));
+        restore_user_context(next, resume);
+        if (next->syscall_pending) {
+            account_runtime(next, true);
+            kernel_resume_syscall(resume);
+        }
+        if (g_kernel_owner == NULL) (void)finish_user_return(resume);
+        account_runtime(next, false);
+        kernel_resume_context(resume);
     }
 }
 
@@ -8147,6 +8205,27 @@ static int sys_umask(uint32_t mask) {
     return (int)old;
 }
 
+static int sys_getrusage(int who, void* output) {
+    if (who != 0 && who != 1) return err(EINVAL); /* SELF or THREAD (one thread/task) */
+    struct {
+        struct linux_timeval user;
+        struct linux_timeval system;
+        int64_t counters[14];
+    } usage;
+    uint64_t flags = irq_save();
+    struct process* proc = current_process();
+    account_runtime(proc, true);
+    memset(&usage, 0, sizeof(usage));
+    usage.user.tv_sec = (int64_t)(proc->user_time_ns / 1000000000ull);
+    usage.user.tv_usec = (int64_t)(proc->user_time_ns / 1000ull % 1000000ull);
+    usage.system.tv_sec = (int64_t)(proc->kernel_time_ns / 1000000000ull);
+    usage.system.tv_usec = (int64_t)(proc->kernel_time_ns / 1000ull % 1000000ull);
+    usage.counters[12] = (int64_t)proc->voluntary_switches;
+    usage.counters[13] = (int64_t)proc->involuntary_switches;
+    irq_restore(flags);
+    return copy_to_user(output, &usage, sizeof(usage));
+}
+
 static int sys_getrlimit(int resource, struct linux_rlimit* rlim) {
     (void)resource;
     if (rlim == NULL) {
@@ -9181,6 +9260,7 @@ static int sys_execve(struct syscall_frame* frame, const char* path_user, uint64
         return sr;
     }
 
+    uint64_t commit_flags = irq_save();
     vm_space_destroy(&current->vm);
     current->vm = next_vm;
     vm_space_activate(&current->vm);
@@ -9217,6 +9297,7 @@ static int sys_execve(struct syscall_frame* frame, const char* path_user, uint64
     uint64_t* raw = (uint64_t*)(void*)frame;
     raw[IRET_SLOT_RIP] = entry;
     raw[IRET_SLOT_RSP] = user_stack;
+    irq_restore(commit_flags);
     return 0;
 }
 
@@ -9460,7 +9541,7 @@ static void continue_process(struct process* proc) {
         return;
     }
     proc->state = PROCESS_RUNNABLE;
-    proc->saved_frame.rax = (uint64_t)err(EINTR);
+    if (!proc->syscall_pending) proc->saved_frame.rax = (uint64_t)err(EINTR);
     proc->wait.reason = PROCESS_WAIT_NONE;
     note_child_status_change(proc, 0xFFFF);
 }
@@ -9927,7 +10008,6 @@ static int sys_fork_like(struct syscall_frame* frame, uint64_t clone_flags, uint
     if (from_clone && child_stack != 0) {
         child->saved_iret[3] = child_stack;
     }
-    child->has_saved_context = true;
     child->wait.reason = PROCESS_WAIT_NONE;
 
     current->saved_frame.rax = (uint64_t)child->pid;
@@ -9940,6 +10020,11 @@ static int sys_fork_like(struct syscall_frame* frame, uint64_t clone_flags, uint
         }
     }
 
+    /* Publish only after every argument/child-TID operation has succeeded;
+     * a timer may schedule the child before this parent returns from fork. */
+    uint64_t publish_flags = irq_save();
+    child->has_saved_context = true;
+    irq_restore(publish_flags);
     return child->pid;
 }
 
@@ -9965,6 +10050,10 @@ static uint64_t sys_exit_common(struct syscall_frame* frame, uint64_t code) {
 
 void syscall_init(void) {
     process_init();
+    scheduler_stack_top = (uint64_t)(uintptr_t)(g_scheduler_stack + sizeof(g_scheduler_stack));
+    kernel_exit_stack_top = process_kernel_stack_top(current_process());
+    gdt_set_kernel_stack(kernel_exit_stack_top);
+    account_runtime(current_process(), false);
     memset(g_fds, 0, sizeof(g_fds));
     memset(g_zombies, 0, sizeof(g_zombies));
     memset(g_sig_actions, 0, sizeof(g_sig_actions));
@@ -10255,6 +10344,8 @@ static uint64_t syscall_dispatch_body(struct syscall_frame* frame) {
             return (uint64_t)sys_umask((uint32_t)a0);
         case 97:
             return (uint64_t)sys_getrlimit((int)a0, (struct linux_rlimit*)(uintptr_t)a1);
+        case 98:
+            return (uint64_t)sys_getrusage((int)a0, (void*)(uintptr_t)a1);
         case 102:
             return (uint64_t)g_uid;
         case 104:
@@ -10411,29 +10502,66 @@ static uint64_t finish_user_return(struct syscall_frame* frame) {
 }
 
 uint64_t syscall_dispatch(struct syscall_frame* frame) {
-    g_return_context_restored = false;
+    struct process* current = current_process();
+    account_runtime(current, true);
+    if (g_kernel_owner != NULL && g_kernel_owner != current) {
+        (void)save_live_process(current, frame);
+        current->syscall_pending = true;
+        current->state = PROCESS_RUNNABLE;
+        g_switch_involuntary = false;
+        park_runtime(current);
+        kernel_schedule_enter();
+    }
+    current->syscall_pending = false;
+    g_kernel_owner = current;
+    /* Entry has saved every register and installed the task's kernel stack.
+     * Interrupts remain enabled throughout ordinary syscall work. */
+    sti();
     uint64_t result = syscall_dispatch_body(frame);
-    if (!g_return_context_restored) frame->rax = result;
-    return finish_user_return(frame);
+    cli();
+    g_kernel_owner = NULL;
+    frame->rax = result;
+    (void)finish_user_return(frame);
+    /* Hand the released lock to queued entrants even if this task immediately
+     * makes another syscall; short repeated syscalls must not starve waiters. */
+    for (int i = 0; i < MAX_PROCESSES; ++i) {
+        struct process* waiter = process_at(i);
+        if (waiter != current && waiter->state == PROCESS_RUNNABLE && waiter->syscall_pending) {
+            (void)save_live_process(current, frame);
+            current->state = PROCESS_RUNNABLE;
+            return schedule_away(frame);
+        }
+    }
+    account_runtime(current_process(), false);
+    return frame->rax;
 }
 
-/* The kernel remains non-preemptible: interrupt gates and FMASK clear IF.
- * IRQ0 arrives on the TSS stack with the same frame layout as syscall entry. */
 void syscall_timer_interrupt(struct syscall_frame* frame) {
-    outb(0x20, 0x20); /* Acknowledge before scheduling, which may wait for I/O. */
+    outb(0x20, 0x20);
     uint64_t* raw = (uint64_t*)(void*)frame;
     struct process* current = current_process();
-    if ((raw[IRET_SLOT_CS] & 3u) != 3u || current == NULL) return;
-
-    virtio_gpu_poll();
-    if (current_has_pending_signal()) {
-        (void)deliver_current_signal(frame, (int64_t)frame->rax);
+    if (current == NULL || current->state != PROCESS_RUNNING) return;
+    bool kernel = (raw[IRET_SLOT_CS] & 3u) == 0;
+    if (kernel) {
+        if (g_kernel_owner != current) return;
+        /* No signal delivery, allocation, device polling, or wait completion
+         * is permitted while interrupted kernel data may be inconsistent. */
+        save_process_runtime(current->kernel_runtime);
+        current->kernel_runtime->pid = current->pid;
+        fpu_save(&current->fpu);
+        current->kernel_frame = frame;
+        current->has_saved_context = true;
+    } else {
+        if (g_kernel_owner == NULL) {
+            virtio_gpu_poll();
+            if (current_has_pending_signal()) {
+                (void)deliver_current_signal(frame, (int64_t)frame->rax);
+            }
+        }
+        if (current->state == PROCESS_RUNNING) (void)save_live_process(current, frame);
     }
-    current = current_process();
-    if (current->state == PROCESS_RUNNING) {
-        (void)save_live_process(current, frame);
-        current->state = PROCESS_RUNNABLE;
-    }
-    (void)schedule_away(frame);
-    (void)finish_user_return(frame);
+    if (current->state == PROCESS_RUNNING) current->state = PROCESS_RUNNABLE;
+    g_switch_involuntary = true;
+    park_runtime(current);
+    kernel_schedule_enter();
 }

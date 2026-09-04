@@ -226,9 +226,9 @@ check-glibc-runtime: $(GLIBC_RUNTIME) $(USER_TESTS)
 		$(USER_TESTS)/libexec/kernel-tests/glibc-dynamic-helper argument
 
 check-preemption-system: disk
-	./tools/check_glibc_dynamic.py $(DISK_IMAGE) $(USR_EXT3) $(HOME_EXT3) preemption_and_clocks
-	QEMU_CPU=qemu64 ./tools/check_glibc_dynamic.py $(DISK_IMAGE) $(USR_EXT3) $(HOME_EXT3) preemption_and_clocks
-	KERNEL_TEST_LIBC=glibc ./tools/check_glibc_dynamic.py $(DISK_IMAGE) $(USR_EXT3) $(HOME_EXT3) preemption_and_clocks
+	./tools/check_glibc_dynamic.py $(DISK_IMAGE) $(USR_EXT3) $(HOME_EXT3) preemption_and_clocks kernel_preemption kernel_syscall_contention
+	QEMU_CPU=qemu64 ./tools/check_glibc_dynamic.py $(DISK_IMAGE) $(USR_EXT3) $(HOME_EXT3) preemption_and_clocks kernel_preemption kernel_syscall_contention
+	KERNEL_TEST_LIBC=glibc ./tools/check_glibc_dynamic.py $(DISK_IMAGE) $(USR_EXT3) $(HOME_EXT3) preemption_and_clocks kernel_preemption kernel_syscall_contention
 
 check-glibc-system: disk
 	./tools/check_glibc_dynamic.py $(DISK_IMAGE) $(USR_EXT3) $(HOME_EXT3)

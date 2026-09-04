@@ -269,6 +269,9 @@ permitted and returns the old value.
 permitted and returns the old value.
 @item 132 @tab @code{utime} @tab Updates path timestamps through the VFS.
 @item 162 @tab @code{sync} @tab Flushes writable ext2/ext3 mounts.
+@item 98 @tab @code{getrusage} @tab Self/thread user and system CPU time plus
+voluntary/involuntary switch counts.  Other resource counters are zero;
+child aggregation is not supported.
 @item 186 @tab @code{gettid} @tab Returns the current PID; VibeOS does not have
 separate thread IDs.
 @item 228 @tab @code{clock_gettime} @tab RTC-seeded realtime or boot-relative monotonic time.

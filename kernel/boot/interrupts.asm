@@ -46,6 +46,8 @@ extern syscall_dispatch
 extern kernel_exit_stack_top
 extern userland_exit_handler
 extern exception_dispatch
+extern syscall_schedule
+extern scheduler_stack_top
 
 ; void gdt_load(const struct gdtr* gdtr, uint16_t code_sel, uint16_t data_sel)
 gdt_load:
@@ -232,6 +234,43 @@ syscall_entry:
     call syscall_dispatch
     mov [rsp + 14 * 8], rax
 
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rbp
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    iretq
+
+ ; Enter scheduling on a dedicated stack; no abandoned task stack remains live.
+global kernel_schedule_enter
+kernel_schedule_enter:
+    cli
+    mov rsp, [rel scheduler_stack_top]
+    and rsp, -16
+    call syscall_schedule
+    ud2
+
+global kernel_resume_syscall
+kernel_resume_syscall:
+    mov rsp, rdi
+    call syscall_dispatch
+    mov [rsp + 14 * 8], rax
+    jmp restore_context
+
+global kernel_resume_context
+kernel_resume_context:
+    mov rsp, rdi
+restore_context:
     pop r15
     pop r14
     pop r13

@@ -58,11 +58,21 @@ static inline void wrmsr(uint32_t msr, uint64_t value) {
 }
 
 static inline void cli(void) {
-    __asm__ volatile("cli");
+    __asm__ volatile("cli" : : : "memory");
 }
 
 static inline void sti(void) {
-    __asm__ volatile("sti");
+    __asm__ volatile("sti" : : : "memory");
+}
+
+static inline uint64_t irq_save(void) {
+    uint64_t flags;
+    __asm__ volatile("pushfq; popq %0; cli" : "=r"(flags) : : "memory");
+    return flags;
+}
+
+static inline void irq_restore(uint64_t flags) {
+    __asm__ volatile("pushq %0; popfq" : : "r"(flags) : "memory", "cc");
 }
 
 static inline void hlt(void) {

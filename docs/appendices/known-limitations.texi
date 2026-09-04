@@ -18,14 +18,19 @@ in the current source tree.
 @node Kernel and Scheduler Limits
 @appendixsec Kernel and Scheduler Limits
 
-Userspace is preempted by a roughly 100 Hz PIT interrupt.  Kernel execution
-remains non-preemptible, so long-running syscalls can delay other processes.
+Userspace and ordinary syscall execution are preempted by a roughly 100 Hz
+PIT interrupt.  A preemptible global lock still serializes legacy kernel
+operations: userspace may run while a syscall is suspended, but competing
+syscalls wait for the owner.  Fine-grained subsystem locking is not implemented.
+Entry/return, scheduling, and address-space replacement disable interrupts.
 Device readiness and idle waits still rely on polling; this is not an
 interrupt-driven I/O scheduler.  There is no SMP scheduling support.
 
 Elapsed time uses a TSC calibrated once against PIT channel 2; realtime is
 seeded from the RTC.  This assumes a stable TSC frequency and does not provide
-clock discipline, suspend accounting, or per-process CPU clocks.
+clock discipline, suspend accounting, or CPU clock IDs.  @code{getrusage}
+provides self/thread CPU time and switch counts; child aggregation and other
+resource counters are not implemented.
 
 Exception handling is also intentionally simple: kernel exceptions are reported
 and then the machine halts.

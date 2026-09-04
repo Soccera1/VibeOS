@@ -46,7 +46,7 @@ Multiboot2 header, early paging setup, long-mode transition, and handoff to
 
 @item kernel/boot/interrupts.asm
 Assembly helpers for loading the GDT and IDT, syscall entry, user-mode entry
-and exit, and exception stubs.
+and exit, kernel continuation/scheduler stack switching, and exception stubs.
 @end table
 
 @node Kernel Header Files

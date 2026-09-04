@@ -88,6 +88,9 @@ def main() -> int:
 
         if not success:
             fail("kernel system tests did not pass", output)
+        for line in output.decode("utf-8", errors="replace").splitlines():
+            if line.startswith("kernel-preemption:"):
+                print(line)
         libc = os.environ.get("KERNEL_TEST_LIBC", "musl")
         cpu = os.environ.get("QEMU_CPU", "max")
         print(f"kernel system tests passed ({libc}, {cpu}): {', '.join(groups)}")
