@@ -113,6 +113,7 @@ make fconfig         # Edit configuration in FLTK (native C++ frontend)
 make tkconfig        # Edit configuration in Tk (native C frontend)
 make xconfig         # Edit configuration in Qt 6 (native C++ frontend)
 make gconfig         # Edit configuration in GTK 3, falling back to GTK 2
+make g3config        # Alias for gconfig
 make g2config        # Edit configuration explicitly in GTK 2
 make savedefconfig   # Write a minimal defconfig
 ```
