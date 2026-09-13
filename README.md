@@ -105,6 +105,7 @@ created from defaults automatically during a normal build.
 ```bash
 make defconfig       # Reset .config to defaults
 make olddefconfig    # Refresh .config after Kconfig changes
+make dconfig         # Edit configuration on a dumb terminal (line-based)
 make tconfig         # Edit configuration on a VT100 terminal (no curses)
 make menuconfig      # Toggle options in a C ncurses menu
 make xconfig         # Edit configuration in Qt 6 (native C++ frontend)
@@ -124,6 +125,16 @@ are staged into the initramfs and `/usr` image. BusyBox remains mandatory
 because it provides the initramfs base shell and login applets. `make
 menuconfig` builds the host helper `build/tools/menuconfig` from
 `tools/menuconfig.c` and links it against ncurses.
+
+`make dconfig` provides a numbered, paginated text interface for dumb terminals.
+Type an option number to edit it, `h NUMBER` for help, `n`/`p` for pages,
+`l` to list again, `s` to save, or `q` to quit; press Enter after each command.
+Booleans accept `y`/`n`; blank input keeps a value and `""` clears a string.
+Saving writes `.config` and both generated files. Quitting with changes offers
+save, discard, or cancel; end-of-input discards unsaved changes. It uses ordinary
+line input and printable ASCII output without curses, ANSI escapes, raw terminal
+mode, or a `TERM` requirement, and also works over pipes.
+`make check-dconfig` runs isolated regression tests.
 
 `make tconfig` uses a basic ASCII VT100 interface with no curses or terminfo
 requirement. Use Up/Down (or j/k) to navigate, Space/Enter to toggle or edit,
@@ -148,7 +159,7 @@ them untouched. Unavailable options are disabled, and hovering over an option
 shows its symbol, type, default, and dependencies.
 
 `make config-tools` builds every configurator and the kernel configuration checker.
-The command-line tool (`build/tools/kconfig`), `tconfig`, and checker default to static musl;
+The command-line tool (`build/tools/kconfig`), `dconfig`, `tconfig`, and checker default to static musl;
 use `CONFIG_LINK=dynamic` for glibc builds. `MUSL_CC` selects the static compiler,
 while `HOST_CC` and `HOST_CXX` select the host glibc C and C++ compilers. The
 ncurses and GUI frontends link dynamically against host libraries. Integer and

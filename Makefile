@@ -4,6 +4,7 @@ BUILD_DIR := build
 KCONFIG := Kconfig
 CONFIG_FILE := .config
 KCONFIG_TOOL := $(BUILD_DIR)/tools/kconfig
+DCONFIG := $(BUILD_DIR)/tools/dconfig
 TCONFIG := $(BUILD_DIR)/tools/tconfig
 MENUCONFIG := $(BUILD_DIR)/tools/menuconfig
 GCONFIG := $(BUILD_DIR)/tools/gconfig
@@ -55,7 +56,7 @@ CFLAGS := -m64 -ffreestanding -fno-stack-protector -fno-pie -fno-pic -fno-omit-f
 	-Ikernel/include -I$(BUILD_DIR)/include -include generated/autoconf.h
 LDFLAGS := -nostdlib -z max-page-size=0x1000 -T kernel/linker.ld
 
-CONFIG_GOALS := config-tools check-tconfig check-config check-guiconfig check-g2config check-kernel-config config oldconfig tconfig menuconfig xconfig gconfig g2config defconfig olddefconfig savedefconfig clean
+CONFIG_GOALS := config-tools check-dconfig check-tconfig check-config check-guiconfig check-g2config check-kernel-config config oldconfig dconfig tconfig menuconfig xconfig gconfig g2config defconfig olddefconfig savedefconfig clean
 ifeq ($(filter $(CONFIG_GOALS),$(MAKECMDGOALS)),)
 -include $(CONFIG_MK)
 endif
@@ -177,7 +178,7 @@ export STRIP
 
 .PHONY: all clean run iso disk docs check check-kmalloc check-console-reflow check-elf-loader check-glibc-runtime check-glibc-system check-preemption-system check-toolchain check-build-tools check-image-tools \
 	check-iso-tools check-disk-tools check-run-tools all-debug iso-debug disk-debug run-debug \
-	config oldconfig tconfig menuconfig xconfig gconfig g2config defconfig olddefconfig savedefconfig check-kernel-config
+	config oldconfig dconfig tconfig menuconfig xconfig gconfig g2config defconfig olddefconfig savedefconfig check-kernel-config
 
 all: disk
 
@@ -273,8 +274,8 @@ else
 $(error CONFIG_LINK must be static or dynamic)
 endif
 
-.PHONY: config-tools check-tconfig check-config check-guiconfig check-g2config config-tool-force
-config-tools: $(TCONFIG) $(KCONFIG_TOOL) $(MENUCONFIG) $(GCONFIG) $(XCONFIG) $(BUILD_DIR)/tools/check-kernel-config
+.PHONY: config-tools check-dconfig check-tconfig check-config check-guiconfig check-g2config config-tool-force
+config-tools: $(DCONFIG) $(TCONFIG) $(KCONFIG_TOOL) $(MENUCONFIG) $(GCONFIG) $(XCONFIG) $(BUILD_DIR)/tools/check-kernel-config
 
 # Rebuild when switching CONFIG_LINK, even when both modes were built before.
 $(BUILD_DIR)/tools/config-link: config-tool-force
@@ -283,6 +284,9 @@ $(BUILD_DIR)/tools/config-link: config-tool-force
 
 $(KCONFIG_TOOL): tools/kconfig.c $(CONFIG_SOURCES) $(BUILD_DIR)/tools/config-link
 	$(CONFIG_CC) $(CONFIG_CFLAGS) $(CONFIG_LDFLAGS) -o $@ $< tools/kconfig_model.c
+
+$(DCONFIG): tools/dconfig.c tools/config_editor.c tools/config_editor.h $(CONFIG_SOURCES) $(BUILD_DIR)/tools/config-link
+	$(CONFIG_CC) $(CONFIG_CFLAGS) $(CONFIG_LDFLAGS) -o $@ $< tools/config_editor.c tools/kconfig_model.c
 
 $(TCONFIG): tools/tconfig.c tools/config_editor.c tools/config_editor.h $(CONFIG_SOURCES) $(BUILD_DIR)/tools/config-link
 	$(CONFIG_CC) $(CONFIG_CFLAGS) $(CONFIG_LDFLAGS) -o $@ $< tools/config_editor.c tools/kconfig_model.c
@@ -331,6 +335,12 @@ config: $(KCONFIG_TOOL) $(KCONFIG)
 oldconfig: $(KCONFIG_TOOL) $(KCONFIG)
 	$(KCONFIG_TOOL) oldconfig --kconfig $(KCONFIG) --config $(CONFIG_FILE)
 	$(KCONFIG_TOOL) sync --kconfig $(KCONFIG) --config $(CONFIG_FILE) --out-mk $(CONFIG_MK) --out-header $(CONFIG_HEADER)
+
+dconfig: $(DCONFIG) $(KCONFIG)
+	$(DCONFIG) --kconfig $(KCONFIG) --config $(CONFIG_FILE) --out-mk $(CONFIG_MK) --out-header $(CONFIG_HEADER)
+
+check-dconfig: $(DCONFIG)
+	python3 tests/dconfig-test.py $(DCONFIG)
 
 tconfig: $(TCONFIG) $(KCONFIG)
 	$(TCONFIG) --kconfig $(KCONFIG) --config $(CONFIG_FILE) --out-mk $(CONFIG_MK) --out-header $(CONFIG_HEADER)

@@ -350,7 +350,7 @@ bool parse_number(const char* value, long long* number) {
 }
 static char* normalized(const Symbol* sym, const char* value, bool enabled) {
     if (!enabled) return xstrdup(strcmp(sym->type, "bool") == 0 ? "n" : "");
-    if (!value || !*value) value = sym->defval;
+    if (!value || (!*value && strcmp(sym->type, "string"))) value = sym->defval;
     if (!value) value = strcmp(sym->type, "bool") == 0 ? "n" : "";
     if (strcmp(sym->type, "bool") == 0)
         return xstrdup(!strcmp(value,"y") || !strcmp(value,"Y") || !strcmp(value,"1") ||
