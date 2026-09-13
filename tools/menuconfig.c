@@ -1,385 +1,14 @@
 #define _GNU_SOURCE
-
-#include <ctype.h>
-#include <errno.h>
+#include "kconfig.h"
 #include <ncurses.h>
-#include <stdbool.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-typedef struct {
-    char* name;
-    char* type;
-    char* prompt;
-    char* defval;
-    char* depends;
-    char* menu;
-    char* value;
-} Symbol;
-
-typedef struct {
-    char* mainmenu;
-    Symbol* symbols;
-    size_t count;
-    size_t capacity;
-} Model;
 
 typedef struct {
     bool is_menu;
     int symbol_index;
     const char* menu;
 } Row;
-
-static char* xstrdup(const char* s) {
-    char* copy = strdup(s ? s : "");
-    if (!copy) {
-        perror("strdup");
-        exit(1);
-    }
-    return copy;
-}
-
-static char* trim(char* s) {
-    while (isspace((unsigned char)*s)) {
-        ++s;
-    }
-    char* end = s + strlen(s);
-    while (end > s && isspace((unsigned char)end[-1])) {
-        *--end = '\0';
-    }
-    return s;
-}
-
-static bool starts_with(const char* s, const char* prefix) {
-    return strncmp(s, prefix, strlen(prefix)) == 0;
-}
-
-static char* unquote(const char* s) {
-    char* tmp = xstrdup(s);
-    char* value = trim(tmp);
-    size_t len = strlen(value);
-    if (len >= 2 && value[0] == '"' && value[len - 1] == '"') {
-        value[len - 1] = '\0';
-        char* out = xstrdup(value + 1);
-        free(tmp);
-        return out;
-    }
-    char* out = xstrdup(value);
-    free(tmp);
-    return out;
-}
-
-static void set_string(char** dst, const char* value) {
-    free(*dst);
-    *dst = xstrdup(value);
-}
-
-static void model_add_symbol(Model* model, const char* name, const char* menu) {
-    if (model->count == model->capacity) {
-        size_t next = model->capacity ? model->capacity * 2 : 16;
-        Symbol* symbols = realloc(model->symbols, next * sizeof(*symbols));
-        if (!symbols) {
-            perror("realloc");
-            exit(1);
-        }
-        model->symbols = symbols;
-        model->capacity = next;
-    }
-    Symbol* sym = &model->symbols[model->count++];
-    memset(sym, 0, sizeof(*sym));
-    sym->name = xstrdup(name);
-    sym->type = xstrdup("bool");
-    sym->menu = xstrdup(menu);
-}
-
-static char* join_menu(char** stack, size_t depth) {
-    if (depth == 0) {
-        return xstrdup("");
-    }
-    size_t len = 1;
-    for (size_t i = 0; i < depth; ++i) {
-        len += strlen(stack[i]) + 3;
-    }
-    char* out = calloc(len, 1);
-    if (!out) {
-        perror("calloc");
-        exit(1);
-    }
-    for (size_t i = 0; i < depth; ++i) {
-        if (i != 0) {
-            strcat(out, " / ");
-        }
-        strcat(out, stack[i]);
-    }
-    return out;
-}
-
-static Model parse_kconfig(const char* path) {
-    FILE* f = fopen(path, "r");
-    if (!f) {
-        fprintf(stderr, "failed to open %s: %s\n", path, strerror(errno));
-        exit(1);
-    }
-
-    Model model = {0};
-    model.mainmenu = xstrdup("Configuration");
-    char* menu_stack[64] = {0};
-    size_t menu_depth = 0;
-    Symbol* current = NULL;
-    char* line = NULL;
-    size_t cap = 0;
-
-    while (getline(&line, &cap, f) >= 0) {
-        char* s = trim(line);
-        if (*s == '\0' || *s == '#') {
-            continue;
-        }
-        if (starts_with(s, "mainmenu ")) {
-            set_string(&model.mainmenu, unquote(s + 9));
-            continue;
-        }
-        if (starts_with(s, "menu ")) {
-            if (menu_depth >= 64) {
-                fprintf(stderr, "%s: menu nesting too deep\n", path);
-                exit(1);
-            }
-            menu_stack[menu_depth++] = unquote(s + 5);
-            continue;
-        }
-        if (strcmp(s, "endmenu") == 0) {
-            if (menu_depth == 0) {
-                fprintf(stderr, "%s: endmenu without menu\n", path);
-                exit(1);
-            }
-            free(menu_stack[--menu_depth]);
-            menu_stack[menu_depth] = NULL;
-            continue;
-        }
-        if (starts_with(s, "config ")) {
-            char* menu = join_menu(menu_stack, menu_depth);
-            model_add_symbol(&model, trim(s + 7), menu);
-            free(menu);
-            current = &model.symbols[model.count - 1];
-            continue;
-        }
-        if (!current) {
-            continue;
-        }
-        if (starts_with(s, "bool")) {
-            set_string(&current->type, "bool");
-            char* rest = trim(s + 4);
-            if (*rest) {
-                set_string(&current->prompt, unquote(rest));
-            }
-        } else if (starts_with(s, "string")) {
-            set_string(&current->type, "string");
-            char* rest = trim(s + 6);
-            if (*rest) {
-                set_string(&current->prompt, unquote(rest));
-            }
-        } else if (starts_with(s, "int")) {
-            set_string(&current->type, "int");
-            char* rest = trim(s + 3);
-            if (*rest) {
-                set_string(&current->prompt, unquote(rest));
-            }
-        } else if (starts_with(s, "hex")) {
-            set_string(&current->type, "hex");
-            char* rest = trim(s + 3);
-            if (*rest) {
-                set_string(&current->prompt, unquote(rest));
-            }
-        } else if (starts_with(s, "prompt ")) {
-            set_string(&current->prompt, unquote(s + 7));
-        } else if (starts_with(s, "default ")) {
-            set_string(&current->defval, unquote(s + 8));
-        } else if (starts_with(s, "depends on ")) {
-            set_string(&current->depends, trim(s + 11));
-        }
-    }
-
-    free(line);
-    for (size_t i = 0; i < menu_depth; ++i) {
-        free(menu_stack[i]);
-    }
-    fclose(f);
-    return model;
-}
-
-static int find_symbol(const Model* model, const char* name) {
-    for (size_t i = 0; i < model->count; ++i) {
-        if (strcmp(model->symbols[i].name, name) == 0) {
-            return (int)i;
-        }
-    }
-    return -1;
-}
-
-static char* config_string_value(const char* raw) {
-    char* value = xstrdup(raw);
-    char* s = trim(value);
-    size_t len = strlen(s);
-    if (len >= 2 && s[0] == '"' && s[len - 1] == '"') {
-        s[len - 1] = '\0';
-        char* out = xstrdup(s + 1);
-        free(value);
-        return out;
-    }
-    char* out = xstrdup(s);
-    free(value);
-    return out;
-}
-
-static void parse_config(Model* model, const char* path) {
-    FILE* f = fopen(path, "r");
-    if (!f) {
-        return;
-    }
-    char* line = NULL;
-    size_t cap = 0;
-    while (getline(&line, &cap, f) >= 0) {
-        char* s = trim(line);
-        if (starts_with(s, "CONFIG_")) {
-            char* eq = strchr(s, '=');
-            if (!eq) {
-                continue;
-            }
-            *eq = '\0';
-            int idx = find_symbol(model, s + 7);
-            if (idx >= 0) {
-                char* value = config_string_value(eq + 1);
-                set_string(&model->symbols[idx].value, value);
-                free(value);
-            }
-        } else if (starts_with(s, "# CONFIG_")) {
-            char* end = strstr(s, " is not set");
-            if (!end) {
-                continue;
-            }
-            *end = '\0';
-            int idx = find_symbol(model, s + 9);
-            if (idx >= 0) {
-                set_string(&model->symbols[idx].value, "n");
-            }
-        }
-    }
-    free(line);
-    fclose(f);
-}
-
-static bool bool_value(const char* value) {
-    return value && strcmp(value, "y") == 0;
-}
-
-static bool eval_depends(const Model* model, const char* expr) {
-    if (!expr || !*expr) {
-        return true;
-    }
-    char* copy = xstrdup(expr);
-    char* saveptr = NULL;
-    bool result = true;
-    bool pending_or = false;
-    for (char* tok = strtok_r(copy, " \t()", &saveptr); tok; tok = strtok_r(NULL, " \t()", &saveptr)) {
-        if (strcmp(tok, "&&") == 0) {
-            continue;
-        }
-        if (strcmp(tok, "||") == 0) {
-            pending_or = true;
-            continue;
-        }
-        bool neg = false;
-        if (tok[0] == '!') {
-            neg = true;
-            ++tok;
-        }
-        bool value = false;
-        if (strcmp(tok, "y") == 0) {
-            value = true;
-        } else if (strcmp(tok, "n") == 0) {
-            value = false;
-        } else {
-            int idx = find_symbol(model, tok);
-            value = idx >= 0 && bool_value(model->symbols[idx].value);
-        }
-        if (neg) {
-            value = !value;
-        }
-        if (pending_or) {
-            result = result || value;
-            pending_or = false;
-        } else {
-            result = result && value;
-        }
-    }
-    free(copy);
-    return result;
-}
-
-static void resolve(Model* model) {
-    for (size_t i = 0; i < model->count; ++i) {
-        Symbol* sym = &model->symbols[i];
-        if (!eval_depends(model, sym->depends)) {
-            set_string(&sym->value, strcmp(sym->type, "bool") == 0 ? "n" : "");
-            continue;
-        }
-        if (!sym->value || !*sym->value) {
-            if (sym->defval) {
-                set_string(&sym->value, sym->defval);
-            } else {
-                set_string(&sym->value, strcmp(sym->type, "bool") == 0 ? "n" : "");
-            }
-        }
-        if (strcmp(sym->type, "bool") == 0 && strcmp(sym->value, "y") != 0) {
-            set_string(&sym->value, "n");
-        }
-    }
-}
-
-static void fprint_quoted(FILE* f, const char* value) {
-    fputc('"', f);
-    for (const char* p = value; p && *p; ++p) {
-        if (*p == '\\' || *p == '"') {
-            fputc('\\', f);
-        }
-        fputc(*p, f);
-    }
-    fputc('"', f);
-}
-
-static void write_config(const Model* model, const char* path) {
-    FILE* f = fopen(path, "w");
-    if (!f) {
-        endwin();
-        fprintf(stderr, "failed to write %s: %s\n", path, strerror(errno));
-        exit(1);
-    }
-    fprintf(f, "# %s\n# Generated by tools/menuconfig.c\n\n", model->mainmenu);
-    const char* current_menu = NULL;
-    for (size_t i = 0; i < model->count; ++i) {
-        const Symbol* sym = &model->symbols[i];
-        if (!current_menu || strcmp(current_menu, sym->menu) != 0) {
-            current_menu = sym->menu;
-            if (*current_menu) {
-                fprintf(f, "#\n# %s\n#\n", current_menu);
-            }
-        }
-        if (strcmp(sym->type, "bool") == 0) {
-            if (bool_value(sym->value)) {
-                fprintf(f, "CONFIG_%s=y\n", sym->name);
-            } else {
-                fprintf(f, "# CONFIG_%s is not set\n", sym->name);
-            }
-        } else if (strcmp(sym->type, "string") == 0) {
-            fprintf(f, "CONFIG_%s=", sym->name);
-            fprint_quoted(f, sym->value);
-            fputc('\n', f);
-        } else {
-            fprintf(f, "CONFIG_%s=%s\n", sym->name, sym->value ? sym->value : "");
-        }
-    }
-    fclose(f);
-}
 
 static Row* build_rows(Model* model, size_t* out_count) {
     Row* rows = calloc(model->count * 2 + 1, sizeof(*rows));
@@ -391,7 +20,7 @@ static Row* build_rows(Model* model, size_t* out_count) {
     const char* current_menu = NULL;
     for (size_t i = 0; i < model->count; ++i) {
         Symbol* sym = &model->symbols[i];
-        if (!eval_depends(model, sym->depends)) {
+        if (!sym->prompt || !*sym->prompt || !eval_depends(model, sym->depends)) {
             continue;
         }
         if (!current_menu || strcmp(current_menu, sym->menu) != 0) {
@@ -655,18 +284,23 @@ static void run_menu(Model* model, const char* config_path) {
         } else if ((key == 'h' || key == 'H' || key == '?') && row_count > 0 && !rows[selected].is_menu) {
             help_dialog(&model->symbols[rows[selected].symbol_index]);
         } else if (key == 's' || key == 'S') {
-            write_config(model, config_path);
-            dirty = false;
-            snprintf(message, sizeof(message), "Wrote %s", config_path);
+            if (write_config(model, config_path) == 0) {
+                dirty = false;
+                snprintf(message, sizeof(message), "Wrote %s", config_path);
+            } else snprintf(message, sizeof(message), "Cannot save %s", config_path);
         } else if (key == 'q' || key == 'Q' || key == 27) {
             if (!dirty) {
                 free(rows);
                 break;
             }
             if (confirm_dialog("Save configuration before exit?")) {
-                write_config(model, config_path);
+                if (write_config(model, config_path) == 0) {
+                    free(rows);
+                    break;
+                }
+                snprintf(message, sizeof(message), "Cannot save %s", config_path);
                 free(rows);
-                break;
+                continue;
             }
             if (confirm_dialog("Exit without saving changes?")) {
                 free(rows);
@@ -700,5 +334,6 @@ int main(int argc, char** argv) {
     parse_config(&model, config_path);
     resolve(&model);
     run_menu(&model, config_path);
+    free_model(&model);
     return 0;
 }

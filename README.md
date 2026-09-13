@@ -106,8 +106,8 @@ created from defaults automatically during a normal build.
 make defconfig       # Reset .config to defaults
 make olddefconfig    # Refresh .config after Kconfig changes
 make menuconfig      # Toggle options in a C ncurses menu
-make xconfig         # Edit configuration in Qt (host Python with PySide6)
-make gconfig         # Edit configuration in GTK 3 (host Python with PyGObject)
+make xconfig         # Edit configuration in Qt 6 (native C++ frontend)
+make gconfig         # Edit configuration in GTK 3 (native C frontend)
 make savedefconfig   # Write a minimal defconfig
 ```
 
@@ -124,13 +124,27 @@ menuconfig` builds the host helper `build/tools/menuconfig` from
 `tools/menuconfig.c` and links it against ncurses.
 
 The graphical editors require a desktop display and use the same configuration
-backend as the command-line tools. `xconfig` requires PySide6; `gconfig` requires
-PyGObject with GTK 3 (for example, `python3-gi` and `gir1.2-gtk-3.0` on
-Debian/Ubuntu). Use `HOST_PYTHON=/path/to/python3` to select their interpreter.
+backend as the command-line tools. All configuration parsing, validation, and
+file generation is implemented in C in `tools/kconfig_model.c`. `gconfig` uses
+GTK 3's C API; `xconfig` retains Qt through a small C++ frontend. Building them
+requires `pkg-config` and the GTK 3 / Qt 6 Widgets development libraries
+(`libgtk-3-dev` and `qt6-base-dev` on Debian/Ubuntu).
 These are host tools using the host GUI libraries, not binaries for the OS image.
+Python bindings are no longer required.
 Save writes `.config` and both generated files; closing without saving leaves
 them untouched. Unavailable options are disabled, and hovering over an option
 shows its symbol, type, default, and dependencies.
+
+`make config-tools` builds every configurator and the kernel configuration checker.
+The command-line tool (`build/tools/kconfig`) and checker default to static musl;
+use `CONFIG_LINK=dynamic` for glibc builds. `MUSL_CC` selects the static compiler,
+while `HOST_CC` and `HOST_CXX` select the host glibc C and C++ compilers. The
+ncurses and GUI frontends link dynamically against host libraries. Integer and
+hexadecimal options accept signed 64-bit values.
+`make check-config` runs CLI regression tests (using Python only as a test driver),
+`make check-guiconfig` exercises both native editors on a desktop display or Xvfb,
+and `make check-kernel-config` checks five kernel feature configurations without
+changing the working `.config`.
 
 The Kernel menu includes:
 

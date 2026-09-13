@@ -3,10 +3,12 @@ SHELL := /bin/bash
 BUILD_DIR := build
 KCONFIG := Kconfig
 CONFIG_FILE := .config
-KCONFIG_TOOL := tools/kconfig.py
+KCONFIG_TOOL := $(BUILD_DIR)/tools/kconfig
 MENUCONFIG := $(BUILD_DIR)/tools/menuconfig
-GUICONFIG_TOOL := tools/guiconfig.py
-HOST_PYTHON ?= python3
+GCONFIG := $(BUILD_DIR)/tools/gconfig
+XCONFIG := $(BUILD_DIR)/tools/xconfig
+# Plain C host tools prefer static musl; GUI and ncurses use host glibc libraries.
+CONFIG_LINK ?= static
 CONFIG_MK := $(BUILD_DIR)/config.mk
 CONFIG_HEADER := $(BUILD_DIR)/include/generated/autoconf.h
 KERNEL_BIN := $(BUILD_DIR)/vibeos-kernel.bin
@@ -29,6 +31,7 @@ LD := ld
 NASM := nasm
 STRIP ?= strip
 HOST_CC ?= cc
+HOST_CXX ?= c++
 GLIBC_CC ?= gcc
 PKG_CONFIG ?= pkg-config
 # Static userspace is always musl; these do not change kernel or glibc compilers.
@@ -50,7 +53,7 @@ CFLAGS := -m64 -ffreestanding -fno-stack-protector -fno-pie -fno-pic -fno-omit-f
 	-Ikernel/include -I$(BUILD_DIR)/include -include generated/autoconf.h
 LDFLAGS := -nostdlib -z max-page-size=0x1000 -T kernel/linker.ld
 
-CONFIG_GOALS := config oldconfig menuconfig xconfig gconfig defconfig olddefconfig savedefconfig clean
+CONFIG_GOALS := config-tools check-config check-guiconfig check-kernel-config config oldconfig menuconfig xconfig gconfig defconfig olddefconfig savedefconfig clean
 ifeq ($(filter $(CONFIG_GOALS),$(MAKECMDGOALS)),)
 -include $(CONFIG_MK)
 endif
@@ -219,10 +222,10 @@ check-run-tools:
 
 check-toolchain: check-iso-tools check-disk-tools check-run-tools
 
-check: check-storage-flush check-xfs check-xfs-write check-kmalloc check-console-reflow check-elf-loader check-glibc-runtime check-kernel-config
+check: check-config check-storage-flush check-xfs check-xfs-write check-kmalloc check-console-reflow check-elf-loader check-glibc-runtime check-kernel-config
 
-check-kernel-config:
-	python3 tools/check_kernel_config.py
+check-kernel-config: $(BUILD_DIR)/tools/check-kernel-config
+	$<
 
 check-kmalloc: $(KMALLOC_HOST_TEST)
 	$<
@@ -256,9 +259,53 @@ $(CONFIG_FILE): $(KCONFIG_TOOL) $(KCONFIG)
 $(CONFIG_MK) $(CONFIG_HEADER): $(KCONFIG_TOOL) $(KCONFIG) $(CONFIG_FILE) | $(BUILD_DIR)
 	$(KCONFIG_TOOL) sync --kconfig $(KCONFIG) --config $(CONFIG_FILE) --out-mk $(CONFIG_MK) --out-header $(CONFIG_HEADER)
 
-$(MENUCONFIG): tools/menuconfig.c | $(BUILD_DIR)
+CONFIG_SOURCES := tools/kconfig_model.c tools/kconfig.h
+CONFIG_CFLAGS := -std=gnu11 -Wall -Wextra -Werror -O2
+ifeq ($(CONFIG_LINK),static)
+CONFIG_CC = $(MUSL_TOOL) cc
+CONFIG_LDFLAGS := -static -no-pie
+else ifeq ($(CONFIG_LINK),dynamic)
+CONFIG_CC = $(HOST_CC)
+CONFIG_LDFLAGS :=
+else
+$(error CONFIG_LINK must be static or dynamic)
+endif
+
+.PHONY: config-tools check-config check-guiconfig config-tool-force
+config-tools: $(KCONFIG_TOOL) $(MENUCONFIG) $(GCONFIG) $(XCONFIG) $(BUILD_DIR)/tools/check-kernel-config
+
+# Rebuild when switching CONFIG_LINK, even when both modes were built before.
+$(BUILD_DIR)/tools/config-link: config-tool-force
 	@mkdir -p $(dir $@)
-	$(HOST_CC) -Wall -Wextra -O2 $(NCURSES_CFLAGS) -o $@ $< $(NCURSES_LIBS)
+	@if ! test -f $@ || ! test "$$(cat $@)" = "$(CONFIG_LINK)"; then echo $(CONFIG_LINK) > $@; fi
+
+$(KCONFIG_TOOL): tools/kconfig.c $(CONFIG_SOURCES) $(BUILD_DIR)/tools/config-link
+	$(CONFIG_CC) $(CONFIG_CFLAGS) $(CONFIG_LDFLAGS) -o $@ $< tools/kconfig_model.c
+
+$(BUILD_DIR)/tools/check-kernel-config: tools/check_kernel_config.c $(CONFIG_SOURCES) $(BUILD_DIR)/tools/config-link
+	$(CONFIG_CC) $(CONFIG_CFLAGS) $(CONFIG_LDFLAGS) -o $@ $< tools/kconfig_model.c
+
+$(BUILD_DIR)/tools/kconfig_model.o: $(CONFIG_SOURCES)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(CONFIG_CFLAGS) -c tools/kconfig_model.c -o $@
+
+$(BUILD_DIR)/tools/config_editor.o: tools/config_editor.c tools/config_editor.h tools/kconfig.h
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(CONFIG_CFLAGS) -c $< -o $@
+
+CONFIG_EDITOR_OBJS := $(BUILD_DIR)/tools/kconfig_model.o $(BUILD_DIR)/tools/config_editor.o
+
+$(GCONFIG): tools/gconfig.c tools/config_editor.h $(CONFIG_EDITOR_OBJS)
+	@$(PKG_CONFIG) --exists gtk+-3.0 || { echo 'gconfig requires GTK 3 development libraries and pkg-config.' >&2; exit 1; }
+	$(HOST_CC) $(CONFIG_CFLAGS) $$($(PKG_CONFIG) --cflags gtk+-3.0) -o $@ $< $(CONFIG_EDITOR_OBJS) $$($(PKG_CONFIG) --libs gtk+-3.0)
+
+$(XCONFIG): tools/xconfig.cpp tools/config_editor.h $(CONFIG_EDITOR_OBJS)
+	@$(PKG_CONFIG) --exists Qt6Widgets || { echo 'xconfig requires Qt 6 Widgets development libraries and pkg-config.' >&2; exit 1; }
+	$(HOST_CXX) -fPIC -std=c++17 -Wall -Wextra -Werror -O2 $$($(PKG_CONFIG) --cflags Qt6Widgets) -o $@ $< $(CONFIG_EDITOR_OBJS) $$($(PKG_CONFIG) --libs Qt6Widgets)
+
+$(MENUCONFIG): tools/menuconfig.c $(CONFIG_SOURCES) | $(BUILD_DIR)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -Wall -Wextra -O2 $(NCURSES_CFLAGS) -o $@ $< tools/kconfig_model.c $(NCURSES_LIBS)
 
 config: $(KCONFIG_TOOL) $(KCONFIG)
 	$(KCONFIG_TOOL) config --kconfig $(KCONFIG) --config $(CONFIG_FILE)
@@ -272,8 +319,11 @@ menuconfig: $(MENUCONFIG) $(KCONFIG_TOOL) $(KCONFIG)
 	$(MENUCONFIG) --kconfig $(KCONFIG) --config $(CONFIG_FILE)
 	$(KCONFIG_TOOL) sync --kconfig $(KCONFIG) --config $(CONFIG_FILE) --out-mk $(CONFIG_MK) --out-header $(CONFIG_HEADER)
 
-xconfig gconfig: $(GUICONFIG_TOOL) $(KCONFIG_TOOL) $(KCONFIG)
-	$(HOST_PYTHON) $(GUICONFIG_TOOL) $@ --kconfig $(KCONFIG) --config $(CONFIG_FILE) --out-mk $(CONFIG_MK) --out-header $(CONFIG_HEADER)
+xconfig: $(XCONFIG) $(KCONFIG)
+	$(XCONFIG) --kconfig $(KCONFIG) --config $(CONFIG_FILE) --out-mk $(CONFIG_MK) --out-header $(CONFIG_HEADER)
+
+gconfig: $(GCONFIG) $(KCONFIG)
+	$(GCONFIG) --kconfig $(KCONFIG) --config $(CONFIG_FILE) --out-mk $(CONFIG_MK) --out-header $(CONFIG_HEADER)
 
 defconfig: $(KCONFIG_TOOL) $(KCONFIG)
 	$(KCONFIG_TOOL) defconfig --kconfig $(KCONFIG) --config $(CONFIG_FILE)
@@ -624,3 +674,19 @@ $(KMALLOC_HOST_TEST) $(CONSOLE_REFLOW_HOST_TEST) $(ELF_LOADER_HOST_TEST) \
 	$(USER_TESTS) $(BUILD_DIR)/tests/xfs-host-test $(BUILD_DIR)/tests/xfs-unit-host-test \
 	$(BUILD_DIR)/tests/xfs-disabled-host-test $(BUILD_DIR)/tests/scsi-flush-host-test $(BUILD_DIR)/tests/ata-flush-host-test \
 	$(BUILD_DIR)/tests/xfs-write-host-test $(BUILD_DIR)/tests/xfs-allocation-host-test $(BUILD_DIR)/tests/xfs-kernel-static: $(BUILD_DIR)/musl-toolchain
+
+check-config: $(KCONFIG_TOOL)
+	python3 tests/kconfig-test.py $(KCONFIG_TOOL)
+
+$(BUILD_DIR)/tests/gconfig-test: tests/gconfig-test.c tests/config-fixture.h tools/gconfig.c tools/config_editor.h $(CONFIG_EDITOR_OBJS)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(CONFIG_CFLAGS) $$($(PKG_CONFIG) --cflags gtk+-3.0) -o $@ $< $(CONFIG_EDITOR_OBJS) $$($(PKG_CONFIG) --libs gtk+-3.0)
+
+$(BUILD_DIR)/tests/xconfig-test: tests/xconfig-test.cpp tests/config-fixture.h tools/xconfig.cpp tools/config_editor.h $(CONFIG_EDITOR_OBJS)
+	@mkdir -p $(dir $@)
+	$(HOST_CXX) -fPIC -std=c++17 -Wall -Wextra -Werror -O2 $$($(PKG_CONFIG) --cflags Qt6Widgets) -o $@ $< $(CONFIG_EDITOR_OBJS) $$($(PKG_CONFIG) --libs Qt6Widgets)
+
+# Run under a desktop display or Xvfb; Qt also supports QT_QPA_PLATFORM=offscreen.
+check-guiconfig: $(BUILD_DIR)/tests/gconfig-test $(BUILD_DIR)/tests/xconfig-test
+	$(BUILD_DIR)/tests/gconfig-test
+	$(BUILD_DIR)/tests/xconfig-test
