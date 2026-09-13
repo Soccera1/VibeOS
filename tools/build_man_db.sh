@@ -13,6 +13,8 @@ GDBM_SYSROOT="$4"
 GROFF_TREE="$5"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/musl_toolchain.sh"
+musl_init
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/strip_helpers.sh"
 
@@ -56,61 +58,12 @@ OUT_DIR="$(cd "$(dirname "$OUT_DIR")" && pwd)/$(basename "$OUT_DIR")"
 
 BUILD_DIR="$ABS_SRC_DIR/build-musl"
 STAGE_DIR="$BUILD_DIR/stage"
-CC_WRAPPER="$BUILD_DIR/zigcc-wrapper.sh"
+CC_WRAPPER="$BUILD_DIR/muslcc-wrapper.sh"
 
-prepare_zig_wrapper() {
+prepare_musl_wrapper() {
   mkdir -p "$BUILD_DIR"
-  cat > "$CC_WRAPPER" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-
-compiler="cc"
-if [[ "\$(basename "\$0")" == *++* ]]; then
-  compiler="c++"
-fi
-
-filtered=()
-for arg in "\$@"; do
-  case "\$arg" in
-    -fuse-ld=*|--verbose|-static-libgcc|-static-libstdc++)
-      continue
-      ;;
-  esac
-
-  if [[ "\$arg" == -Wl,* ]]; then
-    payload="\${arg#-Wl,}"
-    IFS=',' read -r -a parts <<< "\$payload"
-    kept=()
-    drop_next=0
-    for part in "\${parts[@]}"; do
-      if (( drop_next )); then
-        drop_next=0
-        continue
-      fi
-      case "\$part" in
-        -Map)
-          drop_next=1
-          continue
-          ;;
-        -Map=*|--warn-common|--sort-common|--warn-execstack|--warn-rwx-segments|--verbose)
-          continue
-          ;;
-      esac
-      kept+=("\$part")
-    done
-    if (( \${#kept[@]} > 0 )); then
-      (IFS=','; filtered+=("-Wl,\${kept[*]}"))
-    fi
-    continue
-  fi
-
-  filtered+=("\$arg")
-done
-
-exec zig "\$compiler" -target x86_64-linux-musl "\${filtered[@]}"
-EOF
+  musl_write_wrapper "$CC_WRAPPER" cc standard
   chmod +x "$CC_WRAPPER"
-  ln -sf "$(basename "$CC_WRAPPER")" "$BUILD_DIR/zigcxx-wrapper.sh"
 }
 
 write_config() {
@@ -147,7 +100,7 @@ configure_man_db() {
   export ZIG_LOCAL_CACHE_DIR="$REPO_ROOT/build/zig-local-cache"
   mkdir -p "$ZIG_GLOBAL_CACHE_DIR" "$ZIG_LOCAL_CACHE_DIR"
 
-  prepare_zig_wrapper
+  prepare_musl_wrapper
 
   pushd "$BUILD_DIR" >/dev/null
   PATH="$ABS_GROFF_TREE/bin:$PATH" \
@@ -173,8 +126,8 @@ configure_man_db() {
     --with-config-file='${sysconfdir}/man_db.conf' \
     CC="$CC_WRAPPER" \
     CPP="$CC_WRAPPER -E" \
-    AR="zig ar" \
-    RANLIB="zig ranlib" \
+    AR="$MUSL_AR" \
+    RANLIB="$MUSL_RANLIB" \
     CPPFLAGS="-I$ABS_GDBM_SYSROOT/usr/include" \
     CFLAGS="-Os -fno-stack-protector -fomit-frame-pointer -fno-pie" \
     LDFLAGS="-static -no-pie -L$ABS_GDBM_LIB_DIR" \

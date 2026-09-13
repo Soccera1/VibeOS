@@ -11,6 +11,8 @@ SRC_DIR="$2"
 NCURSES_BUILD="$3"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/musl_toolchain.sh"
+musl_init
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/strip_helpers.sh"
 
@@ -40,34 +42,14 @@ echo "Building sl from $SRC_DIR"
 
 NCURSES_LIBDIR_ABS="$(cd "$NCURSES_LIBDIR" && pwd)"
 NCURSES_INC_ABS="$(cd "$NCURSES_INC" && pwd)"
-SL_ZIG_GLOBAL_CACHE="$REPO_ROOT/build/sl-zig-global-cache"
-SL_ZIG_LOCAL_CACHE="$REPO_ROOT/build/sl-zig-local-cache"
-mkdir -p "$SL_ZIG_GLOBAL_CACHE" "$SL_ZIG_LOCAL_CACHE"
-
 CC_WRAPPER="$REPO_ROOT/build/sl-wrapper.sh"
-mkdir -p "$(dirname "$CC_WRAPPER")"
-cat > "$CC_WRAPPER" <<WRAPPER_EOF
-#!/usr/bin/env bash
-set -euo pipefail
-filtered=()
-for arg in "\$@"; do
-  case "\$arg" in
-    -Wl,-rpath*|-Wl,--rpath*|-Wl,-soname*|-Wl,--soname*|-Wl,--version-script*|-lncurses)
-      continue
-      ;;
-  esac
-  filtered+=("\$arg")
-done
-exec env ZIG_GLOBAL_CACHE_DIR=$SL_ZIG_GLOBAL_CACHE ZIG_LOCAL_CACHE_DIR=$SL_ZIG_LOCAL_CACHE \
-  zig cc -target x86_64-linux-musl "\${filtered[@]}" -L$NCURSES_LIBDIR_ABS -lncursesw -ltinfow
-WRAPPER_EOF
-chmod +x "$CC_WRAPPER"
+musl_write_wrapper "$CC_WRAPPER" cc terminal
 
 pushd "$SRC_DIR" >/dev/null
 
 rm -f sl
 
-"$CC_WRAPPER" -Os -fno-stack-protector -fomit-frame-pointer -DNCURSES_WIDECHAR -I"$NCURSES_INC_ABS/.." -I"$NCURSES_INC_ABS" -static -o sl sl.c 2>&1 || {
+"$CC_WRAPPER" -Os -fno-stack-protector -fomit-frame-pointer -DNCURSES_WIDECHAR -I"$NCURSES_INC_ABS/.." -I"$NCURSES_INC_ABS" -static -o sl sl.c -L"$NCURSES_LIBDIR_ABS" -lncursesw -ltinfow 2>&1 || {
   echo "Build failed" >&2
   exit 1
 }

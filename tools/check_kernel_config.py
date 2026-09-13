@@ -53,8 +53,9 @@ def main():
             for test in ("kernel-config", "kernel-input-config", "kernel-fs-config"):
                 binary = directory / test
                 subprocess.run([
-                    "zig", "cc", "-target", "x86_64-linux-musl", "-static", "-no-pie",
-                    "-std=gnu11", "-O2", "-ffunction-sections", "-fdata-sections",
+                    str(root / "tools/musl_toolchain.sh"), "cc", "-static", "-no-pie",
+                    # Match the kernel: its string routines are not libc builtins.
+                    "-std=gnu11", "-O2", "-fno-builtin", "-ffunction-sections", "-fdata-sections",
                     "-Wall", "-Wextra", "-Werror", "-Ikernel/include", "-include", str(header),
                     "-Wl,--gc-sections", f"tests/{test}-host-test.c", "-o", str(binary),
                 ], check=True, env=env)

@@ -29,7 +29,9 @@ STRIP ?= strip
 HOST_CC ?= cc
 GLIBC_CC ?= gcc
 PKG_CONFIG ?= pkg-config
-USER_CC := gcc
+# Static userspace is always musl; these do not change kernel or glibc compilers.
+export MUSL_CC MUSL_CXX MUSL_AR MUSL_RANLIB
+MUSL_TOOL := $(abspath tools/musl_toolchain.sh)
 BUSYBOX_SRC := external/busybox-src
 BUSYBOX_STATIC := external/busybox-static
 BUSYBOX_ROOTFS := rootfs/bin/busybox
@@ -149,7 +151,7 @@ HELP_SRC := userspace/help.c
 KERNEL_TESTS_SRC := tests/kernel-tests.c tests/kernel-test-helper.c tests/glibc-dynamic-helper.c
 LESS_SRC_FILES := $(shell find $(LESS_SRC) -path "$(LESS_SRC)/build-musl" -prune -o -type f -print | sort)
 VIM_SRC_FILES := $(shell find $(VIM_SRC) \
-	-name build-musl-zigcc-wrapper.sh -prune -o \
+	\( -name build-musl-zigcc-wrapper.sh -o -name build-musl-muslcc-wrapper.sh \) -prune -o \
 	-path "$(VIM_SRC)/src/objects" -prune -o \
 	-name vim -prune -o \
 	-path "$(VIM_SRC)/src/auto/config.cache" -prune -o \
@@ -191,7 +193,7 @@ check-build-tools:
 	@command -v $(LD) >/dev/null
 	@command -v $(NASM) >/dev/null
 	@if [[ "$(STRIP_BINARIES)" != "0" ]]; then command -v $(STRIP) >/dev/null; fi
-	@command -v zig >/dev/null
+	@$(MUSL_TOOL) check $(if $(filter y,$(CONFIG_USER_MAN_DB)),c++,)
 	@command -v readelf >/dev/null
 	@if [[ "$(CONFIG_USER_X11)" == "y" ]]; then command -v meson >/dev/null; command -v ninja >/dev/null; command -v pkg-config >/dev/null; command -v gperf >/dev/null; command -v tic >/dev/null; fi
 
@@ -294,21 +296,21 @@ $(KMALLOC_HOST_TEST): tests/kmalloc-host-test.c kernel/src/kmalloc.c kernel/incl
 	@mkdir -p $(dir $@)
 	ZIG_GLOBAL_CACHE_DIR="$(HOST_TEST_ZIG_GLOBAL_CACHE)" \
 	ZIG_LOCAL_CACHE_DIR="$(HOST_TEST_ZIG_LOCAL_CACHE)" \
-	zig cc -target x86_64-linux-musl -static -no-pie -std=gnu11 -Wall -Wextra -Werror \
+	$(MUSL_TOOL) cc -static -no-pie -std=gnu11 -Wall -Wextra -Werror \
 		-Ikernel/include -o $@ $<
 
 $(CONSOLE_REFLOW_HOST_TEST): tests/console-reflow-host-test.c kernel/src/console.c kernel/include/console.h | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
 	ZIG_GLOBAL_CACHE_DIR="$(HOST_TEST_ZIG_GLOBAL_CACHE)" \
 	ZIG_LOCAL_CACHE_DIR="$(HOST_TEST_ZIG_LOCAL_CACHE)" \
-	zig cc -target x86_64-linux-musl -static -no-pie -std=gnu11 -O2 -ffunction-sections -fdata-sections \
+	$(MUSL_TOOL) cc -static -no-pie -std=gnu11 -O2 -ffunction-sections -fdata-sections \
 		-Wall -Wextra -Werror -Ikernel/include -Wl,--gc-sections -o $@ $<
 
 $(ELF_LOADER_HOST_TEST): tests/elf-loader-host-test.c kernel/src/elf_loader.c kernel/include/elf_loader.h | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
 	ZIG_GLOBAL_CACHE_DIR="$(HOST_TEST_ZIG_GLOBAL_CACHE)" \
 	ZIG_LOCAL_CACHE_DIR="$(HOST_TEST_ZIG_LOCAL_CACHE)" \
-	zig cc -target x86_64-linux-musl -static -no-pie -std=gnu11 -O2 -Wall -Wextra -Werror \
+	$(MUSL_TOOL) cc -static -no-pie -std=gnu11 -O2 -Wall -Wextra -Werror \
 		-Ikernel/include -o $@ tests/elf-loader-host-test.c kernel/src/elf_loader.c
 
 $(KERNEL_BIN): $(KERNEL_OBJS) kernel/linker.ld | $(BUILD_DIR)
@@ -526,7 +528,7 @@ $(BUILD_DIR)/tests/xfs-host-test: tests/xfs-host-test.c kernel/src/xfs.c kernel/
 	@mkdir -p $(dir $@)
 	ZIG_GLOBAL_CACHE_DIR="$(HOST_TEST_ZIG_GLOBAL_CACHE)" \
 	ZIG_LOCAL_CACHE_DIR="$(HOST_TEST_ZIG_LOCAL_CACHE)" \
-	zig cc -target x86_64-linux-musl -static -no-pie -std=gnu11 -O2 -ffunction-sections -fdata-sections \
+	$(MUSL_TOOL) cc -static -no-pie -std=gnu11 -O2 -ffunction-sections -fdata-sections \
 		-Wall -Wextra -Werror -Ikernel/include -DCONFIG_KERNEL_XFS -DCONFIG_KERNEL_EXT2 -DCONFIG_KERNEL_EXT2_WRITE \
 		-Wl,--gc-sections -o $@ $(filter %.c,$^)
 
@@ -534,7 +536,7 @@ $(BUILD_DIR)/tests/xfs-unit-host-test $(BUILD_DIR)/tests/xfs-disabled-host-test:
 	@mkdir -p $(dir $@)
 	ZIG_GLOBAL_CACHE_DIR="$(HOST_TEST_ZIG_GLOBAL_CACHE)" \
 	ZIG_LOCAL_CACHE_DIR="$(HOST_TEST_ZIG_LOCAL_CACHE)" \
-	zig cc -target x86_64-linux-musl -static -no-pie -std=gnu11 -O2 -Wall -Wextra -Werror \
+	$(MUSL_TOOL) cc -static -no-pie -std=gnu11 -O2 -Wall -Wextra -Werror \
 		-Ikernel/include $(if $(findstring disabled,$@),,-DCONFIG_KERNEL_XFS) -o $@ $<
 
 .PHONY: check-scsi-flush
@@ -545,7 +547,7 @@ $(BUILD_DIR)/tests/scsi-flush-host-test: tests/scsi-flush-host-test.c kernel/src
 	@mkdir -p $(dir $@)
 	ZIG_GLOBAL_CACHE_DIR="$(HOST_TEST_ZIG_GLOBAL_CACHE)" \
 	ZIG_LOCAL_CACHE_DIR="$(HOST_TEST_ZIG_LOCAL_CACHE)" \
-	zig cc -target x86_64-linux-musl -static -no-pie -std=gnu11 -O2 -Wall -Wextra -Werror \
+	$(MUSL_TOOL) cc -static -no-pie -std=gnu11 -O2 -Wall -Wextra -Werror \
 		-Ikernel/include -o $@ $(filter %.c,$^)
 
 .PHONY: check-storage-flush
@@ -556,7 +558,7 @@ $(BUILD_DIR)/tests/ata-flush-host-test: tests/ata-flush-host-test.c kernel/src/a
 	@mkdir -p $(dir $@)
 	ZIG_GLOBAL_CACHE_DIR="$(HOST_TEST_ZIG_GLOBAL_CACHE)" \
 	ZIG_LOCAL_CACHE_DIR="$(HOST_TEST_ZIG_LOCAL_CACHE)" \
-	zig cc -target x86_64-linux-musl -static -no-pie -std=gnu11 -O2 -Wall -Wextra -Werror \
+	$(MUSL_TOOL) cc -static -no-pie -std=gnu11 -O2 -Wall -Wextra -Werror \
 		-ffunction-sections -fdata-sections -Wl,--gc-sections -Ikernel/include -o $@ $<
 
 $(BUILD_DIR)/kernel/src/xfs.o $(BUILD_DIR)/tests/xfs-host-test $(BUILD_DIR)/tests/xfs-unit-host-test $(BUILD_DIR)/tests/xfs-disabled-host-test: $(wildcard kernel/src/xfs*.inc)
@@ -569,7 +571,7 @@ $(BUILD_DIR)/tests/xfs-write-host-test: tests/xfs-write-host-test.c kernel/src/x
 	@mkdir -p $(dir $@)
 	ZIG_GLOBAL_CACHE_DIR="$(HOST_TEST_ZIG_GLOBAL_CACHE)" \
 	ZIG_LOCAL_CACHE_DIR="$(HOST_TEST_ZIG_LOCAL_CACHE)" \
-	zig cc -target x86_64-linux-musl -static -no-pie -std=gnu11 -O2 -ffunction-sections -fdata-sections \
+	$(MUSL_TOOL) cc -static -no-pie -std=gnu11 -O2 -ffunction-sections -fdata-sections \
 		-Wall -Wextra -Werror -Ikernel/include -DCONFIG_KERNEL_XFS -DCONFIG_KERNEL_XFS_WRITE \
 		-DCONFIG_KERNEL_EXT2 -DCONFIG_KERNEL_EXT2_WRITE -Wl,--gc-sections -o $@ $(filter %.c,$^)
 
@@ -577,7 +579,7 @@ $(BUILD_DIR)/tests/xfs-allocation-host-test: tests/xfs-allocation-host-test.c ke
 	@mkdir -p $(dir $@)
 	ZIG_GLOBAL_CACHE_DIR="$(HOST_TEST_ZIG_GLOBAL_CACHE)" \
 	ZIG_LOCAL_CACHE_DIR="$(HOST_TEST_ZIG_LOCAL_CACHE)" \
-	zig cc -target x86_64-linux-musl -static -no-pie -std=gnu11 -O2 -Wall -Wextra -Werror \
+	$(MUSL_TOOL) cc -static -no-pie -std=gnu11 -O2 -Wall -Wextra -Werror \
 		-Ikernel/include -DCONFIG_KERNEL_XFS -DCONFIG_KERNEL_XFS_WRITE -o $@ $<
 
 .PHONY: check-xfs-kernel
@@ -589,8 +591,31 @@ $(BUILD_DIR)/tests/xfs-kernel-static: tests/xfs-kernel-test.c | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
 	ZIG_GLOBAL_CACHE_DIR="$(HOST_TEST_ZIG_GLOBAL_CACHE)" \
 	ZIG_LOCAL_CACHE_DIR="$(HOST_TEST_ZIG_LOCAL_CACHE)" \
-	zig cc -target x86_64-linux-musl -static -std=gnu11 -O2 -Wall -Wextra -Werror -o $@ $<
+	$(MUSL_TOOL) cc -static -std=gnu11 -O2 -Wall -Wextra -Werror -o $@ $<
 
 $(BUILD_DIR)/tests/xfs-kernel-dynamic: tests/xfs-kernel-test.c | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
 	$(GLIBC_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Wl,-rpath,/usr/lib64 -o $@ $<
+
+.PHONY: check-musl-toolchain
+check-musl-toolchain:
+	$(MUSL_TOOL) check $(if $(filter y,$(CONFIG_USER_MAN_DB)),c++,)
+	python3 tests/musl-toolchain-test.py
+
+# The content changes only when the selected tools change. Keep package caches
+# and host-test binaries from silently retaining a previous compiler selection.
+.PHONY: FORCE_MUSL_TOOLCHAIN
+$(BUILD_DIR)/musl-toolchain: FORCE_MUSL_TOOLCHAIN tools/musl_toolchain.sh tools/zig_flags.sh | $(BUILD_DIR)
+	@$(MUSL_TOOL) fingerprint > $@.tmp
+	@cmp -s $@.tmp $@ && rm $@.tmp || mv $@.tmp $@
+
+$(KMALLOC_HOST_TEST) $(CONSOLE_REFLOW_HOST_TEST) $(ELF_LOADER_HOST_TEST) \
+	$(USER_BUSYBOX) $(USER_COREUTILS) $(USER_BASH) \
+	$(NCURSES_BUILD)/lib/libncursesw.a $(USER_SL) $(USER_HELP) \
+	$(USER_FILE) $(USER_NANO) $(USER_LESS) \
+	$(USER_VIM) $(USER_LIBPIPELINE) $(USER_GDBM) \
+	$(USER_GROFF) $(USER_MAN_DB) $(USER_GMP) \
+	$(USER_NETTLE) $(USER_GNUTLS) $(USER_WGET) \
+	$(USER_TESTS) $(BUILD_DIR)/tests/xfs-host-test $(BUILD_DIR)/tests/xfs-unit-host-test \
+	$(BUILD_DIR)/tests/xfs-disabled-host-test $(BUILD_DIR)/tests/scsi-flush-host-test $(BUILD_DIR)/tests/ata-flush-host-test \
+	$(BUILD_DIR)/tests/xfs-write-host-test $(BUILD_DIR)/tests/xfs-allocation-host-test $(BUILD_DIR)/tests/xfs-kernel-static: $(BUILD_DIR)/musl-toolchain

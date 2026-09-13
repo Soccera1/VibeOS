@@ -33,7 +33,7 @@ The checked tools include:
 @item @code{ld},
 @item @code{nasm},
 @item @code{strip} or a compatible replacement when stripping is enabled,
-@item @code{zig} for static musl userspace builds,
+@item Zig, musl GCC, or a configured musl compiler/sysroot for static userspace,
 @item GCC, GNU make, and @code{readelf} for the baseline glibc runtime and
 dynamic executable validation,
 @item @code{cpio}, @code{mkfs.xfs}, @code{mkfs.ext3}, and @code{tic} for filesystem images,
@@ -132,8 +132,7 @@ The kernel image is stripped by default after linking.
 The userspace build wrappers follow a consistent policy:
 
 @enumerate
-@item Prefer @code{zig cc} or @code{zig c++} targeting
-@code{x86_64-linux-musl}.
+@item Use the selected musl C or C++ compiler targeting amd64.
 @item Pass static-linking flags.
 @item Disable PIE when the package would otherwise emit a PIE binary.
 @item Validate that the result is amd64, @code{ET_EXEC}, and has no requested
@@ -144,8 +143,35 @@ interpreter.
 This policy is repeated in script after script because the current loader and
 runtime are optimized for static non-PIE executables.
 
-The wrappers also maintain package-local or repository-wide Zig caches so that
-subsequent builds are cheaper.
+Set @code{MUSL_CC}, @code{MUSL_CXX}, @code{MUSL_AR}, and
+@code{MUSL_RANLIB} as make variables or environment variables to choose tools.
+For example:
+
+@example
+make disk MUSL_CC=x86_64-linux-musl-gcc MUSL_CXX=x86_64-linux-musl-g++
+make check-musl-toolchain
+@end example
+
+Explicit settings take precedence.  Without @code{MUSL_CC}, the build selects
+Zig if installed, then tries @code{x86_64-linux-musl-gcc}, @code{musl-gcc},
+and @code{gcc-musl}.  A C-only musl wrapper requires an explicit musl C++
+compiler with static C++ libraries for groff, or disabling @code{USER_MAN_DB}.
+Custom compilers use @code{ar} and @code{ranlib} unless overridden.
+BusyBox and kernel tests also require Linux UAPI headers in the musl SDK.
+For a C-only wrapper, an isolated UAPI include tree can be supplied with
+@code{MUSL_CC='musl-gcc -isystem /opt/linux-uapi/include'}; do not use a
+glibc include tree.
+Command values accept whitespace-separated arguments without shell evaluation;
+use executable wrapper scripts for complex SDK setup.
+
+Image preflights compile a static probe and reject glibc or non-amd64 output.
+Changed tool settings invalidate static outputs, including cached Bash and
+ncurses objects.  Replacing a tool or sysroot at the same path requires removing
+its cached outputs.  Dynamic programs continue to use glibc; these variables do
+not select the kernel or host compiler.
+
+Zig builds retain their compiler caches and compatibility flag filtering.
+Other compilers receive the package flags without Zig-specific filtering.
 
 @node Runtime Image Layout
 @section Runtime Image Layout

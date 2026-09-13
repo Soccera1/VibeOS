@@ -10,12 +10,15 @@ OUT_BIN="$1"
 SRC_DIR="$2"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/musl_toolchain.sh"
+musl_init
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/strip_helpers.sh"
 
 mkdir -p "$(dirname "$OUT_BIN")"
 
 BASH_BUILD="$(cd "$SRC_DIR" && pwd)/build-musl"
+musl_prepare_cached_build "$BASH_BUILD" "$SRC_DIR"
 BASH_BIN_SRC="$(cd "$SRC_DIR" && pwd)/bash"
 
 prepare_zig_cache() {
@@ -26,58 +29,6 @@ prepare_zig_cache() {
   mkdir -p "$ZIG_GLOBAL_CACHE_DIR" "$ZIG_LOCAL_CACHE_DIR"
 }
 
-prepare_zig_wrapper() {
-  local abs_src
-  abs_src="$(cd "$SRC_DIR" && pwd)"
-  local wrapper="$abs_src/.zigcc-musl-wrapper.sh"
-  cat > "$wrapper" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-filtered=()
-for arg in "$@"; do
-  case "$arg" in
-    -march=x86-64|-fuse-ld=*|--verbose|-static-libgcc|-finline-limit=0|-falign-jumps=1|-falign-labels=1)
-      continue
-      ;;
-  esac
-
-  if [[ "$arg" == -Wl,* ]]; then
-    payload="${arg#-Wl,}"
-    IFS=',' read -r -a parts <<< "$payload"
-    kept=()
-    drop_next=0
-    for part in "${parts[@]}"; do
-      if (( drop_next )); then
-        drop_next=0
-        continue
-      fi
-      case "$part" in
-        -Map)
-          drop_next=1
-          continue
-          ;;
-        -Map=*|--warn-common|--sort-common|--warn-execstack|--warn-rwx-segments|--verbose)
-          continue
-          ;;
-      esac
-      kept+=("$part")
-    done
-    if (( ${#kept[@]} > 0 )); then
-      (IFS=','; filtered+=("-Wl,${kept[*]}"))
-    fi
-    continue
-  fi
-
-  filtered+=("$arg")
-done
-
-exec zig cc -target x86_64-linux-musl "${filtered[@]}"
-EOF
-  chmod +x "$wrapper"
-  echo "$wrapper"
-}
-
 build_bash() {
   mkdir -p "$BASH_BUILD"
   prepare_zig_cache
@@ -86,38 +37,8 @@ build_bash() {
   local ncurses_inc_w="$REPO_ROOT/external/ncurses-src/build-musl/include/ncursesw"
 
   if [[ ! -f "$SRC_DIR/Makefile" || ! -f "$SRC_DIR/config.h" ]] || grep -q '^#define USING_BASH_MALLOC 1' "$SRC_DIR/config.h"; then
-    CC_WRAPPER="$BASH_BUILD/zigcc-wrapper.sh"
-    cat > "$CC_WRAPPER" <<'WRAPPER_EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-filtered=()
-for arg in "$@"; do
-  case "$arg" in
-    -Wl,-rpath*|-Wl,--rpath*|-Wl,-soname*|-Wl,--soname*|-Wl,--version-script*|-Wl,--gc-sections)
-      continue
-      ;;
-    -Wl,*)
-      payload="${arg#-Wl,}"
-      IFS=',' read -r -a parts <<< "$payload"
-      kept=()
-      for part in "${parts[@]}"; do
-        case "$part" in
-          -rpath*|--rpath*|-soname*|--soname*|--version-script*|--gc-sections)
-            continue
-            ;;
-        esac
-        kept+=("$part")
-      done
-      if (( ${#kept[@]} > 0 )); then
-        (IFS=','; filtered+=("-Wl,${kept[*]}"))
-      fi
-      continue
-      ;;
-  esac
-  filtered+=("$arg")
-done
-exec zig cc -target x86_64-linux-musl "${filtered[@]}"
-WRAPPER_EOF
+    CC_WRAPPER="$BASH_BUILD/muslcc-wrapper.sh"
+    musl_write_wrapper "$CC_WRAPPER" cc terminal
     chmod +x "$CC_WRAPPER"
 
     local extra_cflags="-mno-avx -mno-avx2 -mno-avx512f -fno-tree-vectorize -I$ncurses_inc -I$ncurses_inc_w -UHAVE_TERMCAP_H -DHAVE_NCURSES_TERMCAP_H=1"
@@ -133,8 +54,8 @@ WRAPPER_EOF
       CC="$CC_WRAPPER" \
       HOSTCC="${HOSTCC:-cc}" \
       BUILD_CC="${BUILD_CC:-cc}" \
-      AR="zig ar" \
-      RANLIB="zig ranlib" \
+      AR="$MUSL_AR" \
+      RANLIB="$MUSL_RANLIB" \
       CFLAGS="-Os -fno-stack-protector -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables $extra_cflags" \
       LDFLAGS="-static" \
       bash_cv_termcap_lib=libncursesw \
@@ -154,13 +75,13 @@ WRAPPER_EOF
   popd >/dev/null
 
   if [[ ! -f "$BASH_BIN_SRC" ]]; then
-    local cc_cmd="$BASH_BUILD/zigcc-wrapper.sh"
+    local cc_cmd="$BASH_BUILD/muslcc-wrapper.sh"
 
     pushd "$SRC_DIR" >/dev/null
     make -j1 \
       CC="$cc_cmd" \
-      AR="zig ar" \
-      RANLIB="zig ranlib" \
+      AR="$MUSL_AR" \
+      RANLIB="$MUSL_RANLIB" \
       CFLAGS="-Os -mno-avx -mno-avx2 -mno-avx512f -fno-tree-vectorize -I$ncurses_inc -I$ncurses_inc_w -UHAVE_TERMCAP_H -DHAVE_NCURSES_TERMCAP_H=1" \
       LDFLAGS="-static" \
       2>&1 | tee "$BASH_BUILD/build.log" || {
@@ -209,3 +130,5 @@ build_bash
 if [[ -x "$OUT_BIN" ]]; then
   validate_bash_binary "$OUT_BIN"
 fi
+
+musl_fingerprint > "$BASH_BUILD/.musl-toolchain"

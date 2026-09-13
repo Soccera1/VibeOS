@@ -11,6 +11,8 @@ TARBALL="$2"
 GMP_SYSROOT="$3"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/musl_toolchain.sh"
+musl_init
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 if [[ ! -f "$TARBALL" ]]; then
@@ -32,22 +34,18 @@ BUILD_ROOT="$REPO_ROOT/build/deps/nettle"
 SRC_DIR="$BUILD_ROOT/src"
 BUILD_DIR="$BUILD_ROOT/build"
 STAGE_DIR="$BUILD_ROOT/stage"
-CC_WRAPPER="$BUILD_ROOT/zigcc-wrapper.sh"
+CC_WRAPPER="$BUILD_ROOT/muslcc-wrapper.sh"
 
-prepare_zig_wrapper() {
+prepare_musl_wrapper() {
   mkdir -p "$BUILD_ROOT"
-  cat > "$CC_WRAPPER" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-exec zig cc -target x86_64-linux-musl "$@"
-EOF
+  musl_write_wrapper "$CC_WRAPPER" cc plain
   chmod +x "$CC_WRAPPER"
 }
 
 rm -rf "$BUILD_ROOT" "$OUT_DIR"
 mkdir -p "$SRC_DIR" "$BUILD_DIR"
 tar -xf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-prepare_zig_wrapper
+prepare_musl_wrapper
 
 export ZIG_GLOBAL_CACHE_DIR="$REPO_ROOT/build/zig-global-cache"
 export ZIG_LOCAL_CACHE_DIR="$REPO_ROOT/build/zig-local-cache"
@@ -64,8 +62,8 @@ pushd "$BUILD_DIR" >/dev/null
   --with-include-path="$ABS_GMP_SYSROOT/usr/include" \
   --with-lib-path="$ABS_GMP_SYSROOT/usr/lib" \
   CC="$CC_WRAPPER" \
-  AR="zig ar" \
-  RANLIB="zig ranlib" \
+  AR="$MUSL_AR" \
+  RANLIB="$MUSL_RANLIB" \
   CFLAGS="-Os -fno-stack-protector -fomit-frame-pointer -fno-pie -I$ABS_GMP_SYSROOT/usr/include" \
   LDFLAGS="-static -no-pie -L$ABS_GMP_SYSROOT/usr/lib" \
   LIBS="$ABS_GMP_SYSROOT/usr/lib/libgmp.a"
@@ -87,8 +85,8 @@ if [[ ! -f "$STAGE_DIR/usr/include/nettle/nettle-types.h" || ! -f "$STAGE_DIR/us
   exit 1
 fi
 
-zig ranlib "$STAGE_DIR/usr/lib/libnettle.a"
-zig ranlib "$STAGE_DIR/usr/lib/libhogweed.a"
+musl_run ranlib "$STAGE_DIR/usr/lib/libnettle.a"
+musl_run ranlib "$STAGE_DIR/usr/lib/libhogweed.a"
 mv "$STAGE_DIR" "$OUT_DIR"
 
 echo "Built Nettle sysroot: $OUT_DIR"

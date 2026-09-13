@@ -11,6 +11,8 @@ SRC_DIR="$2"
 NCURSES_BUILD="$3"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/musl_toolchain.sh"
+musl_init
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/strip_helpers.sh"
 
@@ -30,58 +32,15 @@ fi
 ABS_SRC_DIR="$(cd "$SRC_DIR" && pwd)"
 BUILD_DIR="$ABS_SRC_DIR/src"
 BUILD_BIN="$BUILD_DIR/vim"
-CC_WRAPPER="$ABS_SRC_DIR/build-musl-zigcc-wrapper.sh"
+CC_WRAPPER="$ABS_SRC_DIR/build-musl-muslcc-wrapper.sh"
 
-prepare_zig_wrapper() {
-  cat > "$CC_WRAPPER" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-filtered=()
-for arg in "$@"; do
-  case "$arg" in
-    -fuse-ld=*|--verbose|-static-libgcc|-fPIE|-fpie|-pie)
-      continue
-      ;;
-  esac
-
-  if [[ "$arg" == -Wl,* ]]; then
-    payload="${arg#-Wl,}"
-    IFS=',' read -r -a parts <<< "$payload"
-    kept=()
-    drop_next=0
-    for part in "${parts[@]}"; do
-      if (( drop_next )); then
-        drop_next=0
-        continue
-      fi
-      case "$part" in
-        -Map)
-          drop_next=1
-          continue
-          ;;
-        -Map=*|-pie|--warn-common|--sort-common|--warn-execstack|--warn-rwx-segments|--verbose)
-          continue
-          ;;
-      esac
-      kept+=("$part")
-    done
-    if (( ${#kept[@]} > 0 )); then
-      (IFS=','; filtered+=("-Wl,${kept[*]}"))
-    fi
-    continue
-  fi
-
-  filtered+=("$arg")
-done
-
-exec zig cc -target x86_64-linux-musl "${filtered[@]}"
-EOF
+prepare_musl_wrapper() {
+  musl_write_wrapper "$CC_WRAPPER" cc standard
   chmod +x "$CC_WRAPPER"
 }
 
 configure_vim() {
-  prepare_zig_wrapper
+  prepare_musl_wrapper
 
   export ZIG_GLOBAL_CACHE_DIR="$REPO_ROOT/build/zig-global-cache"
   export ZIG_LOCAL_CACHE_DIR="$REPO_ROOT/build/zig-local-cache"
@@ -127,8 +86,8 @@ configure_vim() {
     --disable-xsmp-interact \
     CC="$CC_WRAPPER" \
     HOSTCC="${HOSTCC:-cc}" \
-    AR="zig ar" \
-    RANLIB="zig ranlib" \
+    AR="$MUSL_AR" \
+    RANLIB="$MUSL_RANLIB" \
     CPPFLAGS="$ncurses_cflags" \
     CFLAGS="-Os -fno-stack-protector -fomit-frame-pointer -fno-pie" \
     LDFLAGS="-static -no-pie -L$ABS_NCURSES_BUILD/lib" \
@@ -147,8 +106,8 @@ build_vim() {
   pushd "$BUILD_DIR" >/dev/null
   make -j1 vim \
     CC="$CC_WRAPPER" \
-    AR="zig ar" \
-    RANLIB="zig ranlib" \
+    AR="$MUSL_AR" \
+    RANLIB="$MUSL_RANLIB" \
     CFLAGS="-Os -fno-stack-protector -fomit-frame-pointer -fno-pie" \
     LDFLAGS="-static -no-pie -L$ABS_NCURSES_BUILD/lib" \
     LIBS="$ncurses_libs" \

@@ -22,7 +22,7 @@ The scripts in @file{tools/} share several conventions:
 @item They validate argument counts explicitly.
 @item They tend to compute an absolute repository root based on their own
 location.
-@item They prefer musl builds through Zig wrappers for upstream packages.
+@item They select static musl compilers through @file{tools/musl_toolchain.sh}.
 @item They validate final binaries with @code{readelf} when the result is meant
 to run inside VibeOS.
 @item They use @file{tools/strip_helpers.sh} so stripping can be disabled
@@ -37,8 +37,7 @@ of userspace VibeOS supports.
 
 @table @file
 @item tools/build_help.sh
-Builds the in-tree @code{help} program with @code{zig cc} targeting
-@code{x86_64-linux-musl}.  The resulting binary is static, non-PIE, validated
+Builds the in-tree @code{help} program with the selected amd64 musl compiler.  The resulting binary is static, non-PIE, validated
 with @code{readelf}, and then optionally stripped.
 
 @item tools/build_busybox.sh
@@ -54,7 +53,7 @@ separate text file so later scripts can decide which ones belong in the
 initramfs and which belong under @file{/usr}.
 
 @item tools/build_bash.sh
-Builds Bash against the musl ncurses tree.  The script prepares a Zig compiler
+Builds Bash against the musl ncurses tree.  The script prepares a musl compiler
 wrapper, configures Bash to use static linking and curses support, edits the
 generated makefiles where needed, and validates the final binary as an amd64
 static @code{ET_EXEC}.
@@ -82,7 +81,7 @@ current runtime assumptions.
 @item tools/build_less.sh
 Builds less against the VibeOS ncurses tree as a static non-PIE binary.  It
 uses the POSIX regex backend, filters incompatible host linker flags through a
-Zig compiler wrapper, and validates that the result has no program
+musl compiler wrapper, and validates that the result has no program
 interpreter.
 
 @item tools/build_vim.sh
@@ -190,6 +189,16 @@ privileges.
 @appendixsec Shared Helper Script
 
 @table @file
+@item tools/musl_toolchain.sh
+Selects the static musl C/C++ compiler and archive tools, generates package
+compiler wrappers, validates the selected toolchain, and fingerprints tool
+settings to invalidate cached builds.  See @ref{Userspace Build Policy} for
+configuration examples.
+
+@item tools/zig_flags.sh
+Supplies compatibility flag filtering for generated Zig wrappers.  Non-Zig
+compiler wrappers pass their arguments through unchanged.
+
 @item tools/strip_helpers.sh
 Defines the shared stripping policy used across the build scripts.  It can
 resolve the active strip tool, determine whether stripping is enabled, strip a

@@ -16,6 +16,8 @@ if [[ ! -d "$SRC_DIR" ]]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/musl_toolchain.sh"
+musl_init
 source "$SCRIPT_DIR/strip_helpers.sh"
 
 ABS_SRC_DIR="$(cd "$SRC_DIR" && pwd)"
@@ -25,61 +27,18 @@ mkdir -p "$(dirname "$OUT_DIR")" "$(dirname "$OUT_PROGS")"
 BUILD_DIR="$ABS_SRC_DIR/build-musl"
 STAGE_DIR="$BUILD_DIR/package"
 STAGE_BIN_DIR="$STAGE_DIR/usr/bin"
-CC_WRAPPER="$BUILD_DIR/zigcc-wrapper.sh"
+CC_WRAPPER="$BUILD_DIR/muslcc-wrapper.sh"
 
-prepare_zig_wrapper() {
+prepare_musl_wrapper() {
   mkdir -p "$BUILD_DIR"
-  cat > "$CC_WRAPPER" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-filtered=()
-for arg in "$@"; do
-  case "$arg" in
-    -fuse-ld=*|--verbose|-static-libgcc|-static-pie)
-      continue
-      ;;
-  esac
-
-  if [[ "$arg" == -Wl,* ]]; then
-    payload="${arg#-Wl,}"
-    IFS=',' read -r -a parts <<< "$payload"
-    kept=()
-    drop_next=0
-    for part in "${parts[@]}"; do
-      if (( drop_next )); then
-        drop_next=0
-        continue
-      fi
-      case "$part" in
-        -Map)
-          drop_next=1
-          continue
-          ;;
-        -Map=*|--warn-common|--sort-common|--warn-execstack|--warn-rwx-segments|--verbose)
-          continue
-          ;;
-      esac
-      kept+=("$part")
-    done
-    if (( ${#kept[@]} > 0 )); then
-      (IFS=','; filtered+=("-Wl,${kept[*]}"))
-    fi
-    continue
-  fi
-
-  filtered+=("$arg")
-done
-
-exec zig cc -target x86_64-linux-musl "${filtered[@]}"
-EOF
+  musl_write_wrapper "$CC_WRAPPER" cc standard
   chmod +x "$CC_WRAPPER"
 }
 
 configure_coreutils() {
   rm -rf "$BUILD_DIR"
   mkdir -p "$BUILD_DIR"
-  prepare_zig_wrapper
+  prepare_musl_wrapper
 
   export ZIG_GLOBAL_CACHE_DIR="$ABS_SRC_DIR/.zig-global-cache"
   export ZIG_LOCAL_CACHE_DIR="$ABS_SRC_DIR/.zig-local-cache"
@@ -93,8 +52,8 @@ configure_coreutils() {
     CC="$CC_WRAPPER" \
     HOSTCC="${HOSTCC:-cc}" \
     BUILD_CC="${BUILD_CC:-cc}" \
-    AR="zig ar" \
-    RANLIB="zig ranlib" \
+    AR="$MUSL_AR" \
+    RANLIB="$MUSL_RANLIB" \
     CFLAGS="-Os -fno-stack-protector -fomit-frame-pointer -fno-pie" \
     LDFLAGS="-static -no-pie" \
     2>&1 | tee configure.log || {

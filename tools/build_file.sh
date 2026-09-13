@@ -11,6 +11,8 @@ OUT_MAGIC="$2"
 SRC_DIR="$3"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/musl_toolchain.sh"
+musl_init
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/strip_helpers.sh"
 
@@ -27,61 +29,18 @@ BUILD_DIR="$ABS_SRC_DIR/build-musl"
 BUILD_BIN="$BUILD_DIR/src/.libs/file"
 BUILD_BIN_FALLBACK="$BUILD_DIR/src/file"
 BUILD_MAGIC="$BUILD_DIR/magic/magic.mgc"
-CC_WRAPPER="$BUILD_DIR/zigcc-wrapper.sh"
+CC_WRAPPER="$BUILD_DIR/muslcc-wrapper.sh"
 
-prepare_zig_wrapper() {
+prepare_musl_wrapper() {
   mkdir -p "$BUILD_DIR"
-  cat > "$CC_WRAPPER" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-filtered=()
-for arg in "$@"; do
-  case "$arg" in
-    -fuse-ld=*|--verbose|-static-libgcc)
-      continue
-      ;;
-  esac
-
-  if [[ "$arg" == -Wl,* ]]; then
-    payload="${arg#-Wl,}"
-    IFS=',' read -r -a parts <<< "$payload"
-    kept=()
-    drop_next=0
-    for part in "${parts[@]}"; do
-      if (( drop_next )); then
-        drop_next=0
-        continue
-      fi
-      case "$part" in
-        -Map)
-          drop_next=1
-          continue
-          ;;
-        -Map=*|--warn-common|--sort-common|--warn-execstack|--warn-rwx-segments|--verbose)
-          continue
-          ;;
-      esac
-      kept+=("$part")
-    done
-    if (( ${#kept[@]} > 0 )); then
-      (IFS=','; filtered+=("-Wl,${kept[*]}"))
-    fi
-    continue
-  fi
-
-  filtered+=("$arg")
-done
-
-exec zig cc -target x86_64-linux-musl "${filtered[@]}"
-EOF
+  musl_write_wrapper "$CC_WRAPPER" cc standard
   chmod +x "$CC_WRAPPER"
 }
 
 configure_file() {
   rm -rf "$BUILD_DIR"
   mkdir -p "$BUILD_DIR"
-  prepare_zig_wrapper
+  prepare_musl_wrapper
 
   export ZIG_GLOBAL_CACHE_DIR="$REPO_ROOT/build/zig-global-cache"
   export ZIG_LOCAL_CACHE_DIR="$REPO_ROOT/build/zig-local-cache"
@@ -102,8 +61,8 @@ configure_file() {
     --disable-libseccomp \
     CC="$CC_WRAPPER" \
     HOSTCC="${HOSTCC:-cc}" \
-    AR="zig ar" \
-    RANLIB="zig ranlib" \
+    AR="$MUSL_AR" \
+    RANLIB="$MUSL_RANLIB" \
     CFLAGS="-Os -fno-stack-protector -fomit-frame-pointer -fno-pie" \
     LDFLAGS="-static -no-pie" \
     2>&1 | tee configure.log || {
@@ -117,8 +76,8 @@ build_file() {
   pushd "$BUILD_DIR" >/dev/null
   make -j1 -C src all \
     CC="$CC_WRAPPER" \
-    AR="zig ar" \
-    RANLIB="zig ranlib" \
+    AR="$MUSL_AR" \
+    RANLIB="$MUSL_RANLIB" \
     CFLAGS="-Os -fno-stack-protector -fomit-frame-pointer -fno-pie" \
     LDFLAGS="-static -no-pie" \
     2>&1 | tee build-src.log || {
@@ -128,8 +87,8 @@ build_file() {
 
   make -j1 -C magic magic.mgc \
     CC="$CC_WRAPPER" \
-    AR="zig ar" \
-    RANLIB="zig ranlib" \
+    AR="$MUSL_AR" \
+    RANLIB="$MUSL_RANLIB" \
     CFLAGS="-Os -fno-stack-protector -fomit-frame-pointer -fno-pie" \
     LDFLAGS="-static -no-pie" \
     2>&1 | tee build-magic.log || {

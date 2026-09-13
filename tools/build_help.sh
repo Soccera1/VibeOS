@@ -9,6 +9,8 @@ fi
 OUT_BIN="$1"
 SRC_FILE="$2"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/musl_toolchain.sh"
+musl_init
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/strip_helpers.sh"
 
@@ -23,7 +25,7 @@ export ZIG_GLOBAL_CACHE_DIR="$REPO_ROOT/build/zig-global-cache"
 export ZIG_LOCAL_CACHE_DIR="$REPO_ROOT/build/zig-local-cache"
 mkdir -p "$ZIG_GLOBAL_CACHE_DIR" "$ZIG_LOCAL_CACHE_DIR"
 
-zig cc -target x86_64-linux-musl \
+musl_run cc \
   -Os \
   -static \
   -no-pie \

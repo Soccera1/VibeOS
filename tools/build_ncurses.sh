@@ -10,11 +10,14 @@ OUT_LIB="$1"
 SRC_DIR="$2"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/musl_toolchain.sh"
+musl_init
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 mkdir -p "$(dirname "$OUT_LIB")"
 
 NCURSES_BUILD="$(cd "$SRC_DIR" && pwd)/build-musl"
+musl_prepare_cached_build "$NCURSES_BUILD" "$SRC_DIR"
 NCURSES_TERMINFO_INSTALL="$NCURSES_BUILD/share/terminfo"
 
 if [[ ! -f "$NCURSES_BUILD/lib/libncurses.a" ]]; then
@@ -24,38 +27,8 @@ if [[ ! -f "$NCURSES_BUILD/lib/libncurses.a" ]]; then
   export ZIG_LOCAL_CACHE_DIR="$REPO_ROOT/build/zig-local-cache"
   mkdir -p "$ZIG_GLOBAL_CACHE_DIR" "$ZIG_LOCAL_CACHE_DIR"
 
-  CC_WRAPPER="$NCURSES_BUILD/zigcc-wrapper.sh"
-  cat > "$CC_WRAPPER" <<'WRAPPER_EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-filtered=()
-for arg in "$@"; do
-  case "$arg" in
-    -Wl,-rpath*|-Wl,--rpath*|-Wl,-soname*|-Wl,--soname*|-Wl,--version-script*|-Wl,--gc-sections)
-      continue
-      ;;
-    -Wl,*)
-      payload="${arg#-Wl,}"
-      IFS=',' read -r -a parts <<< "$payload"
-      kept=()
-      for part in "${parts[@]}"; do
-        case "$part" in
-          -rpath*|--rpath*|-soname*|--soname*|--version-script*|--gc-sections)
-            continue
-            ;;
-        esac
-        kept+=("$part")
-      done
-      if (( ${#kept[@]} > 0 )); then
-        (IFS=','; filtered+=("-Wl,${kept[*]}"))
-      fi
-      continue
-      ;;
-  esac
-  filtered+=("$arg")
-done
-exec zig cc -target x86_64-linux-musl "${filtered[@]}"
-WRAPPER_EOF
+  CC_WRAPPER="$NCURSES_BUILD/muslcc-wrapper.sh"
+  musl_write_wrapper "$CC_WRAPPER" cc terminal
   chmod +x "$CC_WRAPPER"
 
   pushd "$SRC_DIR" >/dev/null
@@ -89,8 +62,8 @@ WRAPPER_EOF
     CC="$CC_WRAPPER" \
     HOSTCC="${HOSTCC:-cc}" \
     BUILD_CC="${BUILD_CC:-cc}" \
-    AR="zig ar" \
-    RANLIB="zig ranlib" \
+    AR="$MUSL_AR" \
+    RANLIB="$MUSL_RANLIB" \
     CPPFLAGS="-DNOMACROS=1" \
     CFLAGS="-Os -fno-stack-protector -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables" \
     BUILD_CFLAGS="-Os" \
@@ -119,5 +92,9 @@ WRAPPER_EOF
   popd >/dev/null
 fi
 
-cp "$NCURSES_BUILD/lib/libncursesw.a" "$OUT_LIB"
+if [[ ! "$NCURSES_BUILD/lib/libncursesw.a" -ef "$OUT_LIB" ]]; then
+  cp "$NCURSES_BUILD/lib/libncursesw.a" "$OUT_LIB"
+fi
 echo "Built ncurses: $OUT_LIB"
+
+musl_fingerprint > "$NCURSES_BUILD/.musl-toolchain"

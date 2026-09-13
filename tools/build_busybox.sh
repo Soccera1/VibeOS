@@ -12,6 +12,7 @@ PREBUILT_BIN="$3"
 ROOTFS_BIN="$4"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/musl_toolchain.sh"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/strip_helpers.sh"
 
@@ -108,59 +109,18 @@ extract_source_from_tarball() {
   echo "Extracted BusyBox source: $archive -> $SRC_DIR"
 }
 
-prepare_zig_wrapper() {
+prepare_musl_wrapper() {
   local abs_src
   abs_src="$(cd "$SRC_DIR" && pwd)"
-  local wrapper="$abs_src/.zigcc-musl-wrapper.sh"
-  cat > "$wrapper" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-filtered=()
-for arg in "$@"; do
-  case "$arg" in
-    -march=x86-64|-fuse-ld=*|--verbose|-static-libgcc|-finline-limit=0|-falign-jumps=1|-falign-labels=1)
-      continue
-      ;;
-  esac
-
-  if [[ "$arg" == -Wl,* ]]; then
-    payload="${arg#-Wl,}"
-    IFS=',' read -r -a parts <<< "$payload"
-    kept=()
-    drop_next=0
-    for part in "${parts[@]}"; do
-      if (( drop_next )); then
-        drop_next=0
-        continue
-      fi
-      case "$part" in
-        -Map)
-          drop_next=1
-          continue
-          ;;
-        -Map=*|--warn-common|--sort-common|--warn-execstack|--warn-rwx-segments|--verbose)
-          continue
-          ;;
-      esac
-      kept+=("$part")
-    done
-    if (( ${#kept[@]} > 0 )); then
-      (IFS=','; filtered+=("-Wl,${kept[*]}"))
-    fi
-    continue
-  fi
-
-  filtered+=("$arg")
-done
-
-exec zig cc -target x86_64-linux-musl "${filtered[@]}"
-EOF
+  local wrapper="$abs_src/.muslcc-wrapper.sh"
+  musl_write_wrapper "$wrapper" cc standard
   chmod +x "$wrapper"
   echo "$wrapper"
 }
 
 build_from_source() {
+  MUSL_CC="${MUSL_CC:-${BUSYBOX_CC:-}}"
+  musl_init
   if [[ ! -d "$SRC_DIR" ]]; then
     extract_source_from_tarball
   fi
@@ -230,21 +190,19 @@ EOF
   abs_src="$(cd "$SRC_DIR" && pwd)"
   jobs="$(nproc)"
 
-  if command -v zig >/dev/null 2>&1; then
+  cc_cmd="$(prepare_musl_wrapper)"
+  if [[ "$MUSL_CC" == *zig* ]]; then
     export ZIG_GLOBAL_CACHE_DIR="$abs_src/.zig-global-cache"
     export ZIG_LOCAL_CACHE_DIR="$abs_src/.zig-local-cache"
-    rm -rf "$ZIG_GLOBAL_CACHE_DIR" "$ZIG_LOCAL_CACHE_DIR"
     mkdir -p "$ZIG_GLOBAL_CACHE_DIR" "$ZIG_LOCAL_CACHE_DIR"
-    cc_cmd="$(prepare_zig_wrapper)"
     jobs="${BUSYBOX_ZIG_JOBS:-1}"
-    echo "Building BusyBox from source with zig cc (x86_64-linux-musl)"
-  else
-    cc_cmd="${BUSYBOX_CC:-cc}"
-    echo "zig not found; building BusyBox with CC=$cc_cmd"
   fi
+  echo "Building BusyBox from source with $MUSL_CC"
 
   make -C "$SRC_DIR" -j"$jobs" \
     CC="$cc_cmd" \
+    AR="$MUSL_AR" \
+    RANLIB="$MUSL_RANLIB" \
     HOSTCC="${HOSTCC:-cc}" \
     EXTRA_CFLAGS="$extra_cflags" \
     busybox >/dev/null

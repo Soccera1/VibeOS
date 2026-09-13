@@ -10,6 +10,8 @@ OUT_ROOT="$1"
 TESTS_DIR="$2"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/musl_toolchain.sh"
+musl_init
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/strip_helpers.sh"
 
@@ -50,7 +52,6 @@ export ZIG_LOCAL_CACHE_DIR="$REPO_ROOT/build/zig-local-cache"
 mkdir -p "$ZIG_GLOBAL_CACHE_DIR" "$ZIG_LOCAL_CACHE_DIR"
 
 COMMON_FLAGS=(
-  -target x86_64-linux-musl
   -Os
   -static
   -no-pie
@@ -62,11 +63,11 @@ COMMON_FLAGS=(
   -DENABLE_GLIBC_DYNAMIC_TEST="${GLIBC_DYNAMIC_TEST:-1}"
 )
 
-zig cc "${COMMON_FLAGS[@]}" \
+musl_run cc "${COMMON_FLAGS[@]}" \
   -o "$OUT_ROOT/bin/kernel-tests" \
   "$TESTS_DIR/kernel-tests.c"
 
-zig cc "${COMMON_FLAGS[@]}" \
+musl_run cc "${COMMON_FLAGS[@]}" \
   -o "$OUT_ROOT/libexec/kernel-tests/kernel-test-helper" \
   "$TESTS_DIR/kernel-test-helper.c"
 

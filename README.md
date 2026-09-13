@@ -32,7 +32,7 @@ VibeOS is an amd64 monolithic-kernel OS prototype that boots via Multiboot2 and 
 - `mkfs.xfs` (xfsprogs), `mkfs.ext3`, and `parted` (for XFS, ext3, and GPT images)
 - `qemu-system-x86_64` (for `make run`)
 - `xorriso`, `mtools`, `libisoboot` (usually dependencies of `grub-mkrescue`)
-- `zig` (required for musl userspace builds via `zig cc`)
+- A musl toolchain: Zig, musl GCC, or a custom compiler/sysroot (see below)
 - `meson`, `ninja`, `pkg-config`, `gperf`, `tic`, and Autotools when `USER_X11` is enabled; its dependency source trees are bundled under `external/`
 
 ### Build Targets
@@ -48,6 +48,54 @@ Run `make check` for static-musl host-side regression tests that do not require
 booting VibeOS. Run `make check-preemption-system` for QEMU tests of CPU-bound
 processes, long kernel syscalls, queued syscall contention, timer signals,
 sleeping-process wakeups, and floating-point state preservation with static musl and dynamic glibc, including a non-XSAVE CPU.
+
+### Choosing the static userspace toolchain
+
+Zig remains the default when installed. Otherwise the build looks for
+`x86_64-linux-musl-gcc`, `musl-gcc`, then `gcc-musl`. Explicit `MUSL_*`
+settings take precedence, including when Zig is installed:
+
+```bash
+# A complete musl GCC toolchain, including C++ for groff:
+make disk MUSL_CC=x86_64-linux-musl-gcc MUSL_CXX=x86_64-linux-musl-g++
+
+# A musl-gcc wrapper provides C only; disable man-db/groff in menuconfig first:
+make disk MUSL_CC=musl-gcc
+# If your installation calls the wrapper gcc-musl:
+make disk MUSL_CC=gcc-musl
+
+# A custom compiler and musl sysroot:
+make disk MUSL_CC='clang --target=x86_64-linux-musl --sysroot=/opt/musl' \
+  MUSL_CXX=/opt/musl/bin/musl-clang++ MUSL_AR=llvm-ar MUSL_RANLIB=llvm-ranlib
+```
+
+`MUSL_CC` and `MUSL_CXX` must target amd64 musl and support static linking.
+The SDK also needs Linux UAPI headers (`asm/`, `asm-generic/`, and `linux/`)
+for BusyBox and kernel tests. If your musl-gcc package only provides libc
+headers, install Linux UAPI headers into a separate include directory and use,
+for example, `MUSL_CC='musl-gcc -isystem /opt/linux-uapi/include'`.
+Do not add a glibc include tree to the musl header search path.
+A C-only `musl-gcc` wrapper cannot build groff: supply a musl C++ toolchain
+with static C++ libraries, or disable `USER_MAN_DB`. The build infers C++
+only for Zig and compilers named `*-linux-musl-gcc`; it never substitutes
+host glibc `g++`. Custom toolchains default to `ar` and `ranlib`; override
+`MUSL_AR` and `MUSL_RANLIB` when your SDK or LTO setup requires other tools.
+
+These variables also work as environment variables when invoking
+`tools/build_*.sh` directly. Commands may include whitespace-separated
+arguments; shell quotes and substitutions inside their values are not evaluated.
+Use an executable wrapper script for complex arguments or SDK setup.
+Compiler/linker arguments reach non-Zig compilers without Zig-specific filtering.
+
+Run `make check-musl-toolchain` to verify static linking and exercise the
+selection tests. Image preflights check the selected toolchain too. Changing
+`MUSL_*` settings invalidates static build outputs and the cached Bash/ncurses
+builds. If you replace a compiler or sysroot in place, remove its cached build
+outputs before rebuilding.
+
+Static programs use musl; dynamic programs continue to use glibc. These
+settings do not change the kernel compiler (`CC`), host tools (`HOST_CC`),
+or dynamic test compiler (`GLIBC_CC`).
 
 ### Configuration
 
