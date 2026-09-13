@@ -310,13 +310,14 @@ $(BUILD_DIR)/tools/config_editor.o: tools/config_editor.c tools/config_editor.h 
 
 CONFIG_EDITOR_OBJS := $(BUILD_DIR)/tools/kconfig_model.o $(BUILD_DIR)/tools/config_editor.o
 
-# Prefer GTK 3, falling back to GTK 2 when only its development files exist.
-GCONFIG_PKG = $(shell if $(PKG_CONFIG) --exists gtk+-3.0; then echo gtk+-3.0; elif $(PKG_CONFIG) --exists gtk+-2.0; then echo gtk+-2.0; fi)
+# g3config disables GTK 2 fallback, including when both GTK targets are requested.
+GCONFIG_ALLOW_GTK2 := $(if $(filter g3config,$(MAKECMDGOALS)),no,yes)
+GCONFIG_PKG = $(shell if $(PKG_CONFIG) --exists gtk+-3.0; then echo gtk+-3.0; elif test "$(GCONFIG_ALLOW_GTK2)" = yes && $(PKG_CONFIG) --exists gtk+-2.0; then echo gtk+-2.0; fi)
 
 # Track selection so installing/removing GTK 3 rebuilds the automatic frontend.
 $(BUILD_DIR)/tools/gconfig-pkg: config-tool-force
 	@mkdir -p $(dir $@)
-	@test -n "$(GCONFIG_PKG)" || { echo 'gconfig requires pkg-config and GTK 3 or GTK 2 development libraries.' >&2; exit 1; }
+	@test -n "$(GCONFIG_PKG)" || { echo 'gconfig requires pkg-config and GTK 3$(if $(filter yes,$(GCONFIG_ALLOW_GTK2)), or GTK 2) development libraries.' >&2; exit 1; }
 	@if ! test -f $@ || ! test "$$(cat $@)" = "$(GCONFIG_PKG)"; then echo $(GCONFIG_PKG) > $@; fi
 
 $(GCONFIG): tools/gconfig.c tools/config_editor.h $(CONFIG_EDITOR_OBJS) $(BUILD_DIR)/tools/gconfig-pkg

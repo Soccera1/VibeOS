@@ -113,7 +113,7 @@ make fconfig         # Edit configuration in FLTK (native C++ frontend)
 make tkconfig        # Edit configuration in Tk (native C frontend)
 make xconfig         # Edit configuration in Qt 6 (native C++ frontend)
 make gconfig         # Edit configuration in GTK 3, falling back to GTK 2
-make g3config        # Alias for gconfig
+make g3config        # Edit configuration in GTK 3 without GTK 2 fallback
 make g2config        # Edit configuration explicitly in GTK 2
 make savedefconfig   # Write a minimal defconfig
 ```
@@ -151,7 +151,8 @@ quitting with changes offers save, discard, or cancel. Terminal size defaults to
 The graphical editors require a desktop display and use the same configuration
 backend as the command-line tools. All configuration parsing, validation, and
 file generation is implemented in C in `tools/kconfig_model.c`. `gconfig` uses
-GTK 3's C API when available and falls back to GTK 2. `make g2config` builds
+GTK 3's C API when available and falls back to GTK 2. `make g3config` disables
+that fallback and requires GTK 3 development libraries. `make g2config` builds
 and runs a separate GTK 2 binary even when GTK 3 is installed. `xconfig` retains
 Qt through a small C++ frontend. The GTK and Qt frontends require `pkg-config`
 and the GTK 3 or GTK 2 / Qt 6 Widgets development libraries (`libgtk-3-dev` or
