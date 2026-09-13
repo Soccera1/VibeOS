@@ -106,6 +106,8 @@ created from defaults automatically during a normal build.
 make defconfig       # Reset .config to defaults
 make olddefconfig    # Refresh .config after Kconfig changes
 make menuconfig      # Toggle options in a C ncurses menu
+make xconfig         # Edit configuration in Qt (host Python with PySide6)
+make gconfig         # Edit configuration in GTK 3 (host Python with PyGObject)
 make savedefconfig   # Write a minimal defconfig
 ```
 
@@ -120,6 +122,15 @@ are staged into the initramfs and `/usr` image. BusyBox remains mandatory
 because it provides the initramfs base shell and login applets. `make
 menuconfig` builds the host helper `build/tools/menuconfig` from
 `tools/menuconfig.c` and links it against ncurses.
+
+The graphical editors require a desktop display and use the same configuration
+backend as the command-line tools. `xconfig` requires PySide6; `gconfig` requires
+PyGObject with GTK 3 (for example, `python3-gi` and `gir1.2-gtk-3.0` on
+Debian/Ubuntu). Use `HOST_PYTHON=/path/to/python3` to select their interpreter.
+These are host tools using the host GUI libraries, not binaries for the OS image.
+Save writes `.config` and both generated files; closing without saving leaves
+them untouched. Unavailable options are disabled, and hovering over an option
+shows its symbol, type, default, and dependencies.
 
 The Kernel menu includes:
 

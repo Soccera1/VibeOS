@@ -5,6 +5,8 @@ KCONFIG := Kconfig
 CONFIG_FILE := .config
 KCONFIG_TOOL := tools/kconfig.py
 MENUCONFIG := $(BUILD_DIR)/tools/menuconfig
+GUICONFIG_TOOL := tools/guiconfig.py
+HOST_PYTHON ?= python3
 CONFIG_MK := $(BUILD_DIR)/config.mk
 CONFIG_HEADER := $(BUILD_DIR)/include/generated/autoconf.h
 KERNEL_BIN := $(BUILD_DIR)/vibeos-kernel.bin
@@ -48,7 +50,7 @@ CFLAGS := -m64 -ffreestanding -fno-stack-protector -fno-pie -fno-pic -fno-omit-f
 	-Ikernel/include -I$(BUILD_DIR)/include -include generated/autoconf.h
 LDFLAGS := -nostdlib -z max-page-size=0x1000 -T kernel/linker.ld
 
-CONFIG_GOALS := config oldconfig menuconfig defconfig olddefconfig savedefconfig clean
+CONFIG_GOALS := config oldconfig menuconfig xconfig gconfig defconfig olddefconfig savedefconfig clean
 ifeq ($(filter $(CONFIG_GOALS),$(MAKECMDGOALS)),)
 -include $(CONFIG_MK)
 endif
@@ -170,7 +172,7 @@ export STRIP
 
 .PHONY: all clean run iso disk docs check check-kmalloc check-console-reflow check-elf-loader check-glibc-runtime check-glibc-system check-preemption-system check-toolchain check-build-tools check-image-tools \
 	check-iso-tools check-disk-tools check-run-tools all-debug iso-debug disk-debug run-debug \
-	config oldconfig menuconfig defconfig olddefconfig savedefconfig check-kernel-config
+	config oldconfig menuconfig xconfig gconfig defconfig olddefconfig savedefconfig check-kernel-config
 
 all: disk
 
@@ -269,6 +271,9 @@ oldconfig: $(KCONFIG_TOOL) $(KCONFIG)
 menuconfig: $(MENUCONFIG) $(KCONFIG_TOOL) $(KCONFIG)
 	$(MENUCONFIG) --kconfig $(KCONFIG) --config $(CONFIG_FILE)
 	$(KCONFIG_TOOL) sync --kconfig $(KCONFIG) --config $(CONFIG_FILE) --out-mk $(CONFIG_MK) --out-header $(CONFIG_HEADER)
+
+xconfig gconfig: $(GUICONFIG_TOOL) $(KCONFIG_TOOL) $(KCONFIG)
+	$(HOST_PYTHON) $(GUICONFIG_TOOL) $@ --kconfig $(KCONFIG) --config $(CONFIG_FILE) --out-mk $(CONFIG_MK) --out-header $(CONFIG_HEADER)
 
 defconfig: $(KCONFIG_TOOL) $(KCONFIG)
 	$(KCONFIG_TOOL) defconfig --kconfig $(KCONFIG) --config $(CONFIG_FILE)
