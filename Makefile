@@ -11,6 +11,7 @@ GCONFIG := $(BUILD_DIR)/tools/gconfig
 G2CONFIG := $(BUILD_DIR)/tools/g2config
 XCONFIG := $(BUILD_DIR)/tools/xconfig
 FCONFIG := $(BUILD_DIR)/tools/fconfig
+TKCONFIG := $(BUILD_DIR)/tools/tkconfig
 MCONFIG := $(BUILD_DIR)/tools/mconfig
 # Plain C host tools prefer static musl; GUI and ncurses use host glibc libraries.
 CONFIG_LINK ?= static
@@ -61,7 +62,7 @@ CFLAGS := -m64 -ffreestanding -fno-stack-protector -fno-pie -fno-pic -fno-omit-f
 	-Ikernel/include -I$(BUILD_DIR)/include -include generated/autoconf.h
 LDFLAGS := -nostdlib -z max-page-size=0x1000 -T kernel/linker.ld
 
-CONFIG_GOALS := config-tools check-dconfig check-tconfig check-config check-guiconfig check-g2config check-fconfig check-mconfig check-kernel-config config oldconfig dconfig tconfig menuconfig xconfig fconfig mconfig gconfig g2config defconfig olddefconfig savedefconfig clean
+CONFIG_GOALS := config-tools check-dconfig check-tconfig check-config check-guiconfig check-g2config check-fconfig check-tkconfig check-mconfig check-kernel-config config oldconfig dconfig tconfig menuconfig xconfig fconfig tkconfig mconfig gconfig g2config defconfig olddefconfig savedefconfig clean
 ifeq ($(filter $(CONFIG_GOALS),$(MAKECMDGOALS)),)
 -include $(CONFIG_MK)
 endif
@@ -183,7 +184,7 @@ export STRIP
 
 .PHONY: all clean run iso disk docs check check-kmalloc check-console-reflow check-elf-loader check-glibc-runtime check-glibc-system check-preemption-system check-toolchain check-build-tools check-image-tools \
 	check-iso-tools check-disk-tools check-run-tools all-debug iso-debug disk-debug run-debug \
-	config oldconfig dconfig tconfig menuconfig xconfig fconfig mconfig gconfig g2config defconfig olddefconfig savedefconfig check-kernel-config
+	config oldconfig dconfig tconfig menuconfig xconfig fconfig tkconfig mconfig gconfig g2config defconfig olddefconfig savedefconfig check-kernel-config
 
 all: disk
 
@@ -279,8 +280,8 @@ else
 $(error CONFIG_LINK must be static or dynamic)
 endif
 
-.PHONY: config-tools check-dconfig check-tconfig check-config check-guiconfig check-g2config check-fconfig check-mconfig config-tool-force
-config-tools: $(DCONFIG) $(TCONFIG) $(KCONFIG_TOOL) $(MENUCONFIG) $(GCONFIG) $(XCONFIG) $(FCONFIG) $(MCONFIG) $(BUILD_DIR)/tools/check-kernel-config
+.PHONY: config-tools check-dconfig check-tconfig check-config check-guiconfig check-g2config check-fconfig check-tkconfig check-mconfig config-tool-force
+config-tools: $(DCONFIG) $(TCONFIG) $(KCONFIG_TOOL) $(MENUCONFIG) $(GCONFIG) $(XCONFIG) $(FCONFIG) $(TKCONFIG) $(MCONFIG) $(BUILD_DIR)/tools/check-kernel-config
 
 # Rebuild when switching CONFIG_LINK, even when both modes were built before.
 $(BUILD_DIR)/tools/config-link: config-tool-force
@@ -333,6 +334,10 @@ $(FCONFIG): tools/fconfig.cpp tools/config_editor.h $(CONFIG_EDITOR_OBJS)
 	@$(FLTK_CONFIG) --version >/dev/null 2>&1 || { echo 'fconfig requires FLTK development libraries and fltk-config.' >&2; exit 1; }
 	$(HOST_CXX) -std=c++17 -Wall -Wextra -Werror -O2 $$($(FLTK_CONFIG) --cxxflags) -o $@ $< $(CONFIG_EDITOR_OBJS) $$($(FLTK_CONFIG) --ldflags)
 
+$(TKCONFIG): tools/tkconfig.c tools/config_editor.h $(CONFIG_EDITOR_OBJS)
+	@$(PKG_CONFIG) --exists tk || { echo 'tkconfig requires Tcl/Tk development libraries and pkg-config (tk-dev on Debian/Ubuntu).' >&2; exit 1; }
+	$(HOST_CC) $(CONFIG_CFLAGS) $$($(PKG_CONFIG) --cflags tk) -o $@ $< $(CONFIG_EDITOR_OBJS) $$($(PKG_CONFIG) --libs tk)
+
 # Motif/X11 use the host glibc libraries, like the other graphical editors.
 $(MCONFIG): tools/mconfig.c tools/config_editor.h $(CONFIG_EDITOR_OBJS)
 	@printf '#include <Xm/Xm.h>\nint main(void) { XtToolkitInitialize(); return XmVersion == 0; }\n' | $(HOST_CC) $(MOTIF_CFLAGS) -x c -o /dev/null - $(MOTIF_LIBS) || { echo 'mconfig requires Motif, Xt and X11 development libraries (libmotif-dev libxt-dev libx11-dev on Debian/Ubuntu). Set MOTIF_CFLAGS and MOTIF_LIBS for alternate paths.' >&2; exit 1; }
@@ -371,6 +376,9 @@ xconfig: $(XCONFIG) $(KCONFIG)
 
 fconfig: $(FCONFIG) $(KCONFIG)
 	$(FCONFIG) --kconfig $(KCONFIG) --config $(CONFIG_FILE) --out-mk $(CONFIG_MK) --out-header $(CONFIG_HEADER)
+
+tkconfig: $(TKCONFIG) $(KCONFIG)
+	$(TKCONFIG) --kconfig $(KCONFIG) --config $(CONFIG_FILE) --out-mk $(CONFIG_MK) --out-header $(CONFIG_HEADER)
 
 mconfig: $(MCONFIG) $(KCONFIG)
 	$(MCONFIG) --kconfig $(KCONFIG) --config $(CONFIG_FILE) --out-mk $(CONFIG_MK) --out-header $(CONFIG_HEADER)
@@ -748,11 +756,12 @@ $(BUILD_DIR)/tests/xconfig-test: tests/xconfig-test.cpp tests/config-fixture.h t
 	$(HOST_CXX) -fPIC -std=c++17 -Wall -Wextra -Werror -O2 $$($(PKG_CONFIG) --cflags Qt6Widgets) -o $@ $< $(CONFIG_EDITOR_OBJS) $$($(PKG_CONFIG) --libs Qt6Widgets)
 
 # Run under a desktop display or Xvfb; Qt also supports QT_QPA_PLATFORM=offscreen.
-check-guiconfig: $(BUILD_DIR)/tests/gconfig-test $(BUILD_DIR)/tests/xconfig-test $(BUILD_DIR)/tests/fconfig-test $(BUILD_DIR)/tests/mconfig-test
+check-guiconfig: $(BUILD_DIR)/tests/gconfig-test $(BUILD_DIR)/tests/xconfig-test $(BUILD_DIR)/tests/fconfig-test $(BUILD_DIR)/tests/mconfig-test $(BUILD_DIR)/tests/tkconfig-test
 	$(BUILD_DIR)/tests/gconfig-test
 	$(BUILD_DIR)/tests/xconfig-test
 	$(BUILD_DIR)/tests/fconfig-test
 	$(BUILD_DIR)/tests/mconfig-test
+	$(BUILD_DIR)/tests/tkconfig-test
 
 check-g2config: $(BUILD_DIR)/tests/g2config-test
 	$(BUILD_DIR)/tests/g2config-test
@@ -771,3 +780,10 @@ $(BUILD_DIR)/tests/mconfig-test: tests/mconfig-test.c tests/config-fixture.h too
 
 check-mconfig: $(BUILD_DIR)/tests/mconfig-test
 	$(BUILD_DIR)/tests/mconfig-test
+
+$(BUILD_DIR)/tests/tkconfig-test: tests/tkconfig-test.c tests/config-fixture.h tools/tkconfig.c tools/config_editor.h $(CONFIG_EDITOR_OBJS) $(TKCONFIG)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(CONFIG_CFLAGS) $$($(PKG_CONFIG) --cflags tk) -o $@ $< $(CONFIG_EDITOR_OBJS) $$($(PKG_CONFIG) --libs tk)
+
+check-tkconfig: $(BUILD_DIR)/tests/tkconfig-test
+	$(BUILD_DIR)/tests/tkconfig-test

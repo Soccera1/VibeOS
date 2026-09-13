@@ -110,6 +110,7 @@ make tconfig         # Edit configuration on a VT100 terminal (no curses)
 make menuconfig      # Toggle options in a C ncurses menu
 make mconfig         # Edit configuration in Motif (native C frontend)
 make fconfig         # Edit configuration in FLTK (native C++ frontend)
+make tkconfig        # Edit configuration in Tk (native C frontend)
 make xconfig         # Edit configuration in Qt 6 (native C++ frontend)
 make gconfig         # Edit configuration in GTK 3, falling back to GTK 2
 make g2config        # Edit configuration explicitly in GTK 2
@@ -160,6 +161,9 @@ a small C++ frontend and requires FLTK development libraries and `fltk-config`
 X11 development libraries (`libmotif-dev libxt-dev libx11-dev` on Debian/Ubuntu)
 and an X11 display (`DISPLAY`). Use `MOTIF_CFLAGS` and `MOTIF_LIBS` to select
 nonstandard include and library paths.
+`tkconfig` uses the Tcl/Tk C API and requires `pkg-config`, Tcl/Tk development
+libraries (`tk-dev` on Debian/Ubuntu), and a graphical display. Option help
+appears below the scrollable settings when hovering or focusing a control.
 These are host tools using the host GUI libraries, not binaries for the OS image.
 Python bindings are no longer required.
 Save writes `.config` and both generated files; closing without saving leaves
@@ -173,9 +177,9 @@ while `HOST_CC` and `HOST_CXX` select the host glibc C and C++ compilers. The
 ncurses and GUI frontends link dynamically against host libraries. Integer and
 hexadecimal options accept signed 64-bit values.
 `make check-config` runs CLI regression tests (using Python only as a test driver),
-`make check-guiconfig` exercises the selected GTK frontend, Qt, FLTK, and Motif on a desktop
+`make check-guiconfig` exercises the selected GTK frontend, Qt, FLTK, Motif, and Tk on a desktop
 display or Xvfb, `make check-g2config` tests GTK 2 explicitly, `make check-fconfig` tests FLTK alone,
-`make check-mconfig` tests Motif alone,
+`make check-mconfig` tests Motif alone, `make check-tkconfig` tests Tk alone,
 and `make check-kernel-config` checks five kernel feature configurations without
 changing the working `.config`.
 
