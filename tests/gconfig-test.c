@@ -8,6 +8,9 @@ static gboolean respond(gpointer response) {
         if (GTK_IS_MESSAGE_DIALOG(p->data)) gtk_dialog_response(GTK_DIALOG(p->data),GPOINTER_TO_INT(response));
     g_list_free(windows); return G_SOURCE_REMOVE;
 }
+static void mark_destroyed(GtkWidget* widget, gpointer data) {
+    (void)widget; *(bool*)data = true;
+}
 int main(void) {
     assert(gtk_init_check(NULL,NULL));
     ConfigEditor e; char directory[] = "/tmp/vibeos-gconfig-test-XXXXXX"; test_setup(&e,directory);
@@ -35,6 +38,13 @@ int main(void) {
     after = read_file(".config"); assert(!strcmp(before,after)); free(before); free(after);
     g_idle_add(respond,GINT_TO_POINTER(GTK_RESPONSE_YES));
     assert(!confirm_close(w.window,NULL,&w)); assert(!editor_dirty(&e));
-    gtk_widget_destroy(w.window); g_free(w.widgets);
+    bool closed = false;
+    g_signal_connect(w.window,"destroy",G_CALLBACK(mark_destroyed),&closed);
+    gtk_entry_set_text(GTK_ENTRY(w.widgets[4]),"close button edit");
+    g_idle_add(respond,GINT_TO_POINTER(GTK_RESPONSE_CANCEL));
+    close_clicked(NULL,&w); assert(!closed && editor_dirty(&e));
+    g_idle_add(respond,GINT_TO_POINTER(GTK_RESPONSE_YES));
+    close_clicked(NULL,&w); assert(closed && !editor_dirty(&e));
+    g_free(w.widgets);
     test_cleanup(&e,directory); puts("GTK editor tests passed"); return 0;
 }

@@ -3,6 +3,23 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Keep the frontend shared between GTK 2 and GTK 3. */
+static GtkWidget* box_new(GtkOrientation orientation, int spacing) {
+#if GTK_MAJOR_VERSION >= 3
+    return gtk_box_new(orientation,spacing);
+#else
+    return orientation == GTK_ORIENTATION_VERTICAL ?
+        gtk_vbox_new(FALSE,spacing) : gtk_hbox_new(FALSE,spacing);
+#endif
+}
+static void label_align_left(GtkWidget* label) {
+#if GTK_MAJOR_VERSION >= 3
+    gtk_label_set_xalign(GTK_LABEL(label),0);
+#else
+    gtk_misc_set_alignment(GTK_MISC(label),0,0.5);
+#endif
+}
+
 typedef struct {
     ConfigEditor* editor;
     GtkWidget *window, *status;
@@ -58,7 +75,9 @@ static gboolean confirm_close(GtkWidget* widget, GdkEvent* event, gpointer data)
 }
 static void save_clicked(GtkButton* button, gpointer data) { (void)button; save(data); }
 static void close_clicked(GtkButton* button, gpointer data) {
-    (void)button; gtk_window_close(GTK_WINDOW(((Window*)data)->window));
+    (void)button;
+    Window* w = data;
+    if (!confirm_close(w->window,NULL,w)) gtk_widget_destroy(w->window);
 }
 static void destroyed(GtkWidget* widget, gpointer data) {
     (void)widget; (void)data;
@@ -72,12 +91,18 @@ static void build_window(Window* w, ConfigEditor* e) {
     gtk_window_set_title(GTK_WINDOW(w->window),title); g_free(title);
     gtk_window_set_default_size(GTK_WINDOW(w->window),850,700);
     gtk_container_set_border_width(GTK_CONTAINER(w->window),12);
-    GtkWidget* layout = gtk_box_new(GTK_ORIENTATION_VERTICAL,10);
+    GtkWidget* layout = box_new(GTK_ORIENTATION_VERTICAL,10);
     gtk_container_add(GTK_CONTAINER(w->window),layout);
     GtkWidget* scroll = gtk_scrolled_window_new(NULL,NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
+                                   GTK_POLICY_AUTOMATIC,GTK_POLICY_AUTOMATIC);
     gtk_box_pack_start(GTK_BOX(layout),scroll,TRUE,TRUE,0);
-    GtkWidget* content = gtk_box_new(GTK_ORIENTATION_VERTICAL,12);
+    GtkWidget* content = box_new(GTK_ORIENTATION_VERTICAL,12);
+#if GTK_MAJOR_VERSION >= 3
     gtk_container_add(GTK_CONTAINER(scroll),content);
+#else
+    gtk_scrolled_window_add_with_viewport(GTK_SCROLLED_WINDOW(scroll),content);
+#endif
     GHashTable* groups = g_hash_table_new(g_str_hash,g_str_equal);
     for (size_t i = 0; i < e->model.count; ++i) {
         Symbol* s = &e->model.symbols[i];
@@ -86,7 +111,7 @@ static void build_window(Window* w, ConfigEditor* e) {
         GtkWidget* group = g_hash_table_lookup(groups,menu);
         if (!group) {
             GtkWidget* frame = gtk_frame_new(menu);
-            group = gtk_box_new(GTK_ORIENTATION_VERTICAL,6);
+            group = box_new(GTK_ORIENTATION_VERTICAL,6);
             gtk_container_set_border_width(GTK_CONTAINER(group),10);
             gtk_container_add(GTK_CONTAINER(frame),group);
             gtk_box_pack_start(GTK_BOX(content),frame,FALSE,FALSE,0);
@@ -98,9 +123,9 @@ static void build_window(Window* w, ConfigEditor* e) {
             gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(widget),bool_value(e->raw[i]));
             g_signal_connect(widget,"toggled",G_CALLBACK(changed),w);
         } else {
-            row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL,12);
+            row = box_new(GTK_ORIENTATION_HORIZONTAL,12);
             GtkWidget* label = gtk_label_new(s->prompt);
-            gtk_label_set_xalign(GTK_LABEL(label),0);
+            label_align_left(label);
             gtk_box_pack_start(GTK_BOX(row),label,TRUE,TRUE,0);
             widget = gtk_entry_new(); gtk_entry_set_text(GTK_ENTRY(widget),e->raw[i]);
             gtk_box_pack_end(GTK_BOX(row),widget,FALSE,FALSE,0);
@@ -112,9 +137,13 @@ static void build_window(Window* w, ConfigEditor* e) {
         gtk_box_pack_start(GTK_BOX(group),row,FALSE,FALSE,0);
     }
     g_hash_table_destroy(groups);
-    w->status = gtk_label_new(NULL); gtk_label_set_xalign(GTK_LABEL(w->status),0);
+    w->status = gtk_label_new(NULL); label_align_left(w->status);
     gtk_box_pack_start(GTK_BOX(layout),w->status,FALSE,FALSE,0);
+#if GTK_MAJOR_VERSION >= 3
     GtkWidget* buttons = gtk_button_box_new(GTK_ORIENTATION_HORIZONTAL);
+#else
+    GtkWidget* buttons = gtk_hbutton_box_new();
+#endif
     gtk_button_box_set_layout(GTK_BUTTON_BOX(buttons),GTK_BUTTONBOX_END);
     GtkWidget *save_button = gtk_button_new_with_label("Save"), *close_button = gtk_button_new_with_label("Close");
     gtk_container_add(GTK_CONTAINER(buttons),save_button); gtk_container_add(GTK_CONTAINER(buttons),close_button);

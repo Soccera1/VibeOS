@@ -107,7 +107,8 @@ make defconfig       # Reset .config to defaults
 make olddefconfig    # Refresh .config after Kconfig changes
 make menuconfig      # Toggle options in a C ncurses menu
 make xconfig         # Edit configuration in Qt 6 (native C++ frontend)
-make gconfig         # Edit configuration in GTK 3 (native C frontend)
+make gconfig         # Edit configuration in GTK 3, falling back to GTK 2
+make g2config        # Edit configuration explicitly in GTK 2
 make savedefconfig   # Write a minimal defconfig
 ```
 
@@ -126,9 +127,11 @@ menuconfig` builds the host helper `build/tools/menuconfig` from
 The graphical editors require a desktop display and use the same configuration
 backend as the command-line tools. All configuration parsing, validation, and
 file generation is implemented in C in `tools/kconfig_model.c`. `gconfig` uses
-GTK 3's C API; `xconfig` retains Qt through a small C++ frontend. Building them
-requires `pkg-config` and the GTK 3 / Qt 6 Widgets development libraries
-(`libgtk-3-dev` and `qt6-base-dev` on Debian/Ubuntu).
+GTK 3's C API when available and falls back to GTK 2. `make g2config` builds
+and runs a separate GTK 2 binary even when GTK 3 is installed. `xconfig` retains
+Qt through a small C++ frontend. Building them requires `pkg-config` and the
+GTK 3 or GTK 2 / Qt 6 Widgets development libraries (`libgtk-3-dev` or
+`libgtk2.0-dev`, and `qt6-base-dev` on Debian/Ubuntu).
 These are host tools using the host GUI libraries, not binaries for the OS image.
 Python bindings are no longer required.
 Save writes `.config` and both generated files; closing without saving leaves
@@ -142,7 +145,8 @@ while `HOST_CC` and `HOST_CXX` select the host glibc C and C++ compilers. The
 ncurses and GUI frontends link dynamically against host libraries. Integer and
 hexadecimal options accept signed 64-bit values.
 `make check-config` runs CLI regression tests (using Python only as a test driver),
-`make check-guiconfig` exercises both native editors on a desktop display or Xvfb,
+`make check-guiconfig` exercises the selected GTK frontend and Qt on a desktop
+display or Xvfb, `make check-g2config` tests GTK 2 explicitly,
 and `make check-kernel-config` checks five kernel feature configurations without
 changing the working `.config`.
 
