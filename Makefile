@@ -10,6 +10,7 @@ MENUCONFIG := $(BUILD_DIR)/tools/menuconfig
 GCONFIG := $(BUILD_DIR)/tools/gconfig
 G2CONFIG := $(BUILD_DIR)/tools/g2config
 XCONFIG := $(BUILD_DIR)/tools/xconfig
+FCONFIG := $(BUILD_DIR)/tools/fconfig
 # Plain C host tools prefer static musl; GUI and ncurses use host glibc libraries.
 CONFIG_LINK ?= static
 CONFIG_MK := $(BUILD_DIR)/config.mk
@@ -37,6 +38,7 @@ HOST_CC ?= cc
 HOST_CXX ?= c++
 GLIBC_CC ?= gcc
 PKG_CONFIG ?= pkg-config
+FLTK_CONFIG ?= fltk-config
 # Static userspace is always musl; these do not change kernel or glibc compilers.
 export MUSL_CC MUSL_CXX MUSL_AR MUSL_RANLIB
 MUSL_TOOL := $(abspath tools/musl_toolchain.sh)
@@ -56,7 +58,7 @@ CFLAGS := -m64 -ffreestanding -fno-stack-protector -fno-pie -fno-pic -fno-omit-f
 	-Ikernel/include -I$(BUILD_DIR)/include -include generated/autoconf.h
 LDFLAGS := -nostdlib -z max-page-size=0x1000 -T kernel/linker.ld
 
-CONFIG_GOALS := config-tools check-dconfig check-tconfig check-config check-guiconfig check-g2config check-kernel-config config oldconfig dconfig tconfig menuconfig xconfig gconfig g2config defconfig olddefconfig savedefconfig clean
+CONFIG_GOALS := config-tools check-dconfig check-tconfig check-config check-guiconfig check-g2config check-fconfig check-kernel-config config oldconfig dconfig tconfig menuconfig xconfig fconfig gconfig g2config defconfig olddefconfig savedefconfig clean
 ifeq ($(filter $(CONFIG_GOALS),$(MAKECMDGOALS)),)
 -include $(CONFIG_MK)
 endif
@@ -178,7 +180,7 @@ export STRIP
 
 .PHONY: all clean run iso disk docs check check-kmalloc check-console-reflow check-elf-loader check-glibc-runtime check-glibc-system check-preemption-system check-toolchain check-build-tools check-image-tools \
 	check-iso-tools check-disk-tools check-run-tools all-debug iso-debug disk-debug run-debug \
-	config oldconfig dconfig tconfig menuconfig xconfig gconfig g2config defconfig olddefconfig savedefconfig check-kernel-config
+	config oldconfig dconfig tconfig menuconfig xconfig fconfig gconfig g2config defconfig olddefconfig savedefconfig check-kernel-config
 
 all: disk
 
@@ -274,8 +276,8 @@ else
 $(error CONFIG_LINK must be static or dynamic)
 endif
 
-.PHONY: config-tools check-dconfig check-tconfig check-config check-guiconfig check-g2config config-tool-force
-config-tools: $(DCONFIG) $(TCONFIG) $(KCONFIG_TOOL) $(MENUCONFIG) $(GCONFIG) $(XCONFIG) $(BUILD_DIR)/tools/check-kernel-config
+.PHONY: config-tools check-dconfig check-tconfig check-config check-guiconfig check-g2config check-fconfig config-tool-force
+config-tools: $(DCONFIG) $(TCONFIG) $(KCONFIG_TOOL) $(MENUCONFIG) $(GCONFIG) $(XCONFIG) $(FCONFIG) $(BUILD_DIR)/tools/check-kernel-config
 
 # Rebuild when switching CONFIG_LINK, even when both modes were built before.
 $(BUILD_DIR)/tools/config-link: config-tool-force
@@ -324,6 +326,10 @@ $(XCONFIG): tools/xconfig.cpp tools/config_editor.h $(CONFIG_EDITOR_OBJS)
 	@$(PKG_CONFIG) --exists Qt6Widgets || { echo 'xconfig requires Qt 6 Widgets development libraries and pkg-config.' >&2; exit 1; }
 	$(HOST_CXX) -fPIC -std=c++17 -Wall -Wextra -Werror -O2 $$($(PKG_CONFIG) --cflags Qt6Widgets) -o $@ $< $(CONFIG_EDITOR_OBJS) $$($(PKG_CONFIG) --libs Qt6Widgets)
 
+$(FCONFIG): tools/fconfig.cpp tools/config_editor.h $(CONFIG_EDITOR_OBJS)
+	@$(FLTK_CONFIG) --version >/dev/null 2>&1 || { echo 'fconfig requires FLTK development libraries and fltk-config.' >&2; exit 1; }
+	$(HOST_CXX) -std=c++17 -Wall -Wextra -Werror -O2 $$($(FLTK_CONFIG) --cxxflags) -o $@ $< $(CONFIG_EDITOR_OBJS) $$($(FLTK_CONFIG) --ldflags)
+
 $(MENUCONFIG): tools/menuconfig.c $(CONFIG_SOURCES) | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) -Wall -Wextra -O2 $(NCURSES_CFLAGS) -o $@ $< tools/kconfig_model.c $(NCURSES_LIBS)
@@ -354,6 +360,9 @@ menuconfig: $(MENUCONFIG) $(KCONFIG_TOOL) $(KCONFIG)
 
 xconfig: $(XCONFIG) $(KCONFIG)
 	$(XCONFIG) --kconfig $(KCONFIG) --config $(CONFIG_FILE) --out-mk $(CONFIG_MK) --out-header $(CONFIG_HEADER)
+
+fconfig: $(FCONFIG) $(KCONFIG)
+	$(FCONFIG) --kconfig $(KCONFIG) --config $(CONFIG_FILE) --out-mk $(CONFIG_MK) --out-header $(CONFIG_HEADER)
 
 gconfig: $(GCONFIG) $(KCONFIG)
 	$(GCONFIG) --kconfig $(KCONFIG) --config $(CONFIG_FILE) --out-mk $(CONFIG_MK) --out-header $(CONFIG_HEADER)
@@ -728,9 +737,18 @@ $(BUILD_DIR)/tests/xconfig-test: tests/xconfig-test.cpp tests/config-fixture.h t
 	$(HOST_CXX) -fPIC -std=c++17 -Wall -Wextra -Werror -O2 $$($(PKG_CONFIG) --cflags Qt6Widgets) -o $@ $< $(CONFIG_EDITOR_OBJS) $$($(PKG_CONFIG) --libs Qt6Widgets)
 
 # Run under a desktop display or Xvfb; Qt also supports QT_QPA_PLATFORM=offscreen.
-check-guiconfig: $(BUILD_DIR)/tests/gconfig-test $(BUILD_DIR)/tests/xconfig-test
+check-guiconfig: $(BUILD_DIR)/tests/gconfig-test $(BUILD_DIR)/tests/xconfig-test $(BUILD_DIR)/tests/fconfig-test
 	$(BUILD_DIR)/tests/gconfig-test
 	$(BUILD_DIR)/tests/xconfig-test
+	$(BUILD_DIR)/tests/fconfig-test
 
 check-g2config: $(BUILD_DIR)/tests/g2config-test
 	$(BUILD_DIR)/tests/g2config-test
+
+$(BUILD_DIR)/tests/fconfig-test: tests/fconfig-test.cpp tests/config-fixture.h tools/fconfig.cpp tools/config_editor.h $(CONFIG_EDITOR_OBJS)
+	@mkdir -p $(dir $@)
+	@$(FLTK_CONFIG) --version >/dev/null 2>&1 || { echo 'fconfig requires FLTK development libraries and fltk-config.' >&2; exit 1; }
+	$(HOST_CXX) -std=c++17 -Wall -Wextra -Werror -O2 $$($(FLTK_CONFIG) --cxxflags) -o $@ $< $(CONFIG_EDITOR_OBJS) $$($(FLTK_CONFIG) --ldflags)
+
+check-fconfig: $(BUILD_DIR)/tests/fconfig-test
+	$(BUILD_DIR)/tests/fconfig-test

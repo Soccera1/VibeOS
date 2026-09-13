@@ -108,6 +108,7 @@ make olddefconfig    # Refresh .config after Kconfig changes
 make dconfig         # Edit configuration on a dumb terminal (line-based)
 make tconfig         # Edit configuration on a VT100 terminal (no curses)
 make menuconfig      # Toggle options in a C ncurses menu
+make fconfig         # Edit configuration in FLTK (native C++ frontend)
 make xconfig         # Edit configuration in Qt 6 (native C++ frontend)
 make gconfig         # Edit configuration in GTK 3, falling back to GTK 2
 make g2config        # Edit configuration explicitly in GTK 2
@@ -149,9 +150,12 @@ backend as the command-line tools. All configuration parsing, validation, and
 file generation is implemented in C in `tools/kconfig_model.c`. `gconfig` uses
 GTK 3's C API when available and falls back to GTK 2. `make g2config` builds
 and runs a separate GTK 2 binary even when GTK 3 is installed. `xconfig` retains
-Qt through a small C++ frontend. Building them requires `pkg-config` and the
-GTK 3 or GTK 2 / Qt 6 Widgets development libraries (`libgtk-3-dev` or
-`libgtk2.0-dev`, and `qt6-base-dev` on Debian/Ubuntu).
+Qt through a small C++ frontend. The GTK and Qt frontends require `pkg-config`
+and the GTK 3 or GTK 2 / Qt 6 Widgets development libraries (`libgtk-3-dev` or
+`libgtk2.0-dev`, and `qt6-base-dev` on Debian/Ubuntu). `fconfig` uses FLTK with
+a small C++ frontend and requires FLTK development libraries and `fltk-config`
+(`libfltk1.3-dev` on Debian/Ubuntu); `FLTK_CONFIG` can select an alternate
+`fltk-config`.
 These are host tools using the host GUI libraries, not binaries for the OS image.
 Python bindings are no longer required.
 Save writes `.config` and both generated files; closing without saving leaves
@@ -165,8 +169,8 @@ while `HOST_CC` and `HOST_CXX` select the host glibc C and C++ compilers. The
 ncurses and GUI frontends link dynamically against host libraries. Integer and
 hexadecimal options accept signed 64-bit values.
 `make check-config` runs CLI regression tests (using Python only as a test driver),
-`make check-guiconfig` exercises the selected GTK frontend and Qt on a desktop
-display or Xvfb, `make check-g2config` tests GTK 2 explicitly,
+`make check-guiconfig` exercises the selected GTK frontend, Qt, and FLTK on a desktop
+display or Xvfb, `make check-g2config` tests GTK 2 explicitly, `make check-fconfig` tests FLTK alone,
 and `make check-kernel-config` checks five kernel feature configurations without
 changing the working `.config`.
 
