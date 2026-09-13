@@ -59,7 +59,7 @@ settings take precedence, including when Zig is installed:
 # A complete musl GCC toolchain, including C++ for groff:
 make disk MUSL_CC=x86_64-linux-musl-gcc MUSL_CXX=x86_64-linux-musl-g++
 
-# A musl-gcc wrapper provides C only; disable man-db/groff in menuconfig first:
+# A musl-gcc wrapper provides C only; disable man-db/groff with make econfig first:
 make disk MUSL_CC=musl-gcc
 # If your installation calls the wrapper gcc-musl:
 make disk MUSL_CC=gcc-musl
@@ -102,10 +102,34 @@ or dynamic test compiler (`GLIBC_CC`).
 VibeOS has a small Kconfig-like configuration layer. A missing `.config` is
 created from defaults automatically during a normal build.
 
+Use `make econfig` to edit the configuration. It is the recommended entry point
+and tries the available frontends in preference order, falling back when a
+frontend fails to build or run. It stops when one exits successfully (including
+quitting without saving).
+
+```bash
+make econfig         # Edit configuration using an available frontend
+```
+
+The generated files live under `build/`:
+
+- `build/config.mk` for Makefile conditionals
+- `build/include/generated/autoconf.h` for kernel C code
+
+The default configuration preserves the existing full image. Current options
+cover binary stripping, kernel build and device settings, and which optional userspace packages
+are staged into the initramfs and `/usr` image. BusyBox remains mandatory
+because it provides the initramfs base shell and login applets.
+
+#### Advanced configuration and troubleshooting
+
+Use the targets below when you need a specific frontend, are troubleshooting
+frontend dependencies, or want to reset, refresh, or export the configuration.
+For normal interactive configuration, use `make econfig`.
+
 ```bash
 make defconfig       # Reset .config to defaults
 make olddefconfig    # Refresh .config after Kconfig changes
-make econfig         # Try configuration frontends in preference order
 make dconfig         # Edit configuration on a dumb terminal (line-based)
 make tconfig         # Edit configuration on a VT100 terminal (no curses)
 make menuconfig      # Toggle options in a C ncurses menu
@@ -123,19 +147,8 @@ make savedefconfig   # Write a minimal defconfig
 
 `make econfig` tries `g3config`, `aconfig`, `g4config`, `g2config`, `xconfig`,
 `fconfig`, `tkconfig`, `mconfig`, `menuconfig`, `tconfig`, `dconfig`, then `config`.
-It advances when a frontend fails to build or run, and stops when one exits
-successfully (including quitting without saving).
 
-The generated files live under `build/`:
-
-- `build/config.mk` for Makefile conditionals
-- `build/include/generated/autoconf.h` for kernel C code
-
-The default configuration preserves the existing full image. Current options
-cover binary stripping, kernel build and device settings, and which optional userspace packages
-are staged into the initramfs and `/usr` image. BusyBox remains mandatory
-because it provides the initramfs base shell and login applets. `make
-menuconfig` builds the host helper `build/tools/menuconfig` from
+`make menuconfig` builds the host helper `build/tools/menuconfig` from
 `tools/menuconfig.c` and links it against ncurses.
 
 `make dconfig` provides a numbered, paginated text interface for dumb terminals.
