@@ -14,8 +14,15 @@ static void open_window(Window* w, ConfigEditor* e) {
 }
 int main(void) {
     assert(gtk_init_check());
+#ifdef CONFIG_ADWAITA
+    adw_init();
+#endif
     ConfigEditor e; char directory[] = "/tmp/vibeos-g4config-test-XXXXXX"; test_setup(&e,directory);
     Window w; open_window(&w,&e);
+#ifdef CONFIG_ADWAITA
+    assert(ADW_IS_WINDOW(w.window));
+    assert(ADW_IS_ACTION_ROW(gtk_widget_get_ancestor(w.widgets[0],ADW_TYPE_ACTION_ROW)));
+#endif
     gtk_check_button_set_active(GTK_CHECK_BUTTON(w.widgets[0]),FALSE);
     assert(editor_dirty(&e) && !gtk_widget_get_sensitive(w.widgets[1]));
     assert(!gtk_check_button_get_active(GTK_CHECK_BUTTON(w.widgets[1])));
@@ -53,5 +60,5 @@ int main(void) {
     open_window(&w,&e);
     close_clicked(NULL,&w); assert(w.closed && !w.dialog);
     g_free(w.widgets);
-    test_cleanup(&e,directory); puts("GTK 4 editor tests passed"); return 0;
+    test_cleanup(&e,directory); puts(CONFIG_GUI_NAME " editor tests passed"); return 0;
 }

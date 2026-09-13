@@ -1,5 +1,11 @@
 #include "config_editor.h"
 #include <gtk/gtk.h>
+#ifdef CONFIG_ADWAITA
+#include <adwaita.h>
+#define CONFIG_GUI_NAME "aconfig"
+#else
+#define CONFIG_GUI_NAME "g4config"
+#endif
 #include <stdlib.h>
 #include <string.h>
 
@@ -98,13 +104,25 @@ static void close_clicked(GtkButton* button, gpointer data) {
 static void build_window(Window* w, ConfigEditor* e) {
     memset(w,0,sizeof(*w)); w->editor = e;
     w->widgets = g_new0(GtkWidget*,e->model.count);
+#ifdef CONFIG_ADWAITA
+    w->window = adw_window_new();
+#else
     w->window = gtk_window_new();
-    char* title = g_strdup_printf("%s — g4config",e->model.mainmenu);
+#endif
+    char* title = g_strdup_printf("%s — " CONFIG_GUI_NAME,e->model.mainmenu);
     gtk_window_set_title(GTK_WINDOW(w->window),title); g_free(title);
     gtk_window_set_default_size(GTK_WINDOW(w->window),850,700);
     GtkWidget* layout = gtk_box_new(GTK_ORIENTATION_VERTICAL,10);
     margins(layout,12);
+#ifdef CONFIG_ADWAITA
+    GtkWidget* shell = gtk_box_new(GTK_ORIENTATION_VERTICAL,0);
+    gtk_box_append(GTK_BOX(shell),adw_header_bar_new());
+    gtk_box_append(GTK_BOX(shell),layout);
+    gtk_widget_set_vexpand(layout,TRUE);
+    adw_window_set_content(ADW_WINDOW(w->window),shell);
+#else
     gtk_window_set_child(GTK_WINDOW(w->window),layout);
+#endif
     GtkWidget* scroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
                                    GTK_POLICY_AUTOMATIC,GTK_POLICY_AUTOMATIC);
@@ -119,32 +137,60 @@ static void build_window(Window* w, ConfigEditor* e) {
         const char* menu = *s->menu ? s->menu : "General";
         GtkWidget* group = g_hash_table_lookup(groups,menu);
         if (!group) {
+#ifdef CONFIG_ADWAITA
+            group = adw_preferences_group_new();
+            adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group),menu);
+            gtk_box_append(GTK_BOX(content),group);
+#else
             GtkWidget* frame = gtk_frame_new(menu);
             group = gtk_box_new(GTK_ORIENTATION_VERTICAL,6);
             margins(group,10);
             gtk_frame_set_child(GTK_FRAME(frame),group);
             gtk_box_append(GTK_BOX(content),frame);
+#endif
             g_hash_table_insert(groups,(gpointer)menu,group);
         }
-        GtkWidget *widget, *row;
+        GtkWidget* widget;
+#ifndef CONFIG_ADWAITA
+        GtkWidget* row;
+#endif
         if (!strcmp(s->type,"bool")) {
-            widget = gtk_check_button_new_with_label(s->prompt); row = widget;
+            widget = gtk_check_button_new_with_label(s->prompt);
+#ifndef CONFIG_ADWAITA
+            row = widget;
+#endif
             gtk_check_button_set_active(GTK_CHECK_BUTTON(widget),bool_value(e->raw[i]));
             g_signal_connect(widget,"toggled",G_CALLBACK(changed),w);
         } else {
+#ifndef CONFIG_ADWAITA
             row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL,12);
             GtkWidget* label = gtk_label_new(s->prompt);
             gtk_label_set_xalign(GTK_LABEL(label),0);
             gtk_widget_set_hexpand(label,TRUE);
             gtk_box_append(GTK_BOX(row),label);
+#endif
             widget = gtk_entry_new(); gtk_editable_set_text(GTK_EDITABLE(widget),e->raw[i]);
+#ifndef CONFIG_ADWAITA
             gtk_box_append(GTK_BOX(row),widget);
+#endif
             g_signal_connect(widget,"changed",G_CALLBACK(changed),w);
         }
         g_object_set_data(G_OBJECT(widget),"symbol-index",GSIZE_TO_POINTER(i));
         char* help = editor_help(s); gtk_widget_set_tooltip_text(widget,help); free(help);
         w->widgets[i] = widget;
+#ifdef CONFIG_ADWAITA
+        if (GTK_IS_CHECK_BUTTON(widget))
+            gtk_check_button_set_label(GTK_CHECK_BUTTON(widget),NULL);
+        GtkWidget* preference = adw_action_row_new();
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(preference),s->prompt);
+        adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(preference),FALSE);
+        gtk_widget_set_valign(widget,GTK_ALIGN_CENTER);
+        adw_action_row_add_suffix(ADW_ACTION_ROW(preference),widget);
+        adw_action_row_set_activatable_widget(ADW_ACTION_ROW(preference),widget);
+        adw_preferences_group_add(ADW_PREFERENCES_GROUP(group),preference);
+#else
         gtk_box_append(GTK_BOX(group),row);
+#endif
     }
     g_hash_table_destroy(groups);
     w->status = gtk_label_new(NULL); gtk_label_set_xalign(GTK_LABEL(w->status),0);
@@ -165,9 +211,12 @@ int main(int argc, char** argv) {
     int result = editor_init(&editor,argc,argv);
     if (result) return result < 0 ? 2 : 0;
     if (!gtk_init_check()) {
-        fprintf(stderr,"g4config requires a graphical display (DISPLAY or WAYLAND_DISPLAY).\n");
+        fprintf(stderr,CONFIG_GUI_NAME " requires a graphical display (DISPLAY or WAYLAND_DISPLAY).\n");
         editor_free(&editor); return 1;
     }
+#ifdef CONFIG_ADWAITA
+    adw_init();
+#endif
     Window window; build_window(&window,&editor);
     gtk_window_present(GTK_WINDOW(window.window));
     while (!window.closed) g_main_context_iteration(NULL,TRUE);

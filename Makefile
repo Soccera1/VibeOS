@@ -8,6 +8,7 @@ DCONFIG := $(BUILD_DIR)/tools/dconfig
 TCONFIG := $(BUILD_DIR)/tools/tconfig
 MENUCONFIG := $(BUILD_DIR)/tools/menuconfig
 GCONFIG := $(BUILD_DIR)/tools/gconfig
+ACONFIG := $(BUILD_DIR)/tools/aconfig
 G4CONFIG := $(BUILD_DIR)/tools/g4config
 G2CONFIG := $(BUILD_DIR)/tools/g2config
 XCONFIG := $(BUILD_DIR)/tools/xconfig
@@ -63,7 +64,7 @@ CFLAGS := -m64 -ffreestanding -fno-stack-protector -fno-pie -fno-pic -fno-omit-f
 	-Ikernel/include -I$(BUILD_DIR)/include -include generated/autoconf.h
 LDFLAGS := -nostdlib -z max-page-size=0x1000 -T kernel/linker.ld
 
-CONFIG_GOALS := config-tools check-dconfig check-tconfig check-config check-guiconfig check-g2config check-g4config check-fconfig check-tkconfig check-mconfig check-kernel-config config oldconfig dconfig tconfig menuconfig xconfig fconfig tkconfig mconfig gconfig g3config g2config g4config defconfig olddefconfig savedefconfig clean
+CONFIG_GOALS := config-tools check-dconfig check-tconfig check-config check-guiconfig check-g2config check-g4config check-aconfig check-fconfig check-tkconfig check-mconfig check-kernel-config config oldconfig dconfig tconfig menuconfig xconfig fconfig tkconfig mconfig gconfig g3config g2config g4config aconfig defconfig olddefconfig savedefconfig clean
 ifeq ($(filter $(CONFIG_GOALS),$(MAKECMDGOALS)),)
 -include $(CONFIG_MK)
 endif
@@ -185,7 +186,7 @@ export STRIP
 
 .PHONY: all clean run iso disk docs check check-kmalloc check-console-reflow check-elf-loader check-glibc-runtime check-glibc-system check-preemption-system check-toolchain check-build-tools check-image-tools \
 	check-iso-tools check-disk-tools check-run-tools all-debug iso-debug disk-debug run-debug \
-	config oldconfig dconfig tconfig menuconfig xconfig fconfig tkconfig mconfig gconfig g3config g2config g4config defconfig olddefconfig savedefconfig check-kernel-config
+	config oldconfig dconfig tconfig menuconfig xconfig fconfig tkconfig mconfig gconfig g3config g2config g4config aconfig defconfig olddefconfig savedefconfig check-kernel-config
 
 all: disk
 
@@ -281,8 +282,8 @@ else
 $(error CONFIG_LINK must be static or dynamic)
 endif
 
-.PHONY: config-tools check-dconfig check-tconfig check-config check-guiconfig check-g2config check-g4config check-fconfig check-tkconfig check-mconfig config-tool-force
-config-tools: $(DCONFIG) $(TCONFIG) $(KCONFIG_TOOL) $(MENUCONFIG) $(GCONFIG) $(G4CONFIG) $(XCONFIG) $(FCONFIG) $(TKCONFIG) $(MCONFIG) $(BUILD_DIR)/tools/check-kernel-config
+.PHONY: config-tools check-dconfig check-tconfig check-config check-guiconfig check-g2config check-g4config check-aconfig check-fconfig check-tkconfig check-mconfig config-tool-force
+config-tools: $(DCONFIG) $(TCONFIG) $(KCONFIG_TOOL) $(MENUCONFIG) $(GCONFIG) $(G4CONFIG) $(ACONFIG) $(XCONFIG) $(FCONFIG) $(TKCONFIG) $(MCONFIG) $(BUILD_DIR)/tools/check-kernel-config
 
 # Rebuild when switching CONFIG_LINK, even when both modes were built before.
 $(BUILD_DIR)/tools/config-link: config-tool-force
@@ -313,23 +314,27 @@ CONFIG_EDITOR_OBJS := $(BUILD_DIR)/tools/kconfig_model.o $(BUILD_DIR)/tools/conf
 
 # g3config disables all fallback, including when multiple GTK targets are requested.
 GCONFIG_ALLOW_FALLBACK := $(if $(filter g3config,$(MAKECMDGOALS)),no,yes)
-GCONFIG_PKG = $(shell if $(PKG_CONFIG) --exists gtk+-3.0; then echo gtk+-3.0; elif test "$(GCONFIG_ALLOW_FALLBACK)" = yes && $(PKG_CONFIG) --exists gtk4; then echo gtk4; elif test "$(GCONFIG_ALLOW_FALLBACK)" = yes && $(PKG_CONFIG) --exists gtk+-2.0; then echo gtk+-2.0; fi)
+GCONFIG_PKG = $(shell if $(PKG_CONFIG) --exists gtk+-3.0; then echo gtk+-3.0; elif test "$(GCONFIG_ALLOW_FALLBACK)" = yes && $(PKG_CONFIG) --exists libadwaita-1; then echo libadwaita-1; elif test "$(GCONFIG_ALLOW_FALLBACK)" = yes && $(PKG_CONFIG) --exists gtk4; then echo gtk4; elif test "$(GCONFIG_ALLOW_FALLBACK)" = yes && $(PKG_CONFIG) --exists gtk+-2.0; then echo gtk+-2.0; fi)
 
-GCONFIG_SOURCE = tools/$(if $(filter gtk4,$(GCONFIG_PKG)),g4config,gconfig).c
-GCONFIG_TEST_SOURCE = tests/$(if $(filter gtk4,$(GCONFIG_PKG)),g4config,gconfig)-test.c
+GCONFIG_SOURCE = tools/$(if $(filter libadwaita-1,$(GCONFIG_PKG)),aconfig,$(if $(filter gtk4,$(GCONFIG_PKG)),g4config,gconfig)).c
+GCONFIG_TEST_SOURCE = tests/$(if $(filter libadwaita-1,$(GCONFIG_PKG)),aconfig,$(if $(filter gtk4,$(GCONFIG_PKG)),g4config,gconfig))-test.c
 
 # Track selection so changes in available GTK versions rebuild the automatic frontend.
 $(BUILD_DIR)/tools/gconfig-pkg: config-tool-force
 	@mkdir -p $(dir $@)
-	@test -n "$(GCONFIG_PKG)" || { echo 'gconfig requires pkg-config and GTK 3$(if $(filter yes,$(GCONFIG_ALLOW_FALLBACK)), or GTK 4 or GTK 2) development libraries.' >&2; exit 1; }
+	@test -n "$(GCONFIG_PKG)" || { echo 'gconfig requires pkg-config and GTK 3$(if $(filter yes,$(GCONFIG_ALLOW_FALLBACK)), or Libadwaita or GTK 4 or GTK 2) development libraries.' >&2; exit 1; }
 	@if ! test -f $@ || ! test "$$(cat $@)" = "$(GCONFIG_PKG)"; then echo $(GCONFIG_PKG) > $@; fi
 
-$(GCONFIG): $(GCONFIG_SOURCE) tools/config_editor.h $(CONFIG_EDITOR_OBJS) $(BUILD_DIR)/tools/gconfig-pkg
+$(GCONFIG): $(GCONFIG_SOURCE) tools/g4config.c tools/config_editor.h $(CONFIG_EDITOR_OBJS) $(BUILD_DIR)/tools/gconfig-pkg
 	$(HOST_CC) $(CONFIG_CFLAGS) -Wno-deprecated-declarations $$($(PKG_CONFIG) --cflags $(GCONFIG_PKG)) -o $@ $< $(CONFIG_EDITOR_OBJS) $$($(PKG_CONFIG) --libs $(GCONFIG_PKG))
 
 $(G2CONFIG): tools/gconfig.c tools/config_editor.h $(CONFIG_EDITOR_OBJS)
 	@$(PKG_CONFIG) --exists gtk+-2.0 || { echo 'g2config requires pkg-config and GTK 2 development libraries.' >&2; exit 1; }
 	$(HOST_CC) $(CONFIG_CFLAGS) -Wno-deprecated-declarations $$($(PKG_CONFIG) --cflags gtk+-2.0) -o $@ $< $(CONFIG_EDITOR_OBJS) $$($(PKG_CONFIG) --libs gtk+-2.0)
+
+$(ACONFIG): tools/aconfig.c tools/g4config.c tools/config_editor.h $(CONFIG_EDITOR_OBJS)
+	@$(PKG_CONFIG) --exists libadwaita-1 || { echo 'aconfig requires pkg-config and GTK 4/Libadwaita development libraries (libadwaita-1-dev on Debian/Ubuntu).' >&2; exit 1; }
+	$(HOST_CC) $(CONFIG_CFLAGS) -Wno-deprecated-declarations $$($(PKG_CONFIG) --cflags libadwaita-1) -o $@ $< $(CONFIG_EDITOR_OBJS) $$($(PKG_CONFIG) --libs libadwaita-1)
 
 $(G4CONFIG): tools/g4config.c tools/config_editor.h $(CONFIG_EDITOR_OBJS)
 	@$(PKG_CONFIG) --exists gtk4 || { echo 'g4config requires pkg-config and GTK 4 development libraries (libgtk-4-dev on Debian/Ubuntu).' >&2; exit 1; }
@@ -394,6 +399,9 @@ mconfig: $(MCONFIG) $(KCONFIG)
 
 gconfig: $(GCONFIG) $(KCONFIG)
 	$(GCONFIG) --kconfig $(KCONFIG) --config $(CONFIG_FILE) --out-mk $(CONFIG_MK) --out-header $(CONFIG_HEADER)
+
+aconfig: $(ACONFIG) $(KCONFIG)
+	$(ACONFIG) --kconfig $(KCONFIG) --config $(CONFIG_FILE) --out-mk $(CONFIG_MK) --out-header $(CONFIG_HEADER)
 
 g4config: $(G4CONFIG) $(KCONFIG)
 	$(G4CONFIG) --kconfig $(KCONFIG) --config $(CONFIG_FILE) --out-mk $(CONFIG_MK) --out-header $(CONFIG_HEADER)
@@ -756,7 +764,7 @@ $(KMALLOC_HOST_TEST) $(CONSOLE_REFLOW_HOST_TEST) $(ELF_LOADER_HOST_TEST) \
 check-config: $(KCONFIG_TOOL)
 	python3 tests/kconfig-test.py $(KCONFIG_TOOL)
 
-$(BUILD_DIR)/tests/gconfig-test: $(GCONFIG_TEST_SOURCE) tests/config-fixture.h $(GCONFIG_SOURCE) tools/config_editor.h $(CONFIG_EDITOR_OBJS) $(BUILD_DIR)/tools/gconfig-pkg
+$(BUILD_DIR)/tests/gconfig-test: $(GCONFIG_TEST_SOURCE) tests/g4config-test.c tests/config-fixture.h $(GCONFIG_SOURCE) tools/g4config.c tools/config_editor.h $(CONFIG_EDITOR_OBJS) $(BUILD_DIR)/tools/gconfig-pkg
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(CONFIG_CFLAGS) -Wno-deprecated-declarations $$($(PKG_CONFIG) --cflags $(GCONFIG_PKG)) -o $@ $< $(CONFIG_EDITOR_OBJS) $$($(PKG_CONFIG) --libs $(GCONFIG_PKG))
 
@@ -769,6 +777,13 @@ $(BUILD_DIR)/tests/g4config-test: tests/g4config-test.c tests/config-fixture.h t
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(CONFIG_CFLAGS) -Wno-deprecated-declarations $$($(PKG_CONFIG) --cflags gtk4) -o $@ $< $(CONFIG_EDITOR_OBJS) $$($(PKG_CONFIG) --libs gtk4)
 
+$(BUILD_DIR)/tests/aconfig-test: tests/aconfig-test.c tests/g4config-test.c tests/config-fixture.h tools/aconfig.c tools/g4config.c tools/config_editor.h $(CONFIG_EDITOR_OBJS) $(ACONFIG)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(CONFIG_CFLAGS) -Wno-deprecated-declarations $$($(PKG_CONFIG) --cflags libadwaita-1) -o $@ $< $(CONFIG_EDITOR_OBJS) $$($(PKG_CONFIG) --libs libadwaita-1)
+
+check-aconfig: $(BUILD_DIR)/tests/aconfig-test
+	$(BUILD_DIR)/tests/aconfig-test
+
 check-g4config: $(BUILD_DIR)/tests/g4config-test
 	$(BUILD_DIR)/tests/g4config-test
 
@@ -777,7 +792,8 @@ $(BUILD_DIR)/tests/xconfig-test: tests/xconfig-test.cpp tests/config-fixture.h t
 	$(HOST_CXX) -fPIC -std=c++17 -Wall -Wextra -Werror -O2 $$($(PKG_CONFIG) --cflags Qt6Widgets) -o $@ $< $(CONFIG_EDITOR_OBJS) $$($(PKG_CONFIG) --libs Qt6Widgets)
 
 # Run under a desktop display or Xvfb; Qt also supports QT_QPA_PLATFORM=offscreen.
-check-guiconfig: $(BUILD_DIR)/tests/g4config-test $(BUILD_DIR)/tests/gconfig-test $(BUILD_DIR)/tests/xconfig-test $(BUILD_DIR)/tests/fconfig-test $(BUILD_DIR)/tests/mconfig-test $(BUILD_DIR)/tests/tkconfig-test
+check-guiconfig: $(BUILD_DIR)/tests/aconfig-test $(BUILD_DIR)/tests/g4config-test $(BUILD_DIR)/tests/gconfig-test $(BUILD_DIR)/tests/xconfig-test $(BUILD_DIR)/tests/fconfig-test $(BUILD_DIR)/tests/mconfig-test $(BUILD_DIR)/tests/tkconfig-test
+	$(BUILD_DIR)/tests/aconfig-test
 	$(BUILD_DIR)/tests/gconfig-test
 	$(BUILD_DIR)/tests/g4config-test
 	$(BUILD_DIR)/tests/xconfig-test

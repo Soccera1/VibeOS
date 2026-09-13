@@ -112,7 +112,8 @@ make mconfig         # Edit configuration in Motif (native C frontend)
 make fconfig         # Edit configuration in FLTK (native C++ frontend)
 make tkconfig        # Edit configuration in Tk (native C frontend)
 make xconfig         # Edit configuration in Qt 6 (native C++ frontend)
-make gconfig         # Edit configuration in GTK 3, falling back to GTK 4 then GTK 2
+make gconfig         # Edit configuration in GTK 3, falling back to Libadwaita, GTK 4, then GTK 2
+make aconfig         # Edit configuration in GTK 4/Libadwaita
 make g4config        # Edit configuration explicitly in GTK 4
 make g3config        # Edit configuration in GTK 3 without fallback
 make g2config        # Edit configuration explicitly in GTK 2
@@ -152,11 +153,13 @@ quitting with changes offers save, discard, or cancel. Terminal size defaults to
 The graphical editors require a desktop display and use the same configuration
 backend as the command-line tools. All configuration parsing, validation, and
 file generation is implemented in C in `tools/kconfig_model.c`. `gconfig` uses
-GTK 3's C API when available, then falls back to GTK 4, then GTK 2.
+GTK 3's C API when available, then falls back to GTK 4/Libadwaita, GTK 4, then GTK 2.
 `make g3config` disables all fallback and requires GTK 3 development libraries. `make g2config` builds
 and runs a separate GTK 2 binary even when GTK 3 is installed. `make g4config`
 builds and runs a separate GTK 4 frontend, requiring `pkg-config` and GTK 4
-development libraries (`libgtk-4-dev` on Debian/Ubuntu). `xconfig` retains
+development libraries (`libgtk-4-dev` on Debian/Ubuntu). `make aconfig` builds
+and runs the Libadwaita frontend, requiring `pkg-config` and GTK 4/Libadwaita
+development libraries (`libadwaita-1-dev` on Debian/Ubuntu). `xconfig` retains
 Qt through a small C++ frontend. The GTK and Qt frontends require `pkg-config`
 and the GTK 3 or GTK 2 / Qt 6 Widgets development libraries (`libgtk-3-dev` or
 `libgtk2.0-dev`, and `qt6-base-dev` on Debian/Ubuntu). `fconfig` uses FLTK with
@@ -182,9 +185,9 @@ while `HOST_CC` and `HOST_CXX` select the host glibc C and C++ compilers. The
 ncurses and GUI frontends link dynamically against host libraries. Integer and
 hexadecimal options accept signed 64-bit values.
 `make check-config` runs CLI regression tests (using Python only as a test driver),
-`make check-guiconfig` exercises the selected GTK frontend, GTK 4, Qt, FLTK, Motif, and Tk on a desktop
+`make check-guiconfig` exercises the selected GTK frontend, Libadwaita, GTK 4, Qt, FLTK, Motif, and Tk on a desktop
 display or Xvfb, `make check-g2config` tests GTK 2 explicitly,
-`make check-g4config` tests GTK 4 alone, `make check-fconfig` tests FLTK alone,
+`make check-aconfig` tests Libadwaita alone, `make check-g4config` tests GTK 4 alone, `make check-fconfig` tests FLTK alone,
 `make check-mconfig` tests Motif alone, `make check-tkconfig` tests Tk alone,
 and `make check-kernel-config` checks five kernel feature configurations without
 changing the working `.config`.
