@@ -64,7 +64,7 @@ CFLAGS := -m64 -ffreestanding -fno-stack-protector -fno-pie -fno-pic -fno-omit-f
 	-Ikernel/include -I$(BUILD_DIR)/include -include generated/autoconf.h
 LDFLAGS := -nostdlib -z max-page-size=0x1000 -T kernel/linker.ld
 
-CONFIG_GOALS := config-tools check-dconfig check-tconfig check-config check-guiconfig check-g2config check-g4config check-aconfig check-fconfig check-tkconfig check-mconfig check-kernel-config config oldconfig dconfig tconfig menuconfig xconfig fconfig tkconfig mconfig gconfig g3config g2config g4config aconfig defconfig olddefconfig savedefconfig clean
+CONFIG_GOALS := config-tools check-dconfig check-tconfig check-config check-guiconfig check-g2config check-g4config check-aconfig check-fconfig check-tkconfig check-mconfig check-kernel-config econfig config oldconfig dconfig tconfig menuconfig xconfig fconfig tkconfig mconfig gconfig g3config g2config g4config aconfig defconfig olddefconfig savedefconfig clean
 ifeq ($(filter $(CONFIG_GOALS),$(MAKECMDGOALS)),)
 -include $(CONFIG_MK)
 endif
@@ -186,7 +186,7 @@ export STRIP
 
 .PHONY: all clean run iso disk docs check check-kmalloc check-console-reflow check-elf-loader check-glibc-runtime check-glibc-system check-preemption-system check-toolchain check-build-tools check-image-tools \
 	check-iso-tools check-disk-tools check-run-tools all-debug iso-debug disk-debug run-debug \
-	config oldconfig dconfig tconfig menuconfig xconfig fconfig tkconfig mconfig gconfig g3config g2config g4config aconfig defconfig olddefconfig savedefconfig check-kernel-config
+	econfig config oldconfig dconfig tconfig menuconfig xconfig fconfig tkconfig mconfig gconfig g3config g2config g4config aconfig defconfig olddefconfig savedefconfig check-kernel-config
 
 all: disk
 
@@ -360,6 +360,12 @@ $(MCONFIG): tools/mconfig.c tools/config_editor.h $(CONFIG_EDITOR_OBJS)
 $(MENUCONFIG): tools/menuconfig.c $(CONFIG_SOURCES) | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) -Wall -Wextra -O2 $(NCURSES_CFLAGS) -o $@ $< tools/kconfig_model.c $(NCURSES_LIBS)
+
+# Try each frontend in preference order, stopping after a successful session.
+econfig:
+	@for target in g3config aconfig g4config g2config xconfig fconfig tkconfig mconfig menuconfig tconfig dconfig config; do \
+		$(MAKE) $$target && exit 0; \
+	done; exit 1
 
 config: $(KCONFIG_TOOL) $(KCONFIG)
 	$(KCONFIG_TOOL) config --kconfig $(KCONFIG) --config $(CONFIG_FILE)

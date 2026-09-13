@@ -105,6 +105,7 @@ created from defaults automatically during a normal build.
 ```bash
 make defconfig       # Reset .config to defaults
 make olddefconfig    # Refresh .config after Kconfig changes
+make econfig         # Try configuration frontends in preference order
 make dconfig         # Edit configuration on a dumb terminal (line-based)
 make tconfig         # Edit configuration on a VT100 terminal (no curses)
 make menuconfig      # Toggle options in a C ncurses menu
@@ -119,6 +120,11 @@ make g3config        # Edit configuration in GTK 3 without fallback
 make g2config        # Edit configuration explicitly in GTK 2
 make savedefconfig   # Write a minimal defconfig
 ```
+
+`make econfig` tries `g3config`, `aconfig`, `g4config`, `g2config`, `xconfig`,
+`fconfig`, `tkconfig`, `mconfig`, `menuconfig`, `tconfig`, `dconfig`, then `config`.
+It advances when a frontend fails to build or run, and stops when one exits
+successfully (including quitting without saving).
 
 The generated files live under `build/`:
 
